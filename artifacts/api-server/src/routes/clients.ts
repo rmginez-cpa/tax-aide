@@ -90,32 +90,10 @@ function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: nu
   const fyStartMonth = client.fiscalYearStart ? monthIndex(client.fiscalYearStart) : 1;
   const calYear = fyStartMonth === 1; // calendar year taxpayer
 
-  // ── 0605: Annual Registration Fee — ALL taxpayers, due January 31 ────────
-  deadlines.push({
-    title: `BIR Form 0605 (Annual Registration Fee) — ${year}`,
-    description: `Annual Registration Fee of PHP 500. Due January 31 of each year. File via eFPS or eBIRForms.`,
-    dueDate: isoDate(year, 1, 31),
-    priority: "medium",
-    category: "Other",
-  });
+  // NOTE: BIR Form 0605 is a voluntary payment form — not auto-generated.
+  // Accountants can upload 0605 documents manually in the client's document section.
 
   // ── MONTHLY FORMS ──────────────────────────────────────────────────────
-
-  // 2550M: Monthly VAT Return — due 20th of following month
-  if (client.vatRegistered) {
-    for (let m = 1; m <= 12; m++) {
-      const dueMonth = m === 12 ? 1 : m + 1;
-      const dueYear = m === 12 ? year + 1 : year;
-      const period = `${MONTHS[m - 1]} ${year}`;
-      deadlines.push({
-        title: `BIR Form 2550M — ${period}`,
-        description: `Monthly VAT Return for ${period}. Due 20th of the following month.`,
-        dueDate: isoDate(dueYear, dueMonth, 20),
-        priority: "high",
-        category: "VAT",
-      });
-    }
-  }
 
   // 1601C: Monthly Withholding on Compensation — due 10th of following month
   if (client.withholdsCompensation) {
@@ -493,7 +471,6 @@ interface ComplianceItem {
 }
 
 const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
-  "2550M": "monthly",
   "2550Q": "quarterly",
   "2551Q": "quarterly",
   "1601C": "monthly",
@@ -507,7 +484,6 @@ const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
   "1701": "annual",
   "1701Q": "quarterly",
   "2000": "monthly",
-  "0605": "annual",
   "0619E": "monthly",
   "0619F": "monthly",
   "AFS": "annual",

@@ -115,7 +115,7 @@
   --sidebar-accent-foreground: 210 40% 98%;
   --sidebar-ring: 214 100% 41%;
 
-  --app-font-sans: 'Inter', system-ui, sans-serif;
+  --app-font-sans: 'Noto Sans', system-ui, sans-serif;
   --app-font-serif: Georgia, serif;
   --app-font-mono: Menlo, monospace;
 }

@@ -186,10 +186,10 @@ export default function ClientDetail() {
   const registeredTypes: { label: string; color: string }[] = [];
   if (client.incomeTaxType === "corporate") registeredTypes.push({ label: "1702/1702Q — Corp ITR", color: "bg-emerald-100 text-emerald-700" });
   if (client.incomeTaxType === "individual") registeredTypes.push({ label: "1701/1701Q — Indiv ITR", color: "bg-green-100 text-green-700" });
-  if (client.vatRegistered) registeredTypes.push({ label: "2550M/2550Q — VAT", color: "bg-blue-100 text-blue-700" });
+  if (client.vatRegistered) registeredTypes.push({ label: "2550Q/SLS/SLP — VAT", color: "bg-blue-100 text-blue-700" });
   if (client.percentageTaxRegistered) registeredTypes.push({ label: "2551Q — Percentage Tax", color: "bg-violet-100 text-violet-700" });
   if (client.withholdsCompensation) registeredTypes.push({ label: "1601C/1604C — WHT Comp", color: "bg-amber-100 text-amber-700" });
-  if (client.withholdsEwt) registeredTypes.push({ label: "1601EQ/1604E — EWT", color: "bg-orange-100 text-orange-700" });
+  if (client.withholdsEwt) registeredTypes.push({ label: "0619E/1601EQ/1604E — EWT", color: "bg-orange-100 text-orange-700" });
   if (client.subjectToDst) registeredTypes.push({ label: "2000 — DST", color: "bg-slate-100 text-slate-700" });
   if (client.withholdsFinal) registeredTypes.push({ label: "Final WHT", color: "bg-violet-100 text-violet-700" });
   if (client.hasInventory) registeredTypes.push({ label: "Annual Inventory List", color: "bg-teal-100 text-teal-700" });
@@ -611,8 +611,8 @@ export default function ClientDetail() {
                 <div className="p-3 rounded-md border space-y-2 bg-muted/30">
                   <Label className="text-xs text-muted-foreground uppercase">VAT / Percentage Tax</Label>
                   {[
-                    { key: "vatRegistered", label: "VAT Registered", sub: "Monthly 2550M + Quarterly 2550Q" },
-                    { key: "percentageTaxRegistered", label: "Percentage Tax (Non-VAT)", sub: "Quarterly 2551Q" },
+                    { key: "vatRegistered", label: "Value-Added Tax (VAT)", sub: "Quarterly 2550Q + SLS/SLP (due 25th of following month)" },
+                    { key: "percentageTaxRegistered", label: "Percentage Tax (Non-VAT)", sub: "Quarterly 2551Q (due 25th of following month)" },
                   ].map(item => (
                     <div key={item.key} className="flex items-start gap-3">
                       <Checkbox checked={!!editForm[item.key]} onCheckedChange={v => ef(item.key, v)} />
@@ -623,8 +623,9 @@ export default function ClientDetail() {
                 <div className="p-3 rounded-md border space-y-2 bg-muted/30">
                   <Label className="text-xs text-muted-foreground uppercase">Withholding Taxes</Label>
                   {[
-                    { key: "withholdsCompensation", label: "Withholding Tax on Compensation", sub: "Monthly 1601C + Annual 1604CF" },
-                    { key: "withholdsEwt", label: "Expanded Withholding Tax (EWT)", sub: "Quarterly 1601EQ + Annual 1604E" },
+                    { key: "withholdsCompensation", label: "Withholding Tax on Compensation", sub: "Monthly 1601C (due 10th) + Annual 1604C (due March 1)" },
+                    { key: "withholdsEwt", label: "Expanded Withholding Tax (EWT)", sub: "Monthly 0619E (due 10th) + Quarterly 1601EQ + QAP + Annual 1604E (due March 1)" },
+                    { key: "withholdsFinal", label: "Final Withholding Tax (FWT)", sub: "Monthly 0619F (due 10th) + Quarterly 1601FQ + Annual 1604F (due March 1)" },
                   ].map(item => (
                     <div key={item.key} className="flex items-start gap-3">
                       <Checkbox checked={!!editForm[item.key]} onCheckedChange={v => ef(item.key, v)} />
@@ -641,7 +642,6 @@ export default function ClientDetail() {
                 <div className="p-3 rounded-md border space-y-2 bg-muted/30">
                   <Label className="text-xs text-muted-foreground uppercase">Additional Compliance Requirements</Label>
                   {[
-                    { key: "withholdsFinal", label: "Withholds Final Tax (FWT)", sub: "0619F monthly + 1601FQ quarterly + 1604F annual" },
                     { key: "hasInventory", label: "Has Inventory", sub: "Annual Inventory List due January 30" },
                     { key: "isLessor", label: "Lessor of Commercial Property", sub: "Lessee Information Statement due January 31" },
                     { key: "isEsalesRequired", label: "eSales Reporting Required", sub: "Monthly eSales report due 8th or 10th (based on TIN last digit)" },

@@ -270,8 +270,8 @@ export default function Clients() {
                         <div className="flex items-start gap-3">
                           <Checkbox id="vat" checked={form.vatRegistered} onCheckedChange={() => toggle("vatRegistered")} />
                           <div>
-                            <label htmlFor="vat" className="text-sm font-medium cursor-pointer">VAT Registered</label>
-                            <p className="text-xs text-muted-foreground">Monthly 2550M (due 20th) + Quarterly 2550Q (due 25th)</p>
+                            <label htmlFor="vat" className="text-sm font-medium cursor-pointer">Value-Added Tax (VAT)</label>
+                            <p className="text-xs text-muted-foreground">Quarterly 2550Q + SLS/SLP (due 25th of following month)</p>
                           </div>
                         </div>
                         <div className="flex items-start gap-3">
@@ -291,14 +291,21 @@ export default function Clients() {
                           <Checkbox id="comp" checked={form.withholdsCompensation} onCheckedChange={() => toggle("withholdsCompensation")} />
                           <div>
                             <label htmlFor="comp" className="text-sm font-medium cursor-pointer">Withholding Tax on Compensation</label>
-                            <p className="text-xs text-muted-foreground">Monthly 1601C (due 10th) + Annual 1604CF (due March 1)</p>
+                            <p className="text-xs text-muted-foreground">Monthly 1601C (due 10th) + Annual 1604C (due March 1)</p>
                           </div>
                         </div>
                         <div className="flex items-start gap-3">
                           <Checkbox id="ewt" checked={form.withholdsEwt} onCheckedChange={() => toggle("withholdsEwt")} />
                           <div>
                             <label htmlFor="ewt" className="text-sm font-medium cursor-pointer">Expanded Withholding Tax (EWT)</label>
-                            <p className="text-xs text-muted-foreground">Quarterly 1601EQ + Annual 1604E (due March 1)</p>
+                            <p className="text-xs text-muted-foreground">Monthly 0619E (due 10th) + Quarterly 1601EQ + QAP + Annual 1604E (due March 1)</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <Checkbox id="whtFinal" checked={form.withholdsFinal} onCheckedChange={() => toggle("withholdsFinal")} />
+                          <div>
+                            <label htmlFor="whtFinal" className="text-sm font-medium cursor-pointer">Final Withholding Tax (FWT)</label>
+                            <p className="text-xs text-muted-foreground">Monthly 0619F (due 10th) + Quarterly 1601FQ + Annual 1604F (due March 1)</p>
                           </div>
                         </div>
                       </div>
@@ -318,13 +325,6 @@ export default function Clients() {
                     <div className="space-y-2 p-3 rounded-md border bg-muted/30">
                       <Label className="text-xs text-muted-foreground uppercase tracking-wider">Additional Compliance Requirements</Label>
                       <div className="space-y-2">
-                        <div className="flex items-start gap-3">
-                          <Checkbox id="whtFinal" checked={form.withholdsFinal} onCheckedChange={() => toggle("withholdsFinal")} />
-                          <div>
-                            <label htmlFor="whtFinal" className="text-sm font-medium cursor-pointer">Withholds Final Tax (FWT)</label>
-                            <p className="text-xs text-muted-foreground">0619F monthly + 1601FQ quarterly + 1604F annual</p>
-                          </div>
-                        </div>
                         <div className="flex items-start gap-3">
                           <Checkbox id="inv" checked={form.hasInventory} onCheckedChange={() => toggle("hasInventory")} />
                           <div>
