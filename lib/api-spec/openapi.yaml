@@ -3,13 +3,36 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: BIR Tax Client Management System API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: Authentication
+  - name: users
+    description: User management
+  - name: clients
+    description: Tax clients
+  - name: engagements
+    description: Tax engagements
+  - name: deadlines
+    description: Deadline management
+  - name: checklists
+    description: Checklist items
+  - name: documents
+    description: Document management
+  - name: comments
+    description: Comments and approvals
+  - name: notifications
+    description: Notifications
+  - name: audit
+    description: Audit trail
+  - name: dashboard
+    description: Dashboard summaries
+
 paths:
   /healthz:
     get:
@@ -24,6 +47,888 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # AUTH
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginBody"
+      responses:
+        "200":
+          description: Login success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # USERS
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List users
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      operationId: createUser
+      tags: [users]
+      summary: Create user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserBody"
+      responses:
+        "201":
+          description: Created user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users/{id}:
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: Get user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateUser
+      tags: [users]
+      summary: Update user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserBody"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+    delete:
+      operationId: deleteUser
+      tags: [users]
+      summary: Delete user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # CLIENTS
+  /clients:
+    get:
+      operationId: listClients
+      tags: [clients]
+      summary: List tax clients
+      responses:
+        "200":
+          description: List of clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Client"
+    post:
+      operationId: createClient
+      tags: [clients]
+      summary: Create client
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClientBody"
+      responses:
+        "201":
+          description: Created client
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+
+  /clients/{id}:
+    get:
+      operationId: getClient
+      tags: [clients]
+      summary: Get client
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Client
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateClient
+      tags: [clients]
+      summary: Update client
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateClientBody"
+      responses:
+        "200":
+          description: Updated client
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+    delete:
+      operationId: deleteClient
+      tags: [clients]
+      summary: Delete client
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ENGAGEMENTS
+  /engagements:
+    get:
+      operationId: listEngagements
+      tags: [engagements]
+      summary: List engagements
+      parameters:
+        - name: clientId
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: status
+          in: query
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: List of engagements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Engagement"
+    post:
+      operationId: createEngagement
+      tags: [engagements]
+      summary: Create engagement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEngagementBody"
+      responses:
+        "201":
+          description: Created engagement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+
+  /engagements/{id}:
+    get:
+      operationId: getEngagement
+      tags: [engagements]
+      summary: Get engagement
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Engagement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateEngagement
+      tags: [engagements]
+      summary: Update engagement
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEngagementBody"
+      responses:
+        "200":
+          description: Updated engagement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+    delete:
+      operationId: deleteEngagement
+      tags: [engagements]
+      summary: Delete engagement
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /engagements/{id}/approve:
+    post:
+      operationId: approveEngagement
+      tags: [engagements]
+      summary: Approve engagement (Manager only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveEngagementBody"
+      responses:
+        "200":
+          description: Updated engagement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+
+  # DEADLINES
+  /deadlines:
+    get:
+      operationId: listDeadlines
+      tags: [deadlines]
+      summary: List deadlines
+      parameters:
+        - name: engagementId
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: clientId
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of deadlines
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Deadline"
+    post:
+      operationId: createDeadline
+      tags: [deadlines]
+      summary: Create deadline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDeadlineBody"
+      responses:
+        "201":
+          description: Created deadline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deadline"
+
+  /deadlines/{id}:
+    get:
+      operationId: getDeadline
+      tags: [deadlines]
+      summary: Get deadline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deadline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deadline"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateDeadline
+      tags: [deadlines]
+      summary: Update deadline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDeadlineBody"
+      responses:
+        "200":
+          description: Updated deadline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deadline"
+    delete:
+      operationId: deleteDeadline
+      tags: [deadlines]
+      summary: Delete deadline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # CHECKLISTS
+  /checklist-items:
+    get:
+      operationId: listChecklistItems
+      tags: [checklists]
+      summary: List checklist items
+      parameters:
+        - name: engagementId
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of checklist items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChecklistItem"
+    post:
+      operationId: createChecklistItem
+      tags: [checklists]
+      summary: Create checklist item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateChecklistItemBody"
+      responses:
+        "201":
+          description: Created checklist item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChecklistItem"
+
+  /checklist-items/{id}:
+    patch:
+      operationId: updateChecklistItem
+      tags: [checklists]
+      summary: Update checklist item
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateChecklistItemBody"
+      responses:
+        "200":
+          description: Updated checklist item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChecklistItem"
+    delete:
+      operationId: deleteChecklistItem
+      tags: [checklists]
+      summary: Delete checklist item
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # DOCUMENTS
+  /documents:
+    get:
+      operationId: listDocuments
+      tags: [documents]
+      summary: List documents
+      parameters:
+        - name: engagementId
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: clientId
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Document"
+    post:
+      operationId: uploadDocument
+      tags: [documents]
+      summary: Upload document (metadata)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadDocumentBody"
+      responses:
+        "201":
+          description: Created document record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+
+  /documents/{id}:
+    get:
+      operationId: getDocument
+      tags: [documents]
+      summary: Get document
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateDocument
+      tags: [documents]
+      summary: Update document
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDocumentBody"
+      responses:
+        "200":
+          description: Updated document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+    delete:
+      operationId: deleteDocument
+      tags: [documents]
+      summary: Delete document
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # COMMENTS
+  /comments:
+    get:
+      operationId: listComments
+      tags: [comments]
+      summary: List comments
+      parameters:
+        - name: engagementId
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of comments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Comment"
+    post:
+      operationId: createComment
+      tags: [comments]
+      summary: Create comment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCommentBody"
+      responses:
+        "201":
+          description: Created comment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Comment"
+
+  /comments/{id}:
+    patch:
+      operationId: updateComment
+      tags: [comments]
+      summary: Update comment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCommentBody"
+      responses:
+        "200":
+          description: Updated comment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Comment"
+    delete:
+      operationId: deleteComment
+      tags: [comments]
+      summary: Delete comment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # NOTIFICATIONS
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List notifications for current user
+      responses:
+        "200":
+          description: List of notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Notification"
+
+  /notifications/{id}/read:
+    post:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark notification as read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+
+  /notifications/read-all:
+    post:
+      operationId: markAllNotificationsRead
+      tags: [notifications]
+      summary: Mark all notifications as read
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  # AUDIT TRAIL
+  /audit-logs:
+    get:
+      operationId: listAuditLogs
+      tags: [audit]
+      summary: List audit logs
+      parameters:
+        - name: engagementId
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: clientId
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: limit
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of audit logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLog"
+
+  # DASHBOARD
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get dashboard summary stats
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /dashboard/upcoming-deadlines:
+    get:
+      operationId: getUpcomingDeadlines
+      tags: [dashboard]
+      summary: Get upcoming deadlines (next 30 days)
+      responses:
+        "200":
+          description: Upcoming deadlines
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeadlineWithContext"
+
+  /dashboard/overdue:
+    get:
+      operationId: getOverdueItems
+      tags: [dashboard]
+      summary: Get overdue deadlines and engagements
+      responses:
+        "200":
+          description: Overdue items
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverdueSummary"
+
+  /dashboard/recent-activity:
+    get:
+      operationId: getRecentActivity
+      tags: [dashboard]
+      summary: Get recent audit activity feed
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLog"
+
+  /dashboard/engagement-status:
+    get:
+      operationId: getEngagementStatusBreakdown
+      tags: [dashboard]
+      summary: Get engagement count breakdown by status
+      responses:
+        "200":
+          description: Status breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StatusCount"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +939,676 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+        - message
+
+    LoginBody:
+      type: object
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+      required:
+        - email
+        - password
+
+    AuthResponse:
+      type: object
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        message:
+          type: string
+      required:
+        - user
+        - message
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [accountant, manager, viewer]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - email
+        - name
+        - role
+        - createdAt
+        - updatedAt
+
+    CreateUserBody:
+      type: object
+      properties:
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [accountant, manager, viewer]
+        password:
+          type: string
+      required:
+        - email
+        - name
+        - role
+        - password
+
+    UpdateUserBody:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        role:
+          type: ["string", "null"]
+          enum: [accountant, manager, viewer, "null"]
+        password:
+          type: ["string", "null"]
+
+    Client:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        tin:
+          type: string
+        businessType:
+          type: string
+        contactEmail:
+          type: ["string", "null"]
+        contactPhone:
+          type: ["string", "null"]
+        address:
+          type: ["string", "null"]
+        fiscalYearEnd:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [active, inactive]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - name
+        - tin
+        - businessType
+        - status
+        - createdAt
+        - updatedAt
+
+    CreateClientBody:
+      type: object
+      properties:
+        name:
+          type: string
+        tin:
+          type: string
+        businessType:
+          type: string
+        contactEmail:
+          type: ["string", "null"]
+        contactPhone:
+          type: ["string", "null"]
+        address:
+          type: ["string", "null"]
+        fiscalYearEnd:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [active, inactive]
+      required:
+        - name
+        - tin
+        - businessType
+
+    UpdateClientBody:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        tin:
+          type: ["string", "null"]
+        businessType:
+          type: ["string", "null"]
+        contactEmail:
+          type: ["string", "null"]
+        contactPhone:
+          type: ["string", "null"]
+        address:
+          type: ["string", "null"]
+        fiscalYearEnd:
+          type: ["string", "null"]
+        status:
+          type: ["string", "null"]
+          enum: [active, inactive, "null"]
+
+    Engagement:
+      type: object
+      properties:
+        id:
+          type: integer
+        clientId:
+          type: integer
+        clientName:
+          type: ["string", "null"]
+        title:
+          type: string
+        taxType:
+          type: string
+        period:
+          type: string
+        fiscalYear:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [pending, in_progress, for_review, approved, filed, completed]
+        assignedTo:
+          type: ["integer", "null"]
+        assignedToName:
+          type: ["string", "null"]
+        approvedBy:
+          type: ["integer", "null"]
+        approvedByName:
+          type: ["string", "null"]
+        approvedAt:
+          type: ["string", "null"]
+        approvalNotes:
+          type: ["string", "null"]
+        dueDate:
+          type: ["string", "null"]
+        notes:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - clientId
+        - title
+        - taxType
+        - period
+        - status
+        - createdAt
+        - updatedAt
+
+    CreateEngagementBody:
+      type: object
+      properties:
+        clientId:
+          type: integer
+        title:
+          type: string
+        taxType:
+          type: string
+        period:
+          type: string
+        fiscalYear:
+          type: ["string", "null"]
+        assignedTo:
+          type: ["integer", "null"]
+        dueDate:
+          type: ["string", "null"]
+        notes:
+          type: ["string", "null"]
+      required:
+        - clientId
+        - title
+        - taxType
+        - period
+
+    UpdateEngagementBody:
+      type: object
+      properties:
+        title:
+          type: ["string", "null"]
+        taxType:
+          type: ["string", "null"]
+        period:
+          type: ["string", "null"]
+        fiscalYear:
+          type: ["string", "null"]
+        status:
+          type: ["string", "null"]
+          enum: [pending, in_progress, for_review, approved, filed, completed, "null"]
+        assignedTo:
+          type: ["integer", "null"]
+        dueDate:
+          type: ["string", "null"]
+        notes:
+          type: ["string", "null"]
+
+    ApproveEngagementBody:
+      type: object
+      properties:
+        approved:
+          type: boolean
+        notes:
+          type: ["string", "null"]
+      required:
+        - approved
+
+    Deadline:
+      type: object
+      properties:
+        id:
+          type: integer
+        engagementId:
+          type: ["integer", "null"]
+        clientId:
+          type: ["integer", "null"]
+        clientName:
+          type: ["string", "null"]
+        title:
+          type: string
+        description:
+          type: ["string", "null"]
+        dueDate:
+          type: string
+        status:
+          type: string
+          enum: [pending, completed, overdue]
+        priority:
+          type: string
+          enum: [low, medium, high]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - title
+        - dueDate
+        - status
+        - priority
+        - createdAt
+        - updatedAt
+
+    CreateDeadlineBody:
+      type: object
+      properties:
+        engagementId:
+          type: ["integer", "null"]
+        clientId:
+          type: ["integer", "null"]
+        title:
+          type: string
+        description:
+          type: ["string", "null"]
+        dueDate:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+      required:
+        - title
+        - dueDate
+
+    UpdateDeadlineBody:
+      type: object
+      properties:
+        title:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+        dueDate:
+          type: ["string", "null"]
+        status:
+          type: ["string", "null"]
+          enum: [pending, completed, overdue, "null"]
+        priority:
+          type: ["string", "null"]
+          enum: [low, medium, high, "null"]
+
+    ChecklistItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        engagementId:
+          type: integer
+        label:
+          type: string
+        status:
+          type: string
+          enum: [pending, filed, received, paid, not_applicable]
+        notes:
+          type: ["string", "null"]
+        completedAt:
+          type: ["string", "null"]
+        completedBy:
+          type: ["integer", "null"]
+        completedByName:
+          type: ["string", "null"]
+        sortOrder:
+          type: integer
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - engagementId
+        - label
+        - status
+        - sortOrder
+        - createdAt
+        - updatedAt
+
+    CreateChecklistItemBody:
+      type: object
+      properties:
+        engagementId:
+          type: integer
+        label:
+          type: string
+        notes:
+          type: ["string", "null"]
+        sortOrder:
+          type: integer
+      required:
+        - engagementId
+        - label
+
+    UpdateChecklistItemBody:
+      type: object
+      properties:
+        label:
+          type: ["string", "null"]
+        status:
+          type: ["string", "null"]
+          enum: [pending, filed, received, paid, not_applicable, "null"]
+        notes:
+          type: ["string", "null"]
+        sortOrder:
+          type: ["integer", "null"]
+
+    Document:
+      type: object
+      properties:
+        id:
+          type: integer
+        engagementId:
+          type: ["integer", "null"]
+        clientId:
+          type: ["integer", "null"]
+        clientName:
+          type: ["string", "null"]
+        filename:
+          type: string
+        originalName:
+          type: string
+        mimeType:
+          type: string
+        fileSize:
+          type: integer
+        fileUrl:
+          type: string
+        version:
+          type: integer
+        description:
+          type: ["string", "null"]
+        uploadedBy:
+          type: integer
+        uploadedByName:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - filename
+        - originalName
+        - mimeType
+        - fileSize
+        - fileUrl
+        - version
+        - uploadedBy
+        - createdAt
+        - updatedAt
+
+    UploadDocumentBody:
+      type: object
+      properties:
+        engagementId:
+          type: ["integer", "null"]
+        clientId:
+          type: ["integer", "null"]
+        filename:
+          type: string
+        originalName:
+          type: string
+        mimeType:
+          type: string
+        fileSize:
+          type: integer
+        fileUrl:
+          type: string
+        description:
+          type: ["string", "null"]
+      required:
+        - filename
+        - originalName
+        - mimeType
+        - fileSize
+        - fileUrl
+
+    UpdateDocumentBody:
+      type: object
+      properties:
+        description:
+          type: ["string", "null"]
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: integer
+        engagementId:
+          type: integer
+        content:
+          type: string
+        isApproval:
+          type: boolean
+        authorId:
+          type: integer
+        authorName:
+          type: ["string", "null"]
+        authorRole:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - engagementId
+        - content
+        - isApproval
+        - authorId
+        - createdAt
+        - updatedAt
+
+    CreateCommentBody:
+      type: object
+      properties:
+        engagementId:
+          type: integer
+        content:
+          type: string
+        isApproval:
+          type: boolean
+      required:
+        - engagementId
+        - content
+
+    UpdateCommentBody:
+      type: object
+      properties:
+        content:
+          type: ["string", "null"]
+
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        title:
+          type: string
+        message:
+          type: string
+        type:
+          type: string
+          enum: [deadline_upcoming, deadline_overdue, engagement_approved, engagement_status_change, document_uploaded, comment_added]
+        relatedId:
+          type: ["integer", "null"]
+        relatedType:
+          type: ["string", "null"]
+        isRead:
+          type: boolean
+        createdAt:
+          type: string
+      required:
+        - id
+        - userId
+        - title
+        - message
+        - type
+        - isRead
+        - createdAt
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        userId:
+          type: ["integer", "null"]
+        userName:
+          type: ["string", "null"]
+        action:
+          type: string
+        entityType:
+          type: string
+        entityId:
+          type: ["integer", "null"]
+        description:
+          type: string
+        metadata:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+      required:
+        - id
+        - action
+        - entityType
+        - description
+        - createdAt
+
+    DashboardSummary:
+      type: object
+      properties:
+        totalClients:
+          type: integer
+        activeEngagements:
+          type: integer
+        upcomingDeadlines:
+          type: integer
+        overdueItems:
+          type: integer
+        pendingApprovals:
+          type: integer
+        completedThisMonth:
+          type: integer
+      required:
+        - totalClients
+        - activeEngagements
+        - upcomingDeadlines
+        - overdueItems
+        - pendingApprovals
+        - completedThisMonth
+
+    DeadlineWithContext:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        dueDate:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        clientName:
+          type: ["string", "null"]
+        engagementTitle:
+          type: ["string", "null"]
+        daysUntilDue:
+          type: integer
+      required:
+        - id
+        - title
+        - dueDate
+        - status
+        - priority
+        - daysUntilDue
+
+    OverdueSummary:
+      type: object
+      properties:
+        overdueDeadlines:
+          type: array
+          items:
+            $ref: "#/components/schemas/Deadline"
+        overdueEngagements:
+          type: array
+          items:
+            $ref: "#/components/schemas/Engagement"
+      required:
+        - overdueDeadlines
+        - overdueEngagements
+
+    StatusCount:
+      type: object
+      properties:
+        status:
+          type: string
+        count:
+          type: integer
+      required:
+        - status
+        - count

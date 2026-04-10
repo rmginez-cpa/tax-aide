@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "BIR Tax Client Management System"
+version = "1.0.0"
+id = "artifacts/taxcms"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18516
+
+[services.development]
+run = "pnpm --filter @workspace/taxcms run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/taxcms", "run", "build" ]
+publicDir = "artifacts/taxcms/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18516"
+BASE_PATH = "/"
