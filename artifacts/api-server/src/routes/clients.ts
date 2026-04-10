@@ -39,6 +39,7 @@ function serializeClient(c: typeof clientsTable.$inferSelect) {
     withholdsCompensation: c.withholdsCompensation,
     withholdsEwt: c.withholdsEwt,
     subjectToDst: c.subjectToDst,
+    withholdsFinal: c.withholdsFinal,
     hasInventory: c.hasInventory,
     isLessor: c.isLessor,
     isEsalesRequired: c.isEsalesRequired,
@@ -88,6 +89,15 @@ function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: nu
   const deadlines: GeneratedDeadline[] = [];
   const fyStartMonth = client.fiscalYearStart ? monthIndex(client.fiscalYearStart) : 1;
   const calYear = fyStartMonth === 1; // calendar year taxpayer
+
+  // ── 0605: Annual Registration Fee — ALL taxpayers, due January 31 ────────
+  deadlines.push({
+    title: `BIR Form 0605 (Annual Registration Fee) — ${year}`,
+    description: `Annual Registration Fee of PHP 500. Due January 31 of each year. File via eFPS or eBIRForms.`,
+    dueDate: isoDate(year, 1, 31),
+    priority: "medium",
+    category: "Other",
+  });
 
   // ── MONTHLY FORMS ──────────────────────────────────────────────────────
 
@@ -173,15 +183,55 @@ function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: nu
       });
     }
 
+    // 0619E: Monthly EWT for non-quarter-end months — due 10th of following month
+    if (client.withholdsEwt) {
+      const mqMonths = nonQuarterMonths(endMonth, qYear);
+      for (const { month, year: mYear, dueMonth: dueM, dueYear: dueY } of mqMonths) {
+        const period = `${MONTHS[month - 1]} ${mYear}`;
+        deadlines.push({
+          title: `BIR Form 0619E — ${period}`,
+          description: `Monthly Remittance Return of Creditable Income Taxes Withheld (Expanded) for ${period}. Due 10th of the following month. (Non-quarter month; quarter-end is covered by 1601EQ.)`,
+          dueDate: isoDate(dueY, dueM, 10),
+          priority: "high",
+          category: "Withholding Tax",
+        });
+      }
+    }
+
     // 1601EQ: Quarterly EWT — due last day of month following quarter end
     if (client.withholdsEwt) {
       const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
       const dueYear = endMonth === 12 ? qYear + 1 : qYear;
-      // last day of that month
       const lastDay = new Date(Date.UTC(dueYear, dueMonth, 0)).getUTCDate();
       deadlines.push({
         title: `BIR Form 1601EQ — ${qLabel}`,
-        description: `Quarterly Remittance Return of Creditable Income Taxes Withheld (EWT) for ${qLabel}.`,
+        description: `Quarterly Remittance Return of Creditable Income Taxes Withheld (EWT) for ${qLabel}. Covers the quarter-end month; prior months covered by 0619E.`,
+        dueDate: isoDate(dueYear, dueMonth, lastDay),
+        priority: "high",
+        category: "Withholding Tax",
+      });
+    }
+
+    // 0619F: Monthly Final WT for non-quarter-end months — due 10th of following month
+    // 1601FQ: Quarterly Final WT — due last day of month following quarter end
+    if (client.withholdsFinal) {
+      const mqMonths = nonQuarterMonths(endMonth, qYear);
+      for (const { month, year: mYear, dueMonth: dueM, dueYear: dueY } of mqMonths) {
+        const period = `${MONTHS[month - 1]} ${mYear}`;
+        deadlines.push({
+          title: `BIR Form 0619F — ${period}`,
+          description: `Monthly Remittance Return of Final Income Taxes Withheld for ${period}. Due 10th of the following month. (Non-quarter month; quarter-end is covered by 1601FQ.)`,
+          dueDate: isoDate(dueY, dueM, 10),
+          priority: "high",
+          category: "Withholding Tax",
+        });
+      }
+      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
+      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
+      const lastDay = new Date(Date.UTC(dueYear, dueMonth, 0)).getUTCDate();
+      deadlines.push({
+        title: `BIR Form 1601FQ — ${qLabel}`,
+        description: `Quarterly Remittance Return of Final Income Taxes Withheld for ${qLabel}. Covers the quarter-end month; prior months covered by 0619F.`,
         dueDate: isoDate(dueYear, dueMonth, lastDay),
         priority: "high",
         category: "Withholding Tax",
@@ -265,19 +315,19 @@ function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: nu
     });
   }
 
-  // 1604CF: Annual Information Return on Compensation — due March 1
+  // 1604C: Annual Information Return on Compensation — due March 1
   if (client.withholdsCompensation) {
     deadlines.push({
-      title: `BIR Form 1604CF — Annual ${year}`,
-      description: `Annual Information Return of Income Tax Withheld on Compensation for ${year}. Due March 1 of the following year.`,
+      title: `BIR Form 1604C — Annual ${year}`,
+      description: `Annual Information Return of Income Taxes Withheld on Compensation for ${year}. Due March 1 of the following year.`,
       dueDate: isoDate(year + 1, 3, 1),
       priority: "medium",
       category: "Withholding Tax",
     });
     // Alphalist of Employees
     deadlines.push({
-      title: `Alphalist of Employees (1604CF Attachment) — ${year}`,
-      description: `Alphabetical List of Employees from whom income taxes have been withheld. Due with Form 1604CF.`,
+      title: `Alphalist of Employees (1604C Attachment) — ${year}`,
+      description: `Alphabetical List of Employees from whom income taxes have been withheld. Due with Form 1604C by March 1.`,
       dueDate: isoDate(year + 1, 3, 1),
       priority: "medium",
       category: "Withholding Tax",
@@ -303,6 +353,17 @@ function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: nu
     });
   }
 
+  // 1604F: Annual Information Return on Final Withholding Tax — due March 1
+  if (client.withholdsFinal) {
+    deadlines.push({
+      title: `BIR Form 1604F — Annual ${year}`,
+      description: `Annual Information Return of Income Tax Withheld (Final) for ${year}. Due March 1 of the following year. Covers all final withholding taxes remitted during the year.`,
+      dueDate: isoDate(year + 1, 3, 1),
+      priority: "medium",
+      category: "Withholding Tax",
+    });
+  }
+
   // ── 2316 / Annex C / Annex F — Substituted Filing (Compensation) ─────────
   if (client.withholdsCompensation) {
     // BIR Form 2316: Certificate of Compensation Payment/Tax Withheld
@@ -317,15 +378,15 @@ function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: nu
     // Annex C: List of employees qualified for substituted filing
     deadlines.push({
       title: `Annex C (Substituted Filing Employees) — ${year}`,
-      description: `List of employees who qualify for substituted filing under RR 2-98, attached to Form 1604CF. Due March 1 of the following year.`,
+      description: `List of employees who qualify for substituted filing under RR 2-98, attached to Form 1604C. Due March 1 of the following year.`,
       dueDate: isoDate(year + 1, 3, 1),
       priority: "low",
       category: "Withholding Tax",
     });
-    // Annex F: Alphabetical list of employees/payees (1604CF attachment)
+    // Annex F: Alphabetical list of employees/payees (1604C attachment)
     deadlines.push({
       title: `Annex F (Annual Alphalist of Employees) — ${year}`,
-      description: `Alphabetical list of employees from whom compensation was paid and taxes withheld, attached to Form 1604CF. Due March 1 of the following year.`,
+      description: `Alphabetical list of employees from whom compensation was paid and taxes withheld, attached to Form 1604C. Due March 1 of the following year.`,
       dueDate: isoDate(year + 1, 3, 1),
       priority: "low",
       category: "Withholding Tax",
@@ -376,14 +437,16 @@ function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: nu
 
   // ── eSales Report — Monthly (if required) ────────────────────────────────
   if (client.isEsalesRequired) {
+    const eDay = esalesDay(client.tin);
+    const eDayLabel = eDay === 8 ? "8th" : "10th";
     for (let m = 1; m <= 12; m++) {
       const dueMonth = m === 12 ? 1 : m + 1;
       const dueYear = m === 12 ? year + 1 : year;
       const period = `${MONTHS[m - 1]} ${year}`;
       deadlines.push({
         title: `eSales Report — ${period}`,
-        description: `Monthly electronic sales report for ${period}. Due 20th of the following month (same deadline as VAT return).`,
-        dueDate: isoDate(dueYear, dueMonth, 20),
+        description: `Monthly electronic sales report for ${period}. Due ${eDayLabel} of the following month (based on last digit of TIN: 1–4 → 8th; 5–0 → 10th).`,
+        dueDate: isoDate(dueYear, dueMonth, eDay),
         priority: "medium",
         category: "eSales",
       });
@@ -435,13 +498,18 @@ const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
   "2551Q": "quarterly",
   "1601C": "monthly",
   "1601EQ": "quarterly",
-  "1604CF": "annual",
+  "1601FQ": "quarterly",
+  "1604C": "annual",
   "1604E": "annual",
+  "1604F": "annual",
   "1702": "annual",
   "1702Q": "quarterly",
   "1701": "annual",
   "1701Q": "quarterly",
   "2000": "monthly",
+  "0605": "annual",
+  "0619E": "monthly",
+  "0619F": "monthly",
   "AFS": "annual",
   "Alphalist": "annual",
   "2316": "annual",
@@ -456,7 +524,7 @@ const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
 };
 
 function extractFormNumber(title: string): string {
-  const match = title.match(/BIR Form (\w+)/);
+  const match = title.match(/BIR Form ([\w]+)/);
   if (match) return match[1];
   if (title.includes("Audited Financial Statements") || title.includes("AFS")) return "AFS";
   if (title.includes("Alphalist of Payees") && title.includes("Quarterly")) return "QAP";
@@ -470,6 +538,28 @@ function extractFormNumber(title: string): string {
   if (title.includes("Annual Inventory")) return "Inventory";
   if (title.includes("Lessee Information")) return "LesseeInfo";
   return "OTHER";
+}
+
+// Helper: get the two non-quarter-end months within each fiscal quarter
+function nonQuarterMonths(endMonth: number, qYear: number): Array<{ month: number; year: number; dueMonth: number; dueYear: number }> {
+  const result = [];
+  for (const offset of [2, 1]) {
+    let m = endMonth - offset;
+    let mYear = qYear;
+    if (m <= 0) { m += 12; mYear -= 1; }
+    const dueM = m === 12 ? 1 : m + 1;
+    const dueY = m === 12 ? mYear + 1 : mYear;
+    result.push({ month: m, year: mYear, dueMonth: dueM, dueYear: dueY });
+  }
+  return result;
+}
+
+// eSales deadline: 8th if last TIN digit is 1-4, 10th if 5-9 or 0
+function esalesDay(tin: string | null | undefined): number {
+  if (!tin) return 10;
+  const digits = tin.replace(/\D/g, "");
+  const last = parseInt(digits[digits.length - 1] ?? "0", 10);
+  return last >= 1 && last <= 4 ? 8 : 10;
 }
 
 function extractPeriod(title: string): string {
@@ -605,6 +695,10 @@ router.patch("/clients/:id", requireAuth, async (req, res): Promise<void> => {
   if (parsed.data.withholdsCompensation != null) updates.withholdsCompensation = parsed.data.withholdsCompensation;
   if (parsed.data.withholdsEwt != null) updates.withholdsEwt = parsed.data.withholdsEwt;
   if (parsed.data.subjectToDst != null) updates.subjectToDst = parsed.data.subjectToDst;
+  if (parsed.data.withholdsFinal != null) updates.withholdsFinal = parsed.data.withholdsFinal;
+  if (parsed.data.hasInventory != null) updates.hasInventory = parsed.data.hasInventory;
+  if (parsed.data.isLessor != null) updates.isLessor = parsed.data.isLessor;
+  if (parsed.data.isEsalesRequired != null) updates.isEsalesRequired = parsed.data.isEsalesRequired;
 
   const [client] = await db.update(clientsTable).set(updates).where(eq(clientsTable.id, params.data.id)).returning();
   if (!client) {

@@ -165,6 +165,10 @@ export const ListClientsResponseItem = zod.object({
   subjectToDst: zod
     .boolean()
     .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
+  withholdsFinal: zod.boolean(),
+  hasInventory: zod.boolean(),
+  isLessor: zod.boolean(),
+  isEsalesRequired: zod.boolean(),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -193,6 +197,10 @@ export const CreateClientBody = zod.object({
   withholdsCompensation: zod.boolean().optional(),
   withholdsEwt: zod.boolean().optional(),
   subjectToDst: zod.boolean().optional(),
+  withholdsFinal: zod.boolean().optional(),
+  hasInventory: zod.boolean().optional(),
+  isLessor: zod.boolean().optional(),
+  isEsalesRequired: zod.boolean().optional(),
 });
 
 /**
@@ -242,6 +250,10 @@ export const GetClientResponse = zod.object({
   subjectToDst: zod
     .boolean()
     .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
+  withholdsFinal: zod.boolean(),
+  hasInventory: zod.boolean(),
+  isLessor: zod.boolean(),
+  isEsalesRequired: zod.boolean(),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -273,6 +285,10 @@ export const UpdateClientBody = zod.object({
   withholdsCompensation: zod.boolean().nullish(),
   withholdsEwt: zod.boolean().nullish(),
   subjectToDst: zod.boolean().nullish(),
+  withholdsFinal: zod.boolean().nullish(),
+  hasInventory: zod.boolean().nullish(),
+  isLessor: zod.boolean().nullish(),
+  isEsalesRequired: zod.boolean().nullish(),
 });
 
 export const UpdateClientResponse = zod.object({
@@ -315,6 +331,10 @@ export const UpdateClientResponse = zod.object({
   subjectToDst: zod
     .boolean()
     .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
+  withholdsFinal: zod.boolean(),
+  hasInventory: zod.boolean(),
+  isLessor: zod.boolean(),
+  isEsalesRequired: zod.boolean(),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });

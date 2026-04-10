@@ -29,6 +29,7 @@ export const clientsTable = pgTable("clients", {
   fiscalYearStart: text("fiscal_year_start"),    // Starting month of fiscal year (e.g. "January")
 
   // Additional compliance requirements
+  withholdsFinal: boolean("withholds_final").notNull().default(false),           // 0619F monthly + 1604F annual
   hasInventory: boolean("has_inventory").notNull().default(false),               // Annual Inventory List (Jan 30)
   isLessor: boolean("is_lessor").notNull().default(false),                       // Lessee Info Statement (Jan 31)
   isEsalesRequired: boolean("is_esales_required").notNull().default(false),      // eSales Report (monthly)

@@ -28,7 +28,7 @@ const initialForm = {
   incomeTaxType: "" as "" | "individual" | "corporate",
   vatRegistered: false, percentageTaxRegistered: false,
   withholdsCompensation: false, withholdsEwt: false, subjectToDst: false,
-  hasInventory: false, isLessor: false, isEsalesRequired: false,
+  withholdsFinal: false, hasInventory: false, isLessor: false, isEsalesRequired: false,
 };
 
 function TaxTypeBadges({ client }: { client: any }) {
@@ -40,6 +40,7 @@ function TaxTypeBadges({ client }: { client: any }) {
   if (client.subjectToDst) badges.push({ label: "DST", color: "bg-slate-100 text-slate-700" });
   if (client.incomeTaxType === "corporate") badges.push({ label: "Corp ITR", color: "bg-emerald-100 text-emerald-700" });
   if (client.incomeTaxType === "individual") badges.push({ label: "Indiv ITR", color: "bg-green-100 text-green-700" });
+  if (client.withholdsFinal) badges.push({ label: "WHT-Final", color: "bg-violet-100 text-violet-700" });
   if (client.hasInventory) badges.push({ label: "Inventory", color: "bg-teal-100 text-teal-700" });
   if (client.isLessor) badges.push({ label: "Lessor", color: "bg-pink-100 text-pink-700" });
   if (client.isEsalesRequired) badges.push({ label: "eSales", color: "bg-indigo-100 text-indigo-700" });
@@ -318,6 +319,13 @@ export default function Clients() {
                       <Label className="text-xs text-muted-foreground uppercase tracking-wider">Additional Compliance Requirements</Label>
                       <div className="space-y-2">
                         <div className="flex items-start gap-3">
+                          <Checkbox id="whtFinal" checked={form.withholdsFinal} onCheckedChange={() => toggle("withholdsFinal")} />
+                          <div>
+                            <label htmlFor="whtFinal" className="text-sm font-medium cursor-pointer">Withholds Final Tax (FWT)</label>
+                            <p className="text-xs text-muted-foreground">0619F monthly + 1601FQ quarterly + 1604F annual</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
                           <Checkbox id="inv" checked={form.hasInventory} onCheckedChange={() => toggle("hasInventory")} />
                           <div>
                             <label htmlFor="inv" className="text-sm font-medium cursor-pointer">Has Inventory</label>
@@ -335,7 +343,7 @@ export default function Clients() {
                           <Checkbox id="esales" checked={form.isEsalesRequired} onCheckedChange={() => toggle("isEsalesRequired")} />
                           <div>
                             <label htmlFor="esales" className="text-sm font-medium cursor-pointer">eSales Reporting Required</label>
-                            <p className="text-xs text-muted-foreground">Monthly eSales report due 20th of following month</p>
+                            <p className="text-xs text-muted-foreground">Monthly eSales report due 8th or 10th (based on TIN last digit)</p>
                           </div>
                         </div>
                       </div>
