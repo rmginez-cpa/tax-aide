@@ -19,5 +19,22 @@ export interface CreateClientBody {
   address?: string | null;
   /** @nullable */
   fiscalYearEnd?: string | null;
+  /** @nullable */
+  fiscalYearStart?: string | null;
   status?: CreateClientBodyStatus;
+  /** @nullable */
+  tradeName?: string | null;
+  /** @nullable */
+  rdoCode?: string | null;
+  /** @nullable */
+  registrationDate?: string | null;
+  /** @nullable */
+  lineOfBusiness?: string | null;
+  /** @nullable */
+  incomeTaxType?: string | null;
+  vatRegistered?: boolean;
+  percentageTaxRegistered?: boolean;
+  withholdsCompensation?: boolean;
+  withholdsEwt?: boolean;
+  subjectToDst?: boolean;
 }

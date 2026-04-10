@@ -103,7 +103,32 @@ export interface Client {
   address?: string | null;
   /** @nullable */
   fiscalYearEnd?: string | null;
+  /** @nullable */
+  fiscalYearStart?: string | null;
   status: ClientStatus;
+  /** @nullable */
+  tradeName?: string | null;
+  /** @nullable */
+  rdoCode?: string | null;
+  /** @nullable */
+  registrationDate?: string | null;
+  /** @nullable */
+  lineOfBusiness?: string | null;
+  /**
+   * 'individual' (Form 1701) or 'corporate' (Form 1702)
+   * @nullable
+   */
+  incomeTaxType?: string | null;
+  /** Registered for VAT — requires 2550M (monthly) and 2550Q (quarterly) */
+  vatRegistered: boolean;
+  /** Non-VAT — requires 2551Q (quarterly) */
+  percentageTaxRegistered: boolean;
+  /** Withholds taxes on compensation — requires 1601C (monthly) and 1604CF (annual) */
+  withholdsCompensation: boolean;
+  /** Withholds creditable income tax (EWT) — requires 1601EQ (quarterly) and 1604E (annual) */
+  withholdsEwt: boolean;
+  /** Subject to Documentary Stamp Tax — requires 2000 (monthly) */
+  subjectToDst: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -128,7 +153,24 @@ export interface CreateClientBody {
   address?: string | null;
   /** @nullable */
   fiscalYearEnd?: string | null;
+  /** @nullable */
+  fiscalYearStart?: string | null;
   status?: CreateClientBodyStatus;
+  /** @nullable */
+  tradeName?: string | null;
+  /** @nullable */
+  rdoCode?: string | null;
+  /** @nullable */
+  registrationDate?: string | null;
+  /** @nullable */
+  lineOfBusiness?: string | null;
+  /** @nullable */
+  incomeTaxType?: string | null;
+  vatRegistered?: boolean;
+  percentageTaxRegistered?: boolean;
+  withholdsCompensation?: boolean;
+  withholdsEwt?: boolean;
+  subjectToDst?: boolean;
 }
 
 /**
@@ -160,7 +202,91 @@ export interface UpdateClientBody {
   /** @nullable */
   fiscalYearEnd?: string | null;
   /** @nullable */
+  fiscalYearStart?: string | null;
+  /** @nullable */
   status?: UpdateClientBodyStatus;
+  /** @nullable */
+  tradeName?: string | null;
+  /** @nullable */
+  rdoCode?: string | null;
+  /** @nullable */
+  registrationDate?: string | null;
+  /** @nullable */
+  lineOfBusiness?: string | null;
+  /** @nullable */
+  incomeTaxType?: string | null;
+  /** @nullable */
+  vatRegistered?: boolean | null;
+  /** @nullable */
+  percentageTaxRegistered?: boolean | null;
+  /** @nullable */
+  withholdsCompensation?: boolean | null;
+  /** @nullable */
+  withholdsEwt?: boolean | null;
+  /** @nullable */
+  subjectToDst?: boolean | null;
+}
+
+export interface GenerateDeadlinesBody {
+  /** The tax year to generate deadlines for (e.g. 2025) */
+  year: number;
+  /** If true, delete existing auto-generated deadlines for this year before generating new ones */
+  overwrite?: boolean;
+}
+
+export interface GenerateDeadlinesResult {
+  created: number;
+  message: string;
+}
+
+export type ComplianceItemFrequency =
+  (typeof ComplianceItemFrequency)[keyof typeof ComplianceItemFrequency];
+
+export const ComplianceItemFrequency = {
+  monthly: "monthly",
+  quarterly: "quarterly",
+  annual: "annual",
+} as const;
+
+export type ComplianceItemStatus =
+  (typeof ComplianceItemStatus)[keyof typeof ComplianceItemStatus];
+
+export const ComplianceItemStatus = {
+  pending: "pending",
+  filed: "filed",
+  overdue: "overdue",
+} as const;
+
+export interface ComplianceItem {
+  /** BIR form number (e.g. 2550M, 1702) */
+  formNumber: string;
+  description: string;
+  /** Human-readable period (e.g. 'January 2025', 'Q1 2025') */
+  period: string;
+  /** ISO date string of the filing deadline */
+  dueDate: string;
+  frequency: ComplianceItemFrequency;
+  status: ComplianceItemStatus;
+  /**
+   * ID of the linked deadline record, if it exists
+   * @nullable
+   */
+  deadlineId?: number | null;
+}
+
+export type ClientComplianceSummary = {
+  total: number;
+  filed: number;
+  pending: number;
+  overdue: number;
+};
+
+export interface ClientCompliance {
+  clientId: number;
+  clientName: string;
+  year: number;
+  items: ComplianceItem[];
+  summary: ClientComplianceSummary;
 }
 
 export type EngagementStatus =
@@ -565,6 +691,13 @@ export interface StatusCount {
   status: string;
   count: number;
 }
+
+export type GetClientComplianceParams = {
+  /**
+   * @nullable
+   */
+  year?: number | null;
+};
 
 export type ListEngagementsParams = {
   /**

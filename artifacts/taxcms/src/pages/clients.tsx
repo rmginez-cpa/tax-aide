@@ -11,8 +11,43 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/lib/auth";
-import { Plus, Search, Building2, Phone, Mail, Trash2, ExternalLink } from "lucide-react";
+import { Plus, Search, Building2, Phone, Mail, Trash2, ExternalLink, FileCheck, AlertCircle } from "lucide-react";
+
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+const BUSINESS_TYPES = ["Corporation","Sole Proprietorship","Partnership","Cooperative","Non-Profit Organization","One Person Corporation (OPC)","Barangay Micro Business Enterprise (BMBE)"];
+
+const initialForm = {
+  name: "", tin: "", businessType: "", contactEmail: "", contactPhone: "",
+  address: "", fiscalYearStart: "", fiscalYearEnd: "", status: "active" as const,
+  tradeName: "", rdoCode: "", registrationDate: "", lineOfBusiness: "",
+  incomeTaxType: "" as "" | "individual" | "corporate",
+  vatRegistered: false, percentageTaxRegistered: false,
+  withholdsCompensation: false, withholdsEwt: false, subjectToDst: false,
+};
+
+function TaxTypeBadges({ client }: { client: any }) {
+  const badges: { label: string; color: string }[] = [];
+  if (client.vatRegistered) badges.push({ label: "VAT", color: "bg-blue-100 text-blue-700" });
+  if (client.percentageTaxRegistered) badges.push({ label: "Percentage Tax", color: "bg-violet-100 text-violet-700" });
+  if (client.withholdsCompensation) badges.push({ label: "WHT-Comp", color: "bg-amber-100 text-amber-700" });
+  if (client.withholdsEwt) badges.push({ label: "EWT", color: "bg-orange-100 text-orange-700" });
+  if (client.subjectToDst) badges.push({ label: "DST", color: "bg-slate-100 text-slate-700" });
+  if (client.incomeTaxType === "corporate") badges.push({ label: "Corp ITR", color: "bg-emerald-100 text-emerald-700" });
+  if (client.incomeTaxType === "individual") badges.push({ label: "Indiv ITR", color: "bg-green-100 text-green-700" });
+  return (
+    <div className="flex flex-wrap gap-1 mt-2">
+      {badges.map(b => (
+        <span key={b.label} className={`text-xs px-1.5 py-0.5 rounded font-medium ${b.color}`}>{b.label}</span>
+      ))}
+      {badges.length === 0 && <span className="text-xs text-muted-foreground italic">No BIR 2303 data</span>}
+    </div>
+  );
+}
 
 export default function Clients() {
   const { user } = useAuth();
@@ -23,9 +58,11 @@ export default function Clients() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({
-    name: "", tin: "", businessType: "", contactEmail: "", contactPhone: "", address: "", fiscalYearEnd: "", status: "active" as const,
-  });
+  const [form, setForm] = useState(initialForm);
+  const [tab, setTab] = useState("basic");
+
+  const f = (key: string, val: any) => setForm(prev => ({ ...prev, [key]: val }));
+  const toggle = (key: string) => setForm(prev => ({ ...prev, [key]: !(prev as any)[key] }));
 
   const filtered = clients?.filter(c =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -35,17 +72,38 @@ export default function Clients() {
 
   const handleCreate = () => {
     if (!form.name || !form.tin || !form.businessType) {
-      toast({ title: "Missing required fields", variant: "destructive" });
+      toast({ title: "Company name, TIN, and business type are required", variant: "destructive" });
       return;
     }
-    createClient.mutate({ data: { ...form, contactEmail: form.contactEmail || null, contactPhone: form.contactPhone || null, address: form.address || null, fiscalYearEnd: form.fiscalYearEnd || null } }, {
+    createClient.mutate({
+      data: {
+        name: form.name, tin: form.tin, businessType: form.businessType,
+        contactEmail: form.contactEmail || null,
+        contactPhone: form.contactPhone || null,
+        address: form.address || null,
+        fiscalYearStart: form.fiscalYearStart || null,
+        fiscalYearEnd: form.fiscalYearEnd || null,
+        status: form.status,
+        tradeName: form.tradeName || null,
+        rdoCode: form.rdoCode || null,
+        registrationDate: form.registrationDate || null,
+        lineOfBusiness: form.lineOfBusiness || null,
+        incomeTaxType: form.incomeTaxType || null,
+        vatRegistered: form.vatRegistered,
+        percentageTaxRegistered: form.percentageTaxRegistered,
+        withholdsCompensation: form.withholdsCompensation,
+        withholdsEwt: form.withholdsEwt,
+        subjectToDst: form.subjectToDst,
+      }
+    }, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListClientsQueryKey() });
         setOpen(false);
-        setForm({ name: "", tin: "", businessType: "", contactEmail: "", contactPhone: "", address: "", fiscalYearEnd: "", status: "active" });
+        setForm(initialForm);
+        setTab("basic");
         toast({ title: "Client created successfully" });
       },
-      onError: () => toast({ title: "Failed to create client", variant: "destructive" }),
+      onError: (e: any) => toast({ title: e?.message || "Failed to create client", variant: "destructive" }),
     });
   };
 
@@ -65,83 +123,202 @@ export default function Clients() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Clients</h2>
-          <p className="text-muted-foreground">Manage your tax clients and their engagements.</p>
+          <p className="text-muted-foreground">Manage your tax clients and their BIR 2303 registration details.</p>
         </div>
         {user?.role !== "viewer" && (
-          <Dialog open={open} onOpenChange={setOpen}>
+          <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setForm(initialForm); setTab("basic"); } }}>
             <DialogTrigger asChild>
               <Button><Plus className="h-4 w-4 mr-2" />Add Client</Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-lg">
-              <DialogHeader><DialogTitle>Add New Client</DialogTitle></DialogHeader>
-              <div className="grid gap-4 py-2">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label>Company Name *</Label>
-                    <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Reyes Enterprises, Inc." />
+            <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Add New Client</DialogTitle>
+                <p className="text-sm text-muted-foreground">Enter the client's BIR 2303 Certificate of Registration details to enable automatic deadline generation.</p>
+              </DialogHeader>
+
+              <Tabs value={tab} onValueChange={setTab} className="mt-2">
+                <TabsList className="w-full">
+                  <TabsTrigger value="basic" className="flex-1">Basic Information</TabsTrigger>
+                  <TabsTrigger value="bir2303" className="flex-1">BIR 2303 Registration</TabsTrigger>
+                </TabsList>
+
+                {/* ── TAB 1: BASIC INFO ── */}
+                <TabsContent value="basic" className="space-y-4 mt-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5 col-span-2">
+                      <Label>Registered Business Name *</Label>
+                      <Input value={form.name} onChange={e => f("name", e.target.value)} placeholder="Reyes Enterprises, Inc." />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Trade / Business Style Name</Label>
+                      <Input value={form.tradeName} onChange={e => f("tradeName", e.target.value)} placeholder="Reyes Ent." />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>TIN *</Label>
+                      <Input value={form.tin} onChange={e => f("tin", e.target.value)} placeholder="123-456-789-000" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Business Type *</Label>
+                      <Select value={form.businessType} onValueChange={v => f("businessType", v)}>
+                        <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
+                        <SelectContent>
+                          {BUSINESS_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Status</Label>
+                      <Select value={form.status} onValueChange={v => f("status", v)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="active">Active</SelectItem>
+                          <SelectItem value="inactive">Inactive</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                   <div className="space-y-1.5">
-                    <Label>TIN *</Label>
-                    <Input value={form.tin} onChange={e => setForm(f => ({ ...f, tin: e.target.value }))} placeholder="123-456-789-000" />
+                    <Label>Registered Address</Label>
+                    <Input value={form.address} onChange={e => f("address", e.target.value)} placeholder="123 Ayala Avenue, Makati City, Metro Manila" />
                   </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Business Type *</Label>
-                  <Select value={form.businessType} onValueChange={v => setForm(f => ({ ...f, businessType: v }))}>
-                    <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Corporation">Corporation</SelectItem>
-                      <SelectItem value="Sole Proprietorship">Sole Proprietorship</SelectItem>
-                      <SelectItem value="Partnership">Partnership</SelectItem>
-                      <SelectItem value="Cooperative">Cooperative</SelectItem>
-                      <SelectItem value="Non-Profit Organization">Non-Profit Organization</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Contact Email</Label>
+                      <Input type="email" value={form.contactEmail} onChange={e => f("contactEmail", e.target.value)} placeholder="contact@company.com" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Contact Phone</Label>
+                      <Input value={form.contactPhone} onChange={e => f("contactPhone", e.target.value)} placeholder="+63-2-8xxx-xxxx" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Fiscal Year Start</Label>
+                      <Select value={form.fiscalYearStart} onValueChange={v => f("fiscalYearStart", v)}>
+                        <SelectTrigger><SelectValue placeholder="Month" /></SelectTrigger>
+                        <SelectContent>{MONTHS.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Fiscal Year End</Label>
+                      <Select value={form.fiscalYearEnd} onValueChange={v => f("fiscalYearEnd", v)}>
+                        <SelectTrigger><SelectValue placeholder="Month" /></SelectTrigger>
+                        <SelectContent>{MONTHS.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button type="button" onClick={() => setTab("bir2303")} variant="outline">
+                      Next: BIR 2303 →
+                    </Button>
+                  </div>
+                </TabsContent>
+
+                {/* ── TAB 2: BIR 2303 ── */}
+                <TabsContent value="bir2303" className="space-y-4 mt-4">
+                  <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800">
+                    <strong>BIR 2303 — Certificate of Registration</strong><br />
+                    These details are taken from the client's Certificate of Registration issued by the BIR. They determine which tax forms must be filed and their deadlines.
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>RDO Code</Label>
+                      <Input value={form.rdoCode} onChange={e => f("rdoCode", e.target.value)} placeholder="e.g. 047" maxLength={5} />
+                      <p className="text-xs text-muted-foreground">Revenue District Office code from BIR 2303</p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Date of Registration</Label>
+                      <Input type="date" value={form.registrationDate} onChange={e => f("registrationDate", e.target.value)} />
+                    </div>
+                  </div>
+
                   <div className="space-y-1.5">
-                    <Label>Contact Email</Label>
-                    <Input type="email" value={form.contactEmail} onChange={e => setForm(f => ({ ...f, contactEmail: e.target.value }))} placeholder="contact@company.com" />
+                    <Label>Line of Business / Industry</Label>
+                    <Input value={form.lineOfBusiness} onChange={e => f("lineOfBusiness", e.target.value)} placeholder="e.g. Retail Trade, Manufacturing, IT Services" />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Contact Phone</Label>
-                    <Input value={form.contactPhone} onChange={e => setForm(f => ({ ...f, contactPhone: e.target.value }))} placeholder="+63-2-8xxx-xxxx" />
+
+                  <Separator />
+                  <div className="space-y-3">
+                    <Label className="text-sm font-semibold">Registered Tax Types</Label>
+                    <p className="text-xs text-muted-foreground -mt-2">Check all tax types listed on the client's BIR 2303. These determine the auto-generated filing deadlines.</p>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground uppercase tracking-wider">Income Tax</Label>
+                      <Select value={form.incomeTaxType || "none"} onValueChange={v => f("incomeTaxType", v === "none" ? "" : v)}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select income tax type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Not registered / N/A</SelectItem>
+                          <SelectItem value="individual">Individual — Form 1701 / 1701Q</SelectItem>
+                          <SelectItem value="corporate">Corporate — Form 1702 / 1702Q</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2 p-3 rounded-md border bg-muted/30">
+                      <Label className="text-xs text-muted-foreground uppercase tracking-wider">VAT / Percentage Tax</Label>
+                      <div className="space-y-2">
+                        <div className="flex items-start gap-3">
+                          <Checkbox id="vat" checked={form.vatRegistered} onCheckedChange={() => toggle("vatRegistered")} />
+                          <div>
+                            <label htmlFor="vat" className="text-sm font-medium cursor-pointer">VAT Registered</label>
+                            <p className="text-xs text-muted-foreground">Monthly 2550M (due 20th) + Quarterly 2550Q (due 25th)</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <Checkbox id="pt" checked={form.percentageTaxRegistered} onCheckedChange={() => toggle("percentageTaxRegistered")} />
+                          <div>
+                            <label htmlFor="pt" className="text-sm font-medium cursor-pointer">Percentage Tax (Non-VAT)</label>
+                            <p className="text-xs text-muted-foreground">Quarterly 2551Q (due 25th of following month)</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 p-3 rounded-md border bg-muted/30">
+                      <Label className="text-xs text-muted-foreground uppercase tracking-wider">Withholding Taxes</Label>
+                      <div className="space-y-2">
+                        <div className="flex items-start gap-3">
+                          <Checkbox id="comp" checked={form.withholdsCompensation} onCheckedChange={() => toggle("withholdsCompensation")} />
+                          <div>
+                            <label htmlFor="comp" className="text-sm font-medium cursor-pointer">Withholding Tax on Compensation</label>
+                            <p className="text-xs text-muted-foreground">Monthly 1601C (due 10th) + Annual 1604CF (due March 1)</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <Checkbox id="ewt" checked={form.withholdsEwt} onCheckedChange={() => toggle("withholdsEwt")} />
+                          <div>
+                            <label htmlFor="ewt" className="text-sm font-medium cursor-pointer">Expanded Withholding Tax (EWT)</label>
+                            <p className="text-xs text-muted-foreground">Quarterly 1601EQ + Annual 1604E (due March 1)</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 p-3 rounded-md border bg-muted/30">
+                      <Label className="text-xs text-muted-foreground uppercase tracking-wider">Other Taxes</Label>
+                      <div className="flex items-start gap-3">
+                        <Checkbox id="dst" checked={form.subjectToDst} onCheckedChange={() => toggle("subjectToDst")} />
+                        <div>
+                          <label htmlFor="dst" className="text-sm font-medium cursor-pointer">Documentary Stamp Tax (DST)</label>
+                          <p className="text-xs text-muted-foreground">Monthly Form 2000 (due 5th of following month)</p>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Address</Label>
-                  <Input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="City, Province" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label>Fiscal Year End</Label>
-                    <Select value={form.fiscalYearEnd} onValueChange={v => setForm(f => ({ ...f, fiscalYearEnd: v }))}>
-                      <SelectTrigger><SelectValue placeholder="Month" /></SelectTrigger>
-                      <SelectContent>
-                        {["January","February","March","April","May","June","July","August","September","October","November","December"].map(m => (
-                          <SelectItem key={m} value={m}>{m}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+
+                  <div className="flex justify-between pt-2">
+                    <Button type="button" variant="ghost" onClick={() => setTab("basic")}>← Back</Button>
+                    <Button onClick={handleCreate} disabled={createClient.isPending}>
+                      {createClient.isPending ? "Creating..." : "Create Client"}
+                    </Button>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Status</Label>
-                    <Select value={form.status} onValueChange={v => setForm(f => ({ ...f, status: v as "active" | "inactive" }))}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="active">Active</SelectItem>
-                        <SelectItem value="inactive">Inactive</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-              </div>
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-                <Button onClick={handleCreate} disabled={createClient.isPending}>
-                  {createClient.isPending ? "Creating..." : "Create Client"}
-                </Button>
-              </div>
+                </TabsContent>
+              </Tabs>
             </DialogContent>
           </Dialog>
         )}
@@ -154,7 +331,7 @@ export default function Clients() {
 
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {[1,2,3].map(i => <Skeleton key={i} className="h-48" />)}
+          {[1,2,3].map(i => <Skeleton key={i} className="h-56" />)}
         </div>
       ) : filtered.length === 0 ? (
         <Card>
@@ -170,20 +347,24 @@ export default function Clients() {
             <Card key={client.id} className="hover:shadow-md transition-shadow">
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between">
-                  <div className="space-y-1 flex-1 min-w-0">
+                  <div className="space-y-0.5 flex-1 min-w-0">
                     <CardTitle className="text-base truncate">{client.name}</CardTitle>
+                    {client.tradeName && <p className="text-xs text-muted-foreground">"{client.tradeName}"</p>}
                     <p className="text-xs text-muted-foreground font-mono">TIN: {client.tin}</p>
                   </div>
-                  <Badge variant={client.status === "active" ? "default" : "secondary"} className="ml-2 shrink-0">
+                  <Badge variant={client.status === "active" ? "default" : "secondary"} className="ml-2 shrink-0 text-xs">
                     {client.status}
                   </Badge>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-2">
+              <CardContent className="space-y-1.5">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Building2 className="h-3.5 w-3.5 shrink-0" />
                   <span className="truncate">{client.businessType}</span>
                 </div>
+                {client.rdoCode && (
+                  <p className="text-xs text-muted-foreground">RDO: {client.rdoCode} {client.lineOfBusiness && `• ${client.lineOfBusiness}`}</p>
+                )}
                 {client.contactEmail && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Mail className="h-3.5 w-3.5 shrink-0" />
@@ -196,13 +377,11 @@ export default function Clients() {
                     <span>{client.contactPhone}</span>
                   </div>
                 )}
-                {client.fiscalYearEnd && (
-                  <p className="text-xs text-muted-foreground">FY ends: {client.fiscalYearEnd}</p>
-                )}
+                <TaxTypeBadges client={client} />
                 <div className="flex items-center justify-between pt-2 border-t">
                   <Link href={`/clients/${client.id}`}>
-                    <Button variant="outline" size="sm" className="gap-1.5">
-                      <ExternalLink className="h-3.5 w-3.5" />View
+                    <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                      <ExternalLink className="h-3.5 w-3.5" />View & Compliance
                     </Button>
                   </Link>
                   {user?.role === "manager" && (

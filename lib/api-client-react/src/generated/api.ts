@@ -22,6 +22,7 @@ import type {
   AuthResponse,
   ChecklistItem,
   Client,
+  ClientCompliance,
   Comment,
   CreateChecklistItemBody,
   CreateClientBody,
@@ -35,6 +36,9 @@ import type {
   Document,
   Engagement,
   ErrorResponse,
+  GenerateDeadlinesBody,
+  GenerateDeadlinesResult,
+  GetClientComplianceParams,
   HealthStatus,
   ListAuditLogsParams,
   ListChecklistItemsParams,
@@ -1186,6 +1190,212 @@ export const useDeleteClient = <
 > => {
   return useMutation(getDeleteClientMutationOptions(options));
 };
+
+/**
+ * Auto-generates all required BIR deadline entries for a given tax year based on the client's registered tax types in their BIR 2303.
+ * @summary Generate annual BIR deadlines for a client
+ */
+export const getGenerateClientDeadlinesUrl = (id: number) => {
+  return `/api/clients/${id}/generate-deadlines`;
+};
+
+export const generateClientDeadlines = async (
+  id: number,
+  generateDeadlinesBody: GenerateDeadlinesBody,
+  options?: RequestInit,
+): Promise<GenerateDeadlinesResult> => {
+  return customFetch<GenerateDeadlinesResult>(
+    getGenerateClientDeadlinesUrl(id),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(generateDeadlinesBody),
+    },
+  );
+};
+
+export const getGenerateClientDeadlinesMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof generateClientDeadlines>>,
+    TError,
+    { id: number; data: BodyType<GenerateDeadlinesBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof generateClientDeadlines>>,
+  TError,
+  { id: number; data: BodyType<GenerateDeadlinesBody> },
+  TContext
+> => {
+  const mutationKey = ["generateClientDeadlines"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof generateClientDeadlines>>,
+    { id: number; data: BodyType<GenerateDeadlinesBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return generateClientDeadlines(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type GenerateClientDeadlinesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof generateClientDeadlines>>
+>;
+export type GenerateClientDeadlinesMutationBody =
+  BodyType<GenerateDeadlinesBody>;
+export type GenerateClientDeadlinesMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Generate annual BIR deadlines for a client
+ */
+export const useGenerateClientDeadlines = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof generateClientDeadlines>>,
+    TError,
+    { id: number; data: BodyType<GenerateDeadlinesBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof generateClientDeadlines>>,
+  TError,
+  { id: number; data: BodyType<GenerateDeadlinesBody> },
+  TContext
+> => {
+  return useMutation(getGenerateClientDeadlinesMutationOptions(options));
+};
+
+/**
+ * Returns all required BIR tax form filings for the client for a given year with filing status.
+ * @summary Get client compliance checklist for a tax year
+ */
+export const getGetClientComplianceUrl = (
+  id: number,
+  params?: GetClientComplianceParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/clients/${id}/compliance?${stringifiedParams}`
+    : `/api/clients/${id}/compliance`;
+};
+
+export const getClientCompliance = async (
+  id: number,
+  params?: GetClientComplianceParams,
+  options?: RequestInit,
+): Promise<ClientCompliance> => {
+  return customFetch<ClientCompliance>(getGetClientComplianceUrl(id, params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetClientComplianceQueryKey = (
+  id: number,
+  params?: GetClientComplianceParams,
+) => {
+  return [
+    `/api/clients/${id}/compliance`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetClientComplianceQueryOptions = <
+  TData = Awaited<ReturnType<typeof getClientCompliance>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: number,
+  params?: GetClientComplianceParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getClientCompliance>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetClientComplianceQueryKey(id, params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getClientCompliance>>
+  > = ({ signal }) =>
+    getClientCompliance(id, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getClientCompliance>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetClientComplianceQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getClientCompliance>>
+>;
+export type GetClientComplianceQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get client compliance checklist for a tax year
+ */
+
+export function useGetClientCompliance<
+  TData = Awaited<ReturnType<typeof getClientCompliance>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: number,
+  params?: GetClientComplianceParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getClientCompliance>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetClientComplianceQueryOptions(id, params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * @summary List engagements

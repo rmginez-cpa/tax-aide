@@ -294,6 +294,69 @@ paths:
         "204":
           description: Deleted
 
+  /clients/{id}/generate-deadlines:
+    post:
+      operationId: generateClientDeadlines
+      tags: [clients]
+      summary: Generate annual BIR deadlines for a client
+      description: Auto-generates all required BIR deadline entries for a given tax year based on the client's registered tax types in their BIR 2303.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateDeadlinesBody"
+      responses:
+        "200":
+          description: Deadlines generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateDeadlinesResult"
+        "404":
+          description: Client not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /clients/{id}/compliance:
+    get:
+      operationId: getClientCompliance
+      tags: [clients]
+      summary: Get client compliance checklist for a tax year
+      description: Returns all required BIR tax form filings for the client for a given year with filing status.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: year
+          in: query
+          required: false
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: Compliance checklist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientCompliance"
+        "404":
+          description: Client not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   # ENGAGEMENTS
   /engagements:
     get:
@@ -1049,9 +1112,37 @@ components:
           type: ["string", "null"]
         fiscalYearEnd:
           type: ["string", "null"]
+        fiscalYearStart:
+          type: ["string", "null"]
         status:
           type: string
           enum: [active, inactive]
+        tradeName:
+          type: ["string", "null"]
+        rdoCode:
+          type: ["string", "null"]
+        registrationDate:
+          type: ["string", "null"]
+        lineOfBusiness:
+          type: ["string", "null"]
+        incomeTaxType:
+          type: ["string", "null"]
+          description: "'individual' (Form 1701) or 'corporate' (Form 1702)"
+        vatRegistered:
+          type: boolean
+          description: "Registered for VAT — requires 2550M (monthly) and 2550Q (quarterly)"
+        percentageTaxRegistered:
+          type: boolean
+          description: "Non-VAT — requires 2551Q (quarterly)"
+        withholdsCompensation:
+          type: boolean
+          description: "Withholds taxes on compensation — requires 1601C (monthly) and 1604CF (annual)"
+        withholdsEwt:
+          type: boolean
+          description: "Withholds creditable income tax (EWT) — requires 1601EQ (quarterly) and 1604E (annual)"
+        subjectToDst:
+          type: boolean
+          description: "Subject to Documentary Stamp Tax — requires 2000 (monthly)"
         createdAt:
           type: string
         updatedAt:
@@ -1062,6 +1153,11 @@ components:
         - tin
         - businessType
         - status
+        - vatRegistered
+        - percentageTaxRegistered
+        - withholdsCompensation
+        - withholdsEwt
+        - subjectToDst
         - createdAt
         - updatedAt
 
@@ -1082,9 +1178,31 @@ components:
           type: ["string", "null"]
         fiscalYearEnd:
           type: ["string", "null"]
+        fiscalYearStart:
+          type: ["string", "null"]
         status:
           type: string
           enum: [active, inactive]
+        tradeName:
+          type: ["string", "null"]
+        rdoCode:
+          type: ["string", "null"]
+        registrationDate:
+          type: ["string", "null"]
+        lineOfBusiness:
+          type: ["string", "null"]
+        incomeTaxType:
+          type: ["string", "null"]
+        vatRegistered:
+          type: boolean
+        percentageTaxRegistered:
+          type: boolean
+        withholdsCompensation:
+          type: boolean
+        withholdsEwt:
+          type: boolean
+        subjectToDst:
+          type: boolean
       required:
         - name
         - tin
@@ -1107,9 +1225,117 @@ components:
           type: ["string", "null"]
         fiscalYearEnd:
           type: ["string", "null"]
+        fiscalYearStart:
+          type: ["string", "null"]
         status:
           type: ["string", "null"]
           enum: [active, inactive, "null"]
+        tradeName:
+          type: ["string", "null"]
+        rdoCode:
+          type: ["string", "null"]
+        registrationDate:
+          type: ["string", "null"]
+        lineOfBusiness:
+          type: ["string", "null"]
+        incomeTaxType:
+          type: ["string", "null"]
+        vatRegistered:
+          type: ["boolean", "null"]
+        percentageTaxRegistered:
+          type: ["boolean", "null"]
+        withholdsCompensation:
+          type: ["boolean", "null"]
+        withholdsEwt:
+          type: ["boolean", "null"]
+        subjectToDst:
+          type: ["boolean", "null"]
+
+    GenerateDeadlinesBody:
+      type: object
+      properties:
+        year:
+          type: integer
+          description: "The tax year to generate deadlines for (e.g. 2025)"
+        overwrite:
+          type: boolean
+          description: "If true, delete existing auto-generated deadlines for this year before generating new ones"
+      required:
+        - year
+
+    GenerateDeadlinesResult:
+      type: object
+      properties:
+        created:
+          type: integer
+        message:
+          type: string
+      required:
+        - created
+        - message
+
+    ComplianceItem:
+      type: object
+      properties:
+        formNumber:
+          type: string
+          description: "BIR form number (e.g. 2550M, 1702)"
+        description:
+          type: string
+        period:
+          type: string
+          description: "Human-readable period (e.g. 'January 2025', 'Q1 2025')"
+        dueDate:
+          type: string
+          description: "ISO date string of the filing deadline"
+        frequency:
+          type: string
+          enum: [monthly, quarterly, annual]
+        status:
+          type: string
+          enum: [pending, filed, overdue]
+        deadlineId:
+          type: ["integer", "null"]
+          description: "ID of the linked deadline record, if it exists"
+      required:
+        - formNumber
+        - description
+        - period
+        - dueDate
+        - frequency
+        - status
+
+    ClientCompliance:
+      type: object
+      properties:
+        clientId:
+          type: integer
+        clientName:
+          type: string
+        year:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ComplianceItem"
+        summary:
+          type: object
+          properties:
+            total:
+              type: integer
+            filed:
+              type: integer
+            pending:
+              type: integer
+            overdue:
+              type: integer
+          required: [total, filed, pending, overdue]
+      required:
+        - clientId
+        - clientName
+        - year
+        - items
+        - summary
 
     Engagement:
       type: object

@@ -20,7 +20,32 @@ export interface Client {
   address?: string | null;
   /** @nullable */
   fiscalYearEnd?: string | null;
+  /** @nullable */
+  fiscalYearStart?: string | null;
   status: ClientStatus;
+  /** @nullable */
+  tradeName?: string | null;
+  /** @nullable */
+  rdoCode?: string | null;
+  /** @nullable */
+  registrationDate?: string | null;
+  /** @nullable */
+  lineOfBusiness?: string | null;
+  /**
+   * 'individual' (Form 1701) or 'corporate' (Form 1702)
+   * @nullable
+   */
+  incomeTaxType?: string | null;
+  /** Registered for VAT — requires 2550M (monthly) and 2550Q (quarterly) */
+  vatRegistered: boolean;
+  /** Non-VAT — requires 2551Q (quarterly) */
+  percentageTaxRegistered: boolean;
+  /** Withholds taxes on compensation — requires 1601C (monthly) and 1604CF (annual) */
+  withholdsCompensation: boolean;
+  /** Withholds creditable income tax (EWT) — requires 1601EQ (quarterly) and 1604E (annual) */
+  withholdsEwt: boolean;
+  /** Subject to Documentary Stamp Tax — requires 2000 (monthly) */
+  subjectToDst: boolean;
   createdAt: string;
   updatedAt: string;
 }

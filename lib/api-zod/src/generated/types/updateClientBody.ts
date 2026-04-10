@@ -23,5 +23,27 @@ export interface UpdateClientBody {
   /** @nullable */
   fiscalYearEnd?: string | null;
   /** @nullable */
+  fiscalYearStart?: string | null;
+  /** @nullable */
   status?: UpdateClientBodyStatus;
+  /** @nullable */
+  tradeName?: string | null;
+  /** @nullable */
+  rdoCode?: string | null;
+  /** @nullable */
+  registrationDate?: string | null;
+  /** @nullable */
+  lineOfBusiness?: string | null;
+  /** @nullable */
+  incomeTaxType?: string | null;
+  /** @nullable */
+  vatRegistered?: boolean | null;
+  /** @nullable */
+  percentageTaxRegistered?: boolean | null;
+  /** @nullable */
+  withholdsCompensation?: boolean | null;
+  /** @nullable */
+  withholdsEwt?: boolean | null;
+  /** @nullable */
+  subjectToDst?: boolean | null;
 }

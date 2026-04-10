@@ -134,7 +134,37 @@ export const ListClientsResponseItem = zod.object({
   contactPhone: zod.string().nullish(),
   address: zod.string().nullish(),
   fiscalYearEnd: zod.string().nullish(),
+  fiscalYearStart: zod.string().nullish(),
   status: zod.enum(["active", "inactive"]),
+  tradeName: zod.string().nullish(),
+  rdoCode: zod.string().nullish(),
+  registrationDate: zod.string().nullish(),
+  lineOfBusiness: zod.string().nullish(),
+  incomeTaxType: zod
+    .string()
+    .nullish()
+    .describe("'individual' (Form 1701) or 'corporate' (Form 1702)"),
+  vatRegistered: zod
+    .boolean()
+    .describe(
+      "Registered for VAT — requires 2550M (monthly) and 2550Q (quarterly)",
+    ),
+  percentageTaxRegistered: zod
+    .boolean()
+    .describe("Non-VAT — requires 2551Q (quarterly)"),
+  withholdsCompensation: zod
+    .boolean()
+    .describe(
+      "Withholds taxes on compensation — requires 1601C (monthly) and 1604CF (annual)",
+    ),
+  withholdsEwt: zod
+    .boolean()
+    .describe(
+      "Withholds creditable income tax (EWT) — requires 1601EQ (quarterly) and 1604E (annual)",
+    ),
+  subjectToDst: zod
+    .boolean()
+    .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -151,7 +181,18 @@ export const CreateClientBody = zod.object({
   contactPhone: zod.string().nullish(),
   address: zod.string().nullish(),
   fiscalYearEnd: zod.string().nullish(),
+  fiscalYearStart: zod.string().nullish(),
   status: zod.enum(["active", "inactive"]).optional(),
+  tradeName: zod.string().nullish(),
+  rdoCode: zod.string().nullish(),
+  registrationDate: zod.string().nullish(),
+  lineOfBusiness: zod.string().nullish(),
+  incomeTaxType: zod.string().nullish(),
+  vatRegistered: zod.boolean().optional(),
+  percentageTaxRegistered: zod.boolean().optional(),
+  withholdsCompensation: zod.boolean().optional(),
+  withholdsEwt: zod.boolean().optional(),
+  subjectToDst: zod.boolean().optional(),
 });
 
 /**
@@ -170,7 +211,37 @@ export const GetClientResponse = zod.object({
   contactPhone: zod.string().nullish(),
   address: zod.string().nullish(),
   fiscalYearEnd: zod.string().nullish(),
+  fiscalYearStart: zod.string().nullish(),
   status: zod.enum(["active", "inactive"]),
+  tradeName: zod.string().nullish(),
+  rdoCode: zod.string().nullish(),
+  registrationDate: zod.string().nullish(),
+  lineOfBusiness: zod.string().nullish(),
+  incomeTaxType: zod
+    .string()
+    .nullish()
+    .describe("'individual' (Form 1701) or 'corporate' (Form 1702)"),
+  vatRegistered: zod
+    .boolean()
+    .describe(
+      "Registered for VAT — requires 2550M (monthly) and 2550Q (quarterly)",
+    ),
+  percentageTaxRegistered: zod
+    .boolean()
+    .describe("Non-VAT — requires 2551Q (quarterly)"),
+  withholdsCompensation: zod
+    .boolean()
+    .describe(
+      "Withholds taxes on compensation — requires 1601C (monthly) and 1604CF (annual)",
+    ),
+  withholdsEwt: zod
+    .boolean()
+    .describe(
+      "Withholds creditable income tax (EWT) — requires 1601EQ (quarterly) and 1604E (annual)",
+    ),
+  subjectToDst: zod
+    .boolean()
+    .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -190,7 +261,18 @@ export const UpdateClientBody = zod.object({
   contactPhone: zod.string().nullish(),
   address: zod.string().nullish(),
   fiscalYearEnd: zod.string().nullish(),
+  fiscalYearStart: zod.string().nullish(),
   status: zod.enum(["active", "inactive", "null"]).nullish(),
+  tradeName: zod.string().nullish(),
+  rdoCode: zod.string().nullish(),
+  registrationDate: zod.string().nullish(),
+  lineOfBusiness: zod.string().nullish(),
+  incomeTaxType: zod.string().nullish(),
+  vatRegistered: zod.boolean().nullish(),
+  percentageTaxRegistered: zod.boolean().nullish(),
+  withholdsCompensation: zod.boolean().nullish(),
+  withholdsEwt: zod.boolean().nullish(),
+  subjectToDst: zod.boolean().nullish(),
 });
 
 export const UpdateClientResponse = zod.object({
@@ -202,7 +284,37 @@ export const UpdateClientResponse = zod.object({
   contactPhone: zod.string().nullish(),
   address: zod.string().nullish(),
   fiscalYearEnd: zod.string().nullish(),
+  fiscalYearStart: zod.string().nullish(),
   status: zod.enum(["active", "inactive"]),
+  tradeName: zod.string().nullish(),
+  rdoCode: zod.string().nullish(),
+  registrationDate: zod.string().nullish(),
+  lineOfBusiness: zod.string().nullish(),
+  incomeTaxType: zod
+    .string()
+    .nullish()
+    .describe("'individual' (Form 1701) or 'corporate' (Form 1702)"),
+  vatRegistered: zod
+    .boolean()
+    .describe(
+      "Registered for VAT — requires 2550M (monthly) and 2550Q (quarterly)",
+    ),
+  percentageTaxRegistered: zod
+    .boolean()
+    .describe("Non-VAT — requires 2551Q (quarterly)"),
+  withholdsCompensation: zod
+    .boolean()
+    .describe(
+      "Withholds taxes on compensation — requires 1601C (monthly) and 1604CF (annual)",
+    ),
+  withholdsEwt: zod
+    .boolean()
+    .describe(
+      "Withholds creditable income tax (EWT) — requires 1601EQ (quarterly) and 1604E (annual)",
+    ),
+  subjectToDst: zod
+    .boolean()
+    .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -212,6 +324,71 @@ export const UpdateClientResponse = zod.object({
  */
 export const DeleteClientParams = zod.object({
   id: zod.coerce.number(),
+});
+
+/**
+ * Auto-generates all required BIR deadline entries for a given tax year based on the client's registered tax types in their BIR 2303.
+ * @summary Generate annual BIR deadlines for a client
+ */
+export const GenerateClientDeadlinesParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const GenerateClientDeadlinesBody = zod.object({
+  year: zod
+    .number()
+    .describe("The tax year to generate deadlines for (e.g. 2025)"),
+  overwrite: zod
+    .boolean()
+    .optional()
+    .describe(
+      "If true, delete existing auto-generated deadlines for this year before generating new ones",
+    ),
+});
+
+export const GenerateClientDeadlinesResponse = zod.object({
+  created: zod.number(),
+  message: zod.string(),
+});
+
+/**
+ * Returns all required BIR tax form filings for the client for a given year with filing status.
+ * @summary Get client compliance checklist for a tax year
+ */
+export const GetClientComplianceParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const GetClientComplianceQueryParams = zod.object({
+  year: zod.coerce.number().nullish(),
+});
+
+export const GetClientComplianceResponse = zod.object({
+  clientId: zod.number(),
+  clientName: zod.string(),
+  year: zod.number(),
+  items: zod.array(
+    zod.object({
+      formNumber: zod.string().describe("BIR form number (e.g. 2550M, 1702)"),
+      description: zod.string(),
+      period: zod
+        .string()
+        .describe("Human-readable period (e.g. 'January 2025', 'Q1 2025')"),
+      dueDate: zod.string().describe("ISO date string of the filing deadline"),
+      frequency: zod.enum(["monthly", "quarterly", "annual"]),
+      status: zod.enum(["pending", "filed", "overdue"]),
+      deadlineId: zod
+        .number()
+        .nullish()
+        .describe("ID of the linked deadline record, if it exists"),
+    }),
+  ),
+  summary: zod.object({
+    total: zod.number(),
+    filed: zod.number(),
+    pending: zod.number(),
+    overdue: zod.number(),
+  }),
 });
 
 /**
