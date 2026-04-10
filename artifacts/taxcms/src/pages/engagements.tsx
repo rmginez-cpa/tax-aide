@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 import {
   useListEngagements, useCreateEngagement, useListClients, useListUsers, useListDocuments,
-  getListEngagementsQueryKey
+  useListDeadlines, getListEngagementsQueryKey
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -15,9 +15,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Briefcase, ExternalLink, User2, Calendar, Paperclip, FileText, Download, Image, Sheet, FileCode } from "lucide-react";
+import { Plus, Search, Briefcase, ExternalLink, User2, Calendar, Paperclip, FileText, Image, Sheet, FileCode } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { FileViewer } from "@/components/FileViewer";
+import { FilingWorkflowDialog } from "@/components/FilingWorkflowDialog";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function FileTypeIcon({ mimeType, name }: { mimeType: string; name?: string }) {
@@ -34,6 +35,12 @@ function fmtBytes(b: number) {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Extract a short form number from a taxType string, e.g. "VAT (2550M)" → "2550M"
+function extractFormNumber(taxType: string): string {
+  const m = taxType.match(/\(([^)]+)\)/);
+  return m ? m[1] : taxType;
 }
 
 // ── Per-engagement document panel ────────────────────────────────────────────
@@ -108,7 +115,6 @@ function EngagementDocsDialog({
                             {doc.description && <> · {doc.description}</>}
                           </p>
                         </div>
-                        <Download className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 shrink-0" />
                       </button>
                     ))}
                   </div>
@@ -141,11 +147,22 @@ const TAX_TYPES = [
   "Percentage Tax (2551Q)", "Documentary Stamp Tax (2000)",
 ];
 
+interface WorkflowTarget {
+  engagementId: number;
+  deadlineId: number | null;
+  clientId: number;
+  formNumber: string;
+  description: string;
+  period: string;
+  dueDate: string;
+}
+
 export default function Engagements() {
   const { user } = useAuth();
   const { data: engagements, isLoading } = useListEngagements();
   const { data: clients } = useListClients();
   const { data: users } = useListUsers();
+  const { data: deadlines } = useListDeadlines();
   const createEngagement = useCreateEngagement();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -153,6 +170,7 @@ export default function Engagements() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [open, setOpen] = useState(false);
   const [docsEngagement, setDocsEngagement] = useState<{ id: number; title: string } | null>(null);
+  const [workflowTarget, setWorkflowTarget] = useState<WorkflowTarget | null>(null);
   const [form, setForm] = useState({
     clientId: "", title: "", taxType: "", period: "", fiscalYear: "", assignedTo: "", dueDate: "", notes: "",
   });
@@ -164,6 +182,23 @@ export default function Engagements() {
     const matchStatus = statusFilter === "all" || e.status === statusFilter;
     return matchSearch && matchStatus;
   }) ?? [];
+
+  // Find the deadline linked to an engagement (by engagementId foreign key)
+  const findDeadlineId = (engagementId: number): number | null => {
+    return deadlines?.find(d => (d as any).engagementId === engagementId)?.id ?? null;
+  };
+
+  const handleOpenWorkflow = (e: NonNullable<typeof engagements>[number]) => {
+    setWorkflowTarget({
+      engagementId: e.id,
+      deadlineId: findDeadlineId(e.id),
+      clientId: e.clientId,
+      formNumber: extractFormNumber(e.taxType),
+      description: e.title,
+      period: e.period,
+      dueDate: e.dueDate ?? "",
+    });
+  };
 
   const handleCreate = () => {
     if (!form.clientId || !form.title || !form.taxType || !form.period) {
@@ -300,44 +335,59 @@ export default function Engagements() {
           {filtered.map(e => {
             const st = STATUS_STYLES[e.status] || STATUS_STYLES.pending;
             return (
-              <Link key={e.id} href={`/engagements/${e.id}`}>
-                <Card className="hover:shadow-sm transition-shadow cursor-pointer">
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="font-semibold text-sm">{e.title}</p>
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${st.className}`}>{st.label}</span>
-                        </div>
-                        <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground flex-wrap">
-                          <span className="font-medium text-foreground/70">{e.clientName}</span>
-                          <span>{e.taxType}</span>
-                          <span>{e.period}</span>
-                          {e.assignedToName && (
-                            <span className="flex items-center gap-1"><User2 className="h-3 w-3" />{e.assignedToName}</span>
-                          )}
-                          {e.dueDate && (
-                            <span className="flex items-center gap-1"><Calendar className="h-3 w-3" />Due {format(parseISO(e.dueDate), 'MMM d, yyyy')}</span>
-                          )}
-                        </div>
+              <Card
+                key={e.id}
+                className="hover:shadow-sm transition-shadow cursor-pointer"
+                onClick={() => handleOpenWorkflow(e)}
+              >
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold text-sm">{e.title}</p>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${st.className}`}>{st.label}</span>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground flex-wrap">
+                        <span className="font-medium text-foreground/70">{e.clientName}</span>
+                        <span>{e.taxType}</span>
+                        <span>{e.period}</span>
+                        {e.assignedToName && (
+                          <span className="flex items-center gap-1"><User2 className="h-3 w-3" />{e.assignedToName}</span>
+                        )}
+                        {e.dueDate && (
+                          <span className="flex items-center gap-1"><Calendar className="h-3 w-3" />Due {format(parseISO(e.dueDate), 'MMM d, yyyy')}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2 text-muted-foreground hover:text-primary hover:bg-primary/5 gap-1.5"
+                        title="View attached documents"
+                        onClick={ev => { ev.preventDefault(); ev.stopPropagation(); setDocsEngagement({ id: e.id, title: e.title }); }}
+                      >
+                        <Paperclip className="h-3.5 w-3.5" />
+                        <span className="text-xs">Docs</span>
+                      </Button>
+                      <Link
+                        href={`/engagements/${e.id}`}
+                        onClick={ev => ev.stopPropagation()}
+                      >
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-8 px-2 text-muted-foreground hover:text-primary hover:bg-primary/5 gap-1.5"
-                          title="View attached documents"
-                          onClick={ev => { ev.preventDefault(); ev.stopPropagation(); setDocsEngagement({ id: e.id, title: e.title }); }}
+                          className="h-8 px-2 text-muted-foreground hover:text-primary hover:bg-primary/5"
+                          title="Open detail page"
+                          tabIndex={-1}
                         >
-                          <Paperclip className="h-3.5 w-3.5" />
-                          <span className="text-xs">Docs</span>
+                          <ExternalLink className="h-3.5 w-3.5" />
                         </Button>
-                        <ExternalLink className="h-4 w-4 text-muted-foreground" />
-                      </div>
+                      </Link>
                     </div>
-                  </CardContent>
-                </Card>
-              </Link>
+                  </div>
+                </CardContent>
+              </Card>
             );
           })}
         </div>
@@ -350,6 +400,22 @@ export default function Engagements() {
           title={docsEngagement.title}
           open={!!docsEngagement}
           onClose={() => setDocsEngagement(null)}
+        />
+      )}
+
+      {/* Filing workflow dialog */}
+      {workflowTarget && (
+        <FilingWorkflowDialog
+          open={!!workflowTarget}
+          onClose={() => setWorkflowTarget(null)}
+          deadlineId={workflowTarget.deadlineId}
+          engagementId={workflowTarget.engagementId}
+          clientId={workflowTarget.clientId}
+          formNumber={workflowTarget.formNumber}
+          description={workflowTarget.description}
+          period={workflowTarget.period}
+          dueDate={workflowTarget.dueDate}
+          onUpdate={() => queryClient.invalidateQueries({ queryKey: getListEngagementsQueryKey() })}
         />
       )}
     </div>
