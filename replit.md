@@ -28,7 +28,7 @@ Full-stack BIR Tax Client Management System for Philippine accounting firms.
 - `engagements.tsx` — All engagements with status filter
 - `engagement-detail.tsx` — Checklist, documents, comments, approval workflow
 - `deadlines.tsx` — BIR filing deadlines with overdue/upcoming/completed
-- `documents.tsx` — Document repository across all engagements
+- `documents.tsx` — Document repository with real file upload (multipart), file viewer (PDF/Excel/Word/image/text), download, delete; "Create Sample Files" for managers generates 3 realistic sample documents
 - `users.tsx` — User management (manager-only)
 - `notifications.tsx` — Notifications with mark-read
 - `audit-log.tsx` — Full audit trail (manager-only)
@@ -41,7 +41,9 @@ Full-stack BIR Tax Client Management System for Philippine accounting firms.
 - Express 5 on port 8080, PostgreSQL + Drizzle ORM
 - Session via express-session + connect-pg-simple (table: user_sessions created via raw SQL in app.ts startup)
 - `tablesFilter: ["!user_sessions"]` in drizzle.config.ts to prevent drizzle-kit from dropping the manually-managed session table
-- Routes: auth, users, clients, engagements, deadlines, checklist, documents, comments, notifications, audit, dashboard
+- Routes: auth, users, clients, engagements, deadlines, checklist, upload (multipart + seed-samples), documents (+ content streaming), comments, notifications, audit, dashboard
+- File uploads stored in `/home/runner/workspace/uploads/` (UPLOADS_DIR env var); served via `GET /api/documents/:id/content`
+- pdfkit externalized in esbuild (added to external[] in build.mjs) so Node.js can access font files at runtime
 
 ### BIR 2303 Features
 - Client schema has BIR 2303 fields: tradeName, rdoCode, registrationDate, lineOfBusiness, incomeTaxType (individual/corporate), vatRegistered, percentageTaxRegistered, withholdsCompensation, withholdsEwt, subjectToDst, fiscalYearStart, fiscalYearEnd

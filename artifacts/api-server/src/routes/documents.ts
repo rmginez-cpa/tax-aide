@@ -1,5 +1,7 @@
 import { Router } from "express";
 import { eq } from "drizzle-orm";
+import path from "path";
+import fs from "fs";
 import { db, documentsTable, usersTable, clientsTable } from "@workspace/db";
 import {
   UploadDocumentBody,
@@ -11,6 +13,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
+import { UPLOADS_DIR } from "./upload";
 
 const router = Router();
 
@@ -140,6 +143,12 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
     return;
   }
 
+  // Also remove the physical file
+  const filePath = path.join(UPLOADS_DIR, doc.filename);
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+
   await logAudit({
     userId: req.session.userId,
     action: "delete",
@@ -149,6 +158,37 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
   });
 
   res.sendStatus(204);
+});
+
+// ── GET /api/documents/:id/content ─────────────────────────────────────────
+// Streams the actual file bytes, authenticated. Used by the file viewer.
+router.get("/documents/:id/content", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid document id" });
+    return;
+  }
+
+  const [doc] = await db.select().from(documentsTable).where(eq(documentsTable.id, id));
+  if (!doc) {
+    res.status(404).json({ error: "Document not found" });
+    return;
+  }
+
+  const filePath = path.join(UPLOADS_DIR, doc.filename);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: "File not found on disk" });
+    return;
+  }
+
+  const stat = fs.statSync(filePath);
+  res.setHeader("Content-Type", doc.mimeType);
+  res.setHeader("Content-Length", stat.size);
+  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(doc.originalName)}"`);
+  res.setHeader("Cache-Control", "private, max-age=3600");
+
+  const stream = fs.createReadStream(filePath);
+  stream.pipe(res);
 });
 
 export default router;

@@ -73,5 +73,9 @@
     "vite": "catalog:",
     "wouter": "^3.3.5",
     "zod": "catalog:"
+  },
+  "dependencies": {
+    "mammoth": "^1.12.0",
+    "xlsx": "^0.18.5"
   }
 }
