@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import {
-  useListEngagements, useCreateEngagement, useListClients, useListUsers,
+  useListEngagements, useCreateEngagement, useListClients, useListUsers, useListDocuments,
   getListEngagementsQueryKey
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -10,14 +10,121 @@ import { useAuth } from "@/lib/auth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Briefcase, ExternalLink, User2, Calendar } from "lucide-react";
+import { Plus, Search, Briefcase, ExternalLink, User2, Calendar, Paperclip, FileText, Download, Image, Sheet, FileCode } from "lucide-react";
 import { format, parseISO } from "date-fns";
+import { FileViewer } from "@/components/FileViewer";
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function FileTypeIcon({ mimeType, name }: { mimeType: string; name?: string }) {
+  const ext = name?.split(".").pop()?.toLowerCase() ?? "";
+  if (mimeType === "application/pdf") return <FileText className="h-4 w-4 text-red-500 shrink-0" />;
+  if (mimeType.startsWith("image/")) return <Image className="h-4 w-4 text-purple-500 shrink-0" />;
+  if (mimeType.includes("spreadsheetml") || mimeType.includes("ms-excel") || ext === "xlsx" || ext === "xls")
+    return <Sheet className="h-4 w-4 text-green-600 shrink-0" />;
+  if (ext === "csv" || ext === "dat") return <FileCode className="h-4 w-4 text-blue-500 shrink-0" />;
+  return <FileText className="h-4 w-4 text-muted-foreground shrink-0" />;
+}
+
+function fmtBytes(b: number) {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ── Per-engagement document panel ────────────────────────────────────────────
+function EngagementDocsDialog({
+  engagementId, title, open, onClose,
+}: { engagementId: number; title: string; open: boolean; onClose: () => void }) {
+  const { data: docs, isLoading } = useListDocuments(
+    { engagementId },
+    { query: { enabled: open } }
+  );
+  type DocItem = NonNullable<typeof docs>[number];
+  const [viewerDoc, setViewerDoc] = useState<DocItem | null>(null);
+
+  const byStage: Record<string, typeof docs> = {};
+  docs?.forEach(d => {
+    const s = (d as any).stage ?? "general";
+    if (!byStage[s]) byStage[s] = [];
+    byStage[s]!.push(d);
+  });
+
+  const STAGE_LABELS: Record<string, string> = {
+    source_collection: "Source Collection",
+    draft_return: "Draft Tax Return",
+    confirmation: "Confirmation Receipt",
+    payment: "Payment Confirmation",
+    general: "Other Documents",
+  };
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={v => !v && onClose()}>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Paperclip className="h-4 w-4 text-primary" />
+              Documents — {title}
+            </DialogTitle>
+          </DialogHeader>
+
+          {isLoading ? (
+            <div className="space-y-2 py-2">
+              {[1, 2, 3].map(i => <Skeleton key={i} className="h-12" />)}
+            </div>
+          ) : !docs || docs.length === 0 ? (
+            <div className="py-12 text-center text-muted-foreground">
+              <Paperclip className="h-8 w-8 mx-auto mb-2 opacity-30" />
+              <p className="text-sm">No documents attached to this engagement.</p>
+            </div>
+          ) : (
+            <div className="space-y-4 py-1">
+              {Object.entries(byStage).map(([stage, stageDocs]) => (
+                <div key={stage}>
+                  {Object.keys(byStage).length > 1 && (
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 px-1">
+                      {STAGE_LABELS[stage] ?? stage}
+                    </p>
+                  )}
+                  <div className="space-y-1">
+                    {stageDocs?.map(doc => (
+                      <button
+                        key={doc.id}
+                        className="w-full flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/60 transition-colors text-left group"
+                        onClick={() => setViewerDoc(doc as any)}
+                      >
+                        <FileTypeIcon mimeType={doc.mimeType} name={doc.originalName} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{doc.originalName}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {fmtBytes(doc.fileSize)}
+                            {doc.uploadedByName && <> · {doc.uploadedByName}</>}
+                            {' · '}{format(parseISO(doc.createdAt), 'MMM d, yyyy')}
+                            {doc.description && <> · {doc.description}</>}
+                          </p>
+                        </div>
+                        <Download className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {viewerDoc && (
+        <FileViewer doc={viewerDoc as any} onClose={() => setViewerDoc(null)} />
+      )}
+    </>
+  );
+}
 
 const STATUS_STYLES: Record<string, { label: string; className: string }> = {
   pending: { label: "Pending", className: "bg-gray-100 text-gray-700 border-gray-200" },
@@ -45,6 +152,7 @@ export default function Engagements() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [open, setOpen] = useState(false);
+  const [docsEngagement, setDocsEngagement] = useState<{ id: number; title: string } | null>(null);
   const [form, setForm] = useState({
     clientId: "", title: "", taxType: "", period: "", fiscalYear: "", assignedTo: "", dueDate: "", notes: "",
   });
@@ -213,7 +321,19 @@ export default function Engagements() {
                           )}
                         </div>
                       </div>
-                      <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2 text-muted-foreground hover:text-primary hover:bg-primary/5 gap-1.5"
+                          title="View attached documents"
+                          onClick={ev => { ev.preventDefault(); ev.stopPropagation(); setDocsEngagement({ id: e.id, title: e.title }); }}
+                        >
+                          <Paperclip className="h-3.5 w-3.5" />
+                          <span className="text-xs">Docs</span>
+                        </Button>
+                        <ExternalLink className="h-4 w-4 text-muted-foreground" />
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -221,6 +341,16 @@ export default function Engagements() {
             );
           })}
         </div>
+      )}
+
+      {/* Document viewer for selected engagement */}
+      {docsEngagement && (
+        <EngagementDocsDialog
+          engagementId={docsEngagement.id}
+          title={docsEngagement.title}
+          open={!!docsEngagement}
+          onClose={() => setDocsEngagement(null)}
+        />
       )}
     </div>
   );

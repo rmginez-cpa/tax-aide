@@ -22,9 +22,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Separator } from "@/components/ui/separator";
 import {
   ArrowLeft, CheckSquare, FileText, MessageSquare, ThumbsUp, ThumbsDown,
-  Plus, Trash2, User2, Calendar
+  Plus, Trash2, User2, Calendar, Eye
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
+import { FileViewer } from "@/components/FileViewer";
 
 const STATUS_STYLES: Record<string, { label: string; className: string }> = {
   pending: { label: "Pending", className: "bg-gray-100 text-gray-700" },
@@ -67,6 +68,7 @@ export default function EngagementDetail() {
   const [docForm, setDocForm] = useState({ originalName: "", description: "" });
   const [docOpen, setDocOpen] = useState(false);
   const [statusUpdate, setStatusUpdate] = useState("");
+  const [viewerDoc, setViewerDoc] = useState<NonNullable<typeof documents>[number] | null>(null);
 
   const invalidateEngagement = () => queryClient.invalidateQueries({ queryKey: getGetEngagementQueryKey(id) });
   const invalidateChecklist = () => queryClient.invalidateQueries({ queryKey: getListChecklistItemsQueryKey({ engagementId: id }) });
@@ -336,14 +338,19 @@ export default function EngagementDetail() {
           {documents && documents.length > 0 ? (
             <div className="space-y-2">
               {documents.map(doc => (
-                <div key={doc.id} className="flex items-center gap-3 p-3 rounded-md border">
+                <button
+                  key={doc.id}
+                  className="w-full flex items-center gap-3 p-3 rounded-md border hover:bg-muted/50 transition-colors text-left group"
+                  onClick={() => setViewerDoc(doc)}
+                >
                   <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{doc.originalName}</p>
-                    <p className="text-xs text-muted-foreground">v{doc.version} • {doc.uploadedByName} • {format(parseISO(doc.createdAt), 'MMM d, yyyy')}</p>
+                    <p className="text-xs text-muted-foreground">v{doc.version} · {doc.uploadedByName} · {format(parseISO(doc.createdAt), 'MMM d, yyyy')}</p>
                   </div>
                   <span className="text-xs text-muted-foreground shrink-0">{(doc.fileSize / 1024).toFixed(0)} KB</span>
-                </div>
+                  <Eye className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 shrink-0" />
+                </button>
               ))}
             </div>
           ) : (
@@ -388,6 +395,10 @@ export default function EngagementDetail() {
           )}
         </CardContent>
       </Card>
+
+      {viewerDoc && (
+        <FileViewer doc={viewerDoc} onClose={() => setViewerDoc(null)} />
+      )}
     </div>
   );
 }
