@@ -16,6 +16,57 @@ import { logAudit } from "../lib/audit";
 
 const router = Router();
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const STAGE_KEYS = ["source_collection", "draft_return", "confirmation", "payment"] as const;
+type StageKey = (typeof STAGE_KEYS)[number];
+
+const STAGE_LABELS: Record<StageKey, string> = {
+  source_collection: "Source Documents",
+  draft_return: "Draft Tax Return",
+  confirmation: "Confirmation Receipt",
+  payment: "Payment Confirmation",
+};
+
+// Map stage id → column name on engagementsTable
+const STAGE_STATUS_COLS: Record<StageKey, keyof typeof engagementsTable.$inferSelect> = {
+  source_collection: "sourceCollectionStatus",
+  draft_return: "draftReturnStatus",
+  confirmation: "confirmationStatus",
+  payment: "paymentStatus",
+};
+
+function isValidStage(s: string): s is StageKey {
+  return (STAGE_KEYS as readonly string[]).includes(s);
+}
+
+function getStageStatuses(e: typeof engagementsTable.$inferSelect): Record<StageKey, string> {
+  return {
+    source_collection: e.sourceCollectionStatus,
+    draft_return: e.draftReturnStatus,
+    confirmation: e.confirmationStatus,
+    payment: e.paymentStatus,
+  };
+}
+
+function allStagesApproved(e: typeof engagementsTable.$inferSelect): boolean {
+  return (
+    e.sourceCollectionStatus === "approved" &&
+    e.draftReturnStatus === "approved" &&
+    e.confirmationStatus === "approved" &&
+    e.paymentStatus === "approved"
+  );
+}
+
+function stagesForReviewCount(e: typeof engagementsTable.$inferSelect): number {
+  return [
+    e.sourceCollectionStatus,
+    e.draftReturnStatus,
+    e.confirmationStatus,
+    e.paymentStatus,
+  ].filter(s => s === "for_review").length;
+}
+
 async function serializeEngagement(e: typeof engagementsTable.$inferSelect) {
   let clientName: string | null = null;
   let assignedToName: string | null = null;
@@ -33,6 +84,9 @@ async function serializeEngagement(e: typeof engagementsTable.$inferSelect) {
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, e.approvedBy));
     approvedByName = user?.name ?? null;
   }
+
+  const statuses = getStageStatuses(e);
+  const forReviewCount = stagesForReviewCount(e);
 
   return {
     id: e.id,
@@ -52,6 +106,8 @@ async function serializeEngagement(e: typeof engagementsTable.$inferSelect) {
     dueDate: e.dueDate ?? null,
     notes: e.notes ?? null,
     workflowStage: e.workflowStage ?? null,
+    stageStatuses: statuses,
+    stagesForReview: forReviewCount,
     isAmendment: e.isAmendment ?? false,
     amendedEngagementId: e.amendedEngagementId ?? null,
     createdAt: e.createdAt.toISOString(),
@@ -59,23 +115,7 @@ async function serializeEngagement(e: typeof engagementsTable.$inferSelect) {
   };
 }
 
-// ── Helper: stage progression ────────────────────────────────────────────────
-const STAGE_ORDER = ["source_collection", "draft_return", "confirmation", "payment"] as const;
-type WorkflowStage = (typeof STAGE_ORDER)[number];
-
-function nextStage(current: string): WorkflowStage | null {
-  const idx = STAGE_ORDER.indexOf(current as WorkflowStage);
-  if (idx === -1 || idx === STAGE_ORDER.length - 1) return null;
-  return STAGE_ORDER[idx + 1];
-}
-
-const STAGE_LABELS: Record<string, string> = {
-  source_collection: "Source Documents",
-  draft_return: "Draft Tax Return",
-  confirmation: "Confirmation Receipt",
-  payment: "Payment Confirmation",
-};
-
+// ── GET /api/engagements ──────────────────────────────────────────────────────
 router.get("/engagements", requireAuth, async (req, res): Promise<void> => {
   const queryParams = ListEngagementsQueryParams.safeParse(req.query);
   let engagements = await db.select().from(engagementsTable).orderBy(engagementsTable.createdAt);
@@ -128,18 +168,15 @@ router.get("/engagements/:id", requireAuth, async (req, res): Promise<void> => {
 });
 
 // ── GET /api/engagements/:id/amendments ──────────────────────────────────────
-// Returns all amendments for an engagement (original or amendment)
 router.get("/engagements/:id/amendments", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
-  // First resolve to original: if this is itself an amendment, get its root
   const [thisEng] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
   if (!thisEng) { res.status(404).json({ error: "Engagement not found" }); return; }
 
   const rootId = thisEng.amendedEngagementId ?? id;
 
-  // Get original + all amendments
   const [original] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, rootId));
   const amendments = await db.select().from(engagementsTable).where(eq(engagementsTable.amendedEngagementId, rootId));
 
@@ -187,7 +224,7 @@ router.patch("/engagements/:id", requireAuth, async (req, res): Promise<void> =>
     action: "update",
     entityType: "engagement",
     entityId: engagement.id,
-    description: `Updated engagement "${engagement.title}" status to ${engagement.status}`,
+    description: `Updated engagement "${engagement.title}"`,
   });
 
   res.json(await serializeEngagement(engagement));
@@ -251,271 +288,222 @@ router.post("/engagements/:id/approve", requireAuth, async (req, res): Promise<v
     return;
   }
 
-  if (engagement.assignedTo) {
-    await db.insert(notificationsTable).values({
-      userId: engagement.assignedTo,
-      title: parsed.data.approved ? "Engagement Approved" : "Engagement Returned for Review",
-      message: `"${engagement.title}" has been ${parsed.data.approved ? "approved" : "returned for review"}.${parsed.data.notes ? ` Notes: ${parsed.data.notes}` : ""}`,
-      type: "engagement_approved",
-      relatedId: engagement.id,
-      relatedType: "engagement",
-    });
-  }
-
-  await logAudit({
-    userId: req.session.userId,
-    action: parsed.data.approved ? "approve" : "reject",
-    entityType: "engagement",
-    entityId: engagement.id,
-    description: `${parsed.data.approved ? "Approved" : "Rejected"} engagement "${engagement.title}"`,
-  });
-
   res.json(await serializeEngagement(engagement));
 });
 
-// ── POST /api/engagements/:id/advance-stage ──────────────────────────────────
-// NEW: Accountant advances to next stage directly (no manager approval needed between stages).
-// At the FINAL stage (payment), this submits for manager review instead.
-router.post("/engagements/:id/advance-stage", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
-  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
-
-  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
-  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
-
-  if (engagement.status !== "in_progress") {
-    res.status(400).json({ error: "Engagement is not in progress" }); return;
-  }
-  if (!engagement.workflowStage) {
-    res.status(400).json({ error: "Engagement has no workflow stage" }); return;
-  }
-
-  const notes = req.body.notes?.trim() || null;
-  const next = nextStage(engagement.workflowStage);
-
-  let updatedData: Partial<typeof engagementsTable.$inferInsert>;
-  let action: string;
-
-  if (next) {
-    // Not the last stage: advance directly without manager approval
-    updatedData = {
-      workflowStage: next,
-      status: "in_progress",
-      notes: notes ?? engagement.notes,
-    };
-    action = `Advanced from "${STAGE_LABELS[engagement.workflowStage]}" to "${STAGE_LABELS[next]}"`;
-  } else {
-    // Last stage (payment): submit for manager review
-    updatedData = {
-      status: "for_review",
-      notes: notes ?? engagement.notes,
-    };
-    action = `Submitted "${STAGE_LABELS[engagement.workflowStage]}" for manager review`;
-
-    // Notify all managers
-    const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
-    for (const mgr of managers) {
-      await db.insert(notificationsTable).values({
-        userId: mgr.id,
-        title: "Filing Ready for Approval",
-        message: `"${engagement.title}" — all stages complete. Ready for your final approval.`,
-        type: "engagement_approved",
-        relatedId: engagement.id,
-        relatedType: "engagement",
-      });
-    }
-  }
-
-  const [updated] = await db.update(engagementsTable)
-    .set(updatedData as any)
-    .where(eq(engagementsTable.id, id))
-    .returning();
-
-  await logAudit({
-    userId: req.session.userId,
-    action: "update",
-    entityType: "engagement",
-    entityId: id,
-    description: action,
-  });
-
-  res.json(await serializeEngagement(updated));
-});
-
 // ── POST /api/engagements/:id/submit-stage ───────────────────────────────────
-// Legacy: kept for backward compat. Behaves same as advance-stage.
+// Accountant submits a specific stage for manager review.
+// Body: { stage: "source_collection" | "draft_return" | "confirmation" | "payment" }
 router.post("/engagements/:id/submit-stage", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
-  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
-  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
-
-  if (engagement.status !== "in_progress") {
-    res.status(400).json({ error: "Engagement is not in progress" }); return;
+  const stage = req.body.stage as string;
+  if (!stage || !isValidStage(stage)) {
+    res.status(400).json({ error: `Invalid stage. Must be one of: ${STAGE_KEYS.join(", ")}` }); return;
   }
-  if (!engagement.workflowStage) {
-    res.status(400).json({ error: "Engagement has no workflow stage" }); return;
-  }
-
-  const notes = req.body.notes?.trim() || null;
-  const next = nextStage(engagement.workflowStage);
-
-  let updatedData: Partial<typeof engagementsTable.$inferInsert>;
-
-  if (next) {
-    updatedData = { workflowStage: next, status: "in_progress", notes: notes ?? engagement.notes };
-  } else {
-    updatedData = { status: "for_review", notes: notes ?? engagement.notes };
-
-    const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
-    for (const mgr of managers) {
-      await db.insert(notificationsTable).values({
-        userId: mgr.id,
-        title: "Filing Ready for Approval",
-        message: `"${engagement.title}" — all stages complete. Ready for your final approval.`,
-        type: "engagement_approved",
-        relatedId: engagement.id,
-        relatedType: "engagement",
-      });
-    }
-  }
-
-  const [updated] = await db.update(engagementsTable)
-    .set(updatedData as any)
-    .where(eq(engagementsTable.id, id))
-    .returning();
-
-  res.json(await serializeEngagement(updated));
-});
-
-// ── POST /api/engagements/:id/skip-source ────────────────────────────────────
-router.post("/engagements/:id/skip-source", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
-  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
   if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+  if (engagement.status === "completed") { res.status(400).json({ error: "Filing is already complete" }); return; }
 
-  if (engagement.workflowStage !== "source_collection" || engagement.status !== "in_progress") {
-    res.status(400).json({ error: "Can only skip source collection when in progress" }); return;
+  const col = STAGE_STATUS_COLS[stage];
+  const currentStageStatus = engagement[col] as string;
+
+  if (currentStageStatus === "for_review") {
+    res.status(400).json({ error: "Stage is already submitted for review" }); return;
+  }
+  if (currentStageStatus === "approved") {
+    res.status(400).json({ error: "Stage is already approved" }); return;
   }
 
   const [updated] = await db.update(engagementsTable)
-    .set({ workflowStage: "draft_return", status: "in_progress", notes: "No taxpayer transactions to report for this period." })
+    .set({ [col]: "for_review" } as any)
     .where(eq(engagementsTable.id, id))
     .returning();
-
-  await db.insert(commentsTable).values({
-    engagementId: id,
-    authorId: req.session.userId!,
-    content: "Source collection skipped — no taxpayer transactions for this period.",
-    isApproval: false,
-  });
-
-  await logAudit({
-    userId: req.session.userId,
-    action: "update",
-    entityType: "engagement",
-    entityId: id,
-    description: `Skipped source collection (no transactions) — advanced to Draft Tax Return`,
-  });
-
-  res.json(await serializeEngagement(updated));
-});
-
-// ── POST /api/engagements/:id/skip-payment ───────────────────────────────────
-router.post("/engagements/:id/skip-payment", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
-  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
-
-  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
-  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
-
-  if (engagement.workflowStage !== "payment" || engagement.status !== "in_progress") {
-    res.status(400).json({ error: "Can only skip payment when in the payment stage and in progress" }); return;
-  }
-
-  const [updated] = await db.update(engagementsTable)
-    .set({ status: "for_review", notes: (engagement.notes ? engagement.notes + " | " : "") + "No payment required for this filing." })
-    .where(eq(engagementsTable.id, id))
-    .returning();
-
-  await db.insert(commentsTable).values({
-    engagementId: id,
-    authorId: req.session.userId!,
-    content: "Payment stage skipped — no payment required. Submitted for manager approval.",
-    isApproval: false,
-  });
 
   // Notify managers
   const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
   for (const mgr of managers) {
     await db.insert(notificationsTable).values({
       userId: mgr.id,
-      title: "Filing Ready for Approval (No Payment)",
-      message: `"${engagement.title}" — no payment required. Ready for your approval.`,
+      title: `Stage Ready for Approval`,
+      message: `"${engagement.title}" — ${STAGE_LABELS[stage]} stage submitted for your review.`,
       type: "engagement_approved",
       relatedId: engagement.id,
       relatedType: "engagement",
     });
   }
+
+  await db.insert(commentsTable).values({
+    engagementId: id,
+    authorId: req.session.userId!,
+    content: `Submitted ${STAGE_LABELS[stage]} for manager review.`,
+    isApproval: false,
+  });
 
   await logAudit({
     userId: req.session.userId,
     action: "update",
     entityType: "engagement",
     entityId: id,
-    description: `Payment skipped — submitted for manager approval`,
+    description: `Submitted "${STAGE_LABELS[stage]}" stage for review on "${engagement.title}"`,
   });
 
   res.json(await serializeEngagement(updated));
 });
 
 // ── POST /api/engagements/:id/approve-stage ──────────────────────────────────
-// Manager approves the complete filing (all stages done → completed)
+// Manager approves a specific stage. When all 4 are approved → filing complete.
+// Body: { stage: string, notes?: string }
 router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
+  const stage = req.body.stage as string;
+  if (!stage || !isValidStage(stage)) {
+    res.status(400).json({ error: `Invalid stage. Must be one of: ${STAGE_KEYS.join(", ")}` }); return;
+  }
+
   const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
   if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
 
-  if (engagement.status !== "for_review") {
-    res.status(400).json({ error: "Engagement is not awaiting review" }); return;
+  const col = STAGE_STATUS_COLS[stage];
+  const currentStageStatus = engagement[col] as string;
+
+  if (currentStageStatus !== "for_review") {
+    res.status(400).json({ error: `Stage "${STAGE_LABELS[stage]}" is not awaiting review (current: ${currentStageStatus})` }); return;
   }
 
   const notes = req.body.notes?.trim() || null;
 
+  // Build update: set this stage to approved
+  const updatePayload: Record<string, any> = { [col]: "approved" };
+
+  // Check if all OTHER stages are also approved — if so, complete the filing
+  const tempStatuses = getStageStatuses(engagement);
+  tempStatuses[stage] = "approved";
+  const willComplete = Object.values(tempStatuses).every(s => s === "approved");
+
+  if (willComplete) {
+    updatePayload.status = "completed";
+    updatePayload.approvedBy = req.session.userId!;
+    updatePayload.approvedAt = new Date();
+    if (notes) updatePayload.approvalNotes = notes;
+  }
+
   const [updated] = await db.update(engagementsTable)
-    .set({
-      status: "completed",
-      approvedBy: req.session.userId!,
-      approvedAt: new Date(),
-      approvalNotes: notes,
-    } as any)
+    .set(updatePayload)
     .where(eq(engagementsTable.id, id))
     .returning();
-
-  // Mark linked deadline as completed
-  await db.update(deadlinesTable)
-    .set({ status: "completed" })
-    .where(eq(deadlinesTable.engagementId, id));
 
   if (notes) {
     await db.insert(commentsTable).values({
       engagementId: id,
       authorId: req.session.userId!,
-      content: notes,
+      content: `Approved ${STAGE_LABELS[stage]}: ${notes}`,
+      isApproval: true,
+    });
+  } else {
+    await db.insert(commentsTable).values({
+      engagementId: id,
+      authorId: req.session.userId!,
+      content: `Approved ${STAGE_LABELS[stage]}.`,
       isApproval: true,
     });
   }
 
+  if (willComplete) {
+    // Mark linked deadline as completed
+    await db.update(deadlinesTable)
+      .set({ status: "completed" })
+      .where(eq(deadlinesTable.engagementId, id));
+
+    // Notify accountant
+    if (engagement.assignedTo) {
+      await db.insert(notificationsTable).values({
+        userId: engagement.assignedTo,
+        title: "Filing Complete",
+        message: `All stages approved — filing for "${engagement.title}" is now complete!`,
+        type: "engagement_approved",
+        relatedId: engagement.id,
+        relatedType: "engagement",
+      });
+    }
+
+    await logAudit({
+      userId: req.session.userId,
+      action: "approve",
+      entityType: "engagement",
+      entityId: id,
+      description: `Approved final stage "${STAGE_LABELS[stage]}" — filing "${engagement.title}" is now complete`,
+    });
+  } else {
+    if (engagement.assignedTo) {
+      await db.insert(notificationsTable).values({
+        userId: engagement.assignedTo,
+        title: "Stage Approved",
+        message: `${STAGE_LABELS[stage]} was approved for "${engagement.title}". Keep working on the remaining stages.`,
+        type: "engagement_approved",
+        relatedId: engagement.id,
+        relatedType: "engagement",
+      });
+    }
+
+    await logAudit({
+      userId: req.session.userId,
+      action: "approve",
+      entityType: "engagement",
+      entityId: id,
+      description: `Approved stage "${STAGE_LABELS[stage]}" on "${engagement.title}"`,
+    });
+  }
+
+  res.json(await serializeEngagement(updated));
+});
+
+// ── POST /api/engagements/:id/reject-stage ───────────────────────────────────
+// Manager returns a specific stage for revision.
+// Body: { stage: string, notes: string }
+router.post("/engagements/:id/reject-stage", requireRole("manager"), async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const stage = req.body.stage as string;
+  if (!stage || !isValidStage(stage)) {
+    res.status(400).json({ error: `Invalid stage` }); return;
+  }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  const col = STAGE_STATUS_COLS[stage];
+  const currentStageStatus = engagement[col] as string;
+
+  if (currentStageStatus !== "for_review") {
+    res.status(400).json({ error: `Stage is not awaiting review` }); return;
+  }
+
+  const notes = (req.body.notes || "").trim();
+  if (!notes) { res.status(400).json({ error: "Rejection reason is required" }); return; }
+
+  const [updated] = await db.update(engagementsTable)
+    .set({ [col]: "in_progress" } as any)
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  await db.insert(commentsTable).values({
+    engagementId: id,
+    authorId: req.session.userId!,
+    content: `Returned ${STAGE_LABELS[stage]} for revision: ${notes}`,
+    isApproval: false,
+  });
+
   if (engagement.assignedTo) {
     await db.insert(notificationsTable).values({
       userId: engagement.assignedTo,
-      title: "Filing Complete",
-      message: `Filing workflow for "${engagement.title}" is now complete and approved!`,
+      title: "Stage Returned for Revision",
+      message: `${STAGE_LABELS[stage]} was returned on "${engagement.title}". ${notes}`,
       type: "engagement_approved",
       relatedId: engagement.id,
       relatedType: "engagement",
@@ -524,45 +512,58 @@ router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req
 
   await logAudit({
     userId: req.session.userId,
-    action: "approve",
+    action: "reject",
     entityType: "engagement",
     entityId: id,
-    description: `Approved and completed filing for "${engagement.title}"`,
+    description: `Returned "${STAGE_LABELS[stage]}" on "${engagement.title}" — ${notes}`,
   });
 
   res.json(await serializeEngagement(updated));
 });
 
-// ── POST /api/engagements/:id/void-stage ────────────────────────────────────
-// Manager voids/undoes the filing approval — reverts back to in_progress
+// ── POST /api/engagements/:id/void-stage ─────────────────────────────────────
+// Manager voids/undoes a stage approval (or for_review submission).
+// Body: { stage: string, notes?: string }
+// If stage is "approved" → revert to "in_progress"; if was completed, revert engagement status
+// If stage is "for_review" → revert to "in_progress"
 router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
+  const stage = req.body.stage as string;
+  if (!stage || !isValidStage(stage)) {
+    res.status(400).json({ error: `Invalid stage. Must be one of: ${STAGE_KEYS.join(", ")}` }); return;
+  }
+
   const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
   if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
 
-  const wasCompleted = engagement.status === "completed";
-  const wasForReview = engagement.status === "for_review";
+  const col = STAGE_STATUS_COLS[stage];
+  const currentStageStatus = engagement[col] as string;
 
-  if (!wasCompleted && !wasForReview) {
-    res.status(400).json({ error: "Can only void completed or for-review engagements" }); return;
+  if (currentStageStatus !== "approved" && currentStageStatus !== "for_review") {
+    res.status(400).json({ error: `Stage "${STAGE_LABELS[stage]}" is not approved or pending review (current: ${currentStageStatus})` }); return;
   }
 
+  const wasCompleted = engagement.status === "completed";
   const notes = req.body.notes?.trim() || null;
-  const reason = notes || "Voided by manager";
+
+  const updatePayload: Record<string, any> = { [col]: "in_progress" };
+
+  // If filing was completed and we're undoing a stage, revert to in_progress
+  if (wasCompleted) {
+    updatePayload.status = "in_progress";
+    updatePayload.approvedBy = null;
+    updatePayload.approvedAt = null;
+    updatePayload.approvalNotes = null;
+  }
 
   const [updated] = await db.update(engagementsTable)
-    .set({
-      status: "in_progress",
-      approvedBy: null,
-      approvedAt: null,
-      approvalNotes: null,
-    })
+    .set(updatePayload)
     .where(eq(engagementsTable.id, id))
     .returning();
 
-  // If was completed, revert the linked deadline status
+  // If we undid a completed filing, also unmark the deadline
   if (wasCompleted) {
     await db.update(deadlinesTable)
       .set({ status: "pending" })
@@ -572,15 +573,15 @@ router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, r
   await db.insert(commentsTable).values({
     engagementId: id,
     authorId: req.session.userId!,
-    content: `${wasCompleted ? "Filing completion voided" : "Review submission voided"} — returned to accountant. Reason: ${reason}`,
+    content: `${wasCompleted ? "Filing completion voided — " : ""}${STAGE_LABELS[stage]} stage returned for revision.${notes ? ` Reason: ${notes}` : ""}`,
     isApproval: false,
   });
 
   if (engagement.assignedTo) {
     await db.insert(notificationsTable).values({
       userId: engagement.assignedTo,
-      title: wasCompleted ? "Filing Completion Voided" : "Review Returned",
-      message: `"${engagement.title}" has been returned for revision. ${reason}`,
+      title: wasCompleted ? "Filing Completion Voided" : "Stage Approval Voided",
+      message: `${STAGE_LABELS[stage]} on "${engagement.title}" has been returned for revision.${notes ? ` Reason: ${notes}` : ""}`,
       type: "engagement_approved",
       relatedId: engagement.id,
       relatedType: "engagement",
@@ -592,64 +593,29 @@ router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, r
     action: "reject",
     entityType: "engagement",
     entityId: id,
-    description: `Voided ${wasCompleted ? "completed" : "for-review"} status for "${engagement.title}" — returned to in_progress`,
+    description: `Voided approval for "${STAGE_LABELS[stage]}" on "${engagement.title}"${notes ? ` — ${notes}` : ""}`,
   });
 
   res.json(await serializeEngagement(updated));
 });
 
-// ── POST /api/engagements/:id/reject-stage ───────────────────────────────────
-// Manager rejects current stage, returns to accountant
-router.post("/engagements/:id/reject-stage", requireRole("manager"), async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
-  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+// ── POST /api/engagements/:id/advance-stage (legacy compat) ──────────────────
+// Kept for backward compat — behaves same as submit-stage for current stage
+router.post("/engagements/:id/advance-stage", requireAuth, async (req, res): Promise<void> => {
+  res.status(400).json({ error: "advance-stage is no longer supported. Use submit-stage with a stage parameter." });
+});
 
-  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
-  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+// ── POST /api/engagements/:id/skip-source (legacy compat) ────────────────────
+router.post("/engagements/:id/skip-source", requireAuth, async (req, res): Promise<void> => {
+  res.status(400).json({ error: "Use submit-stage with stage=source_collection to submit that stage." });
+});
 
-  if (engagement.status !== "for_review") {
-    res.status(400).json({ error: "Engagement is not awaiting review" }); return;
-  }
-
-  const notes = (req.body.notes || "").trim();
-  if (!notes) { res.status(400).json({ error: "Rejection reason is required" }); return; }
-
-  const [updated] = await db.update(engagementsTable)
-    .set({ status: "in_progress", approvalNotes: notes })
-    .where(eq(engagementsTable.id, id))
-    .returning();
-
-  await db.insert(commentsTable).values({
-    engagementId: id,
-    authorId: req.session.userId!,
-    content: `Returned for revision: ${notes}`,
-    isApproval: false,
-  });
-
-  if (engagement.assignedTo) {
-    await db.insert(notificationsTable).values({
-      userId: engagement.assignedTo,
-      title: "Filing Returned for Revision",
-      message: `"${engagement.title}" returned. ${notes}`,
-      type: "engagement_approved",
-      relatedId: engagement.id,
-      relatedType: "engagement",
-    });
-  }
-
-  await logAudit({
-    userId: req.session.userId,
-    action: "reject",
-    entityType: "engagement",
-    entityId: id,
-    description: `Rejected filing for "${engagement.title}" — ${notes}`,
-  });
-
-  res.json(await serializeEngagement(updated));
+// ── POST /api/engagements/:id/skip-payment (legacy compat) ───────────────────
+router.post("/engagements/:id/skip-payment", requireAuth, async (req, res): Promise<void> => {
+  res.status(400).json({ error: "Use submit-stage with stage=payment to submit that stage." });
 });
 
 // ── POST /api/engagements/:id/amend ──────────────────────────────────────────
-// Create an amended return filing for a completed engagement
 router.post("/engagements/:id/amend", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -661,7 +627,6 @@ router.post("/engagements/:id/amend", requireAuth, async (req, res): Promise<voi
     res.status(400).json({ error: "Can only amend a completed filing" }); return;
   }
 
-  // Count existing amendments to number this one
   const existingAmendments = await db.select()
     .from(engagementsTable)
     .where(eq(engagementsTable.amendedEngagementId, id));
@@ -676,10 +641,14 @@ router.post("/engagements/:id/amend", requireAuth, async (req, res): Promise<voi
     status: "in_progress",
     assignedTo: original.assignedTo,
     dueDate: original.dueDate,
-    workflowStage: "source_collection",
+    workflowStage: null,
+    sourceCollectionStatus: "not_started",
+    draftReturnStatus: "not_started",
+    confirmationStatus: "not_started",
+    paymentStatus: "not_started",
     isAmendment: true,
     amendedEngagementId: id,
-  }).returning();
+  } as any).returning();
 
   await db.insert(commentsTable).values({
     engagementId: amendment.id,

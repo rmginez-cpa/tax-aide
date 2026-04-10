@@ -52,24 +52,24 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 - BIR forms/submissions covered: 2550M, 2550Q, 2551Q, 1601C, 1601EQ, 1604CF, 1604E, 1702, 1702Q, 1701, 1701Q, 2000, AFS, Alphalist (employees), 2316 (substituted filing), Annex C, Annex F, QAP (quarterly alphalist of payees), SLS, SLP, eSales, Annual Inventory List, Lessee Information Statement
 - File uploads: PDF, Excel, Word, images, CSV, DAT (SLS/SLP data files)
 
-### 4-Stage Filing Workflow
-- Compliance items in client-detail.tsx are clickable buttons that open `FilingWorkflowDialog`
-- Deadlines in deadlines.tsx and calendar.tsx are also clickable and open `FilingWorkflowDialog`
+### 4-Stage Filing Workflow (Parallel / Independent)
+- Compliance items in client-detail.tsx, deadlines.tsx, calendar.tsx, and engagements.tsx all open `FilingWorkflowDialog`
 - Dialog is at `artifacts/taxcms/src/components/FilingWorkflowDialog.tsx`
-- Stages: `source_collection` → `draft_return` → `confirmation` → `payment`
-- State: `engagement.workflowStage` (current stage) + `engagement.status` (in_progress | for_review | completed)
-- **New workflow (no inter-stage gating)**: Accountant advances freely through stages 1-3 using "Advance to [Next Stage]" button (no manager approval needed between stages). Only at Stage 4 (payment) does accountant click "Submit for Manager Approval" → status goes `for_review` → manager approves → `completed`
-- Accountant extra actions: skip source collection ("No Transactions"), skip payment ("No Payment Required — File Directly")
-- Manager final approval: "Approve & Complete Filing" button marks filing as completed, marks deadline as completed
-- Manager return: "Return for Revision" sends back to accountant (requires reason text)
-- Manager void: "Void Completion" reverts completed → payment in_progress (and unmarks deadline); also "Return" button on for_review state
-- **Document deletion**: Accountant can delete documents while engagement is `in_progress`. When `for_review` or `completed`, delete is blocked (403). Lock label appears on hover. Manager must void to unlock.
-- **Amended Returns**: "File Amendment" button appears in completed filing banner. Creates new engagement (isAmendment=true, amendedEngagementId=original). Amendment follows full 4-stage workflow. "Filing History" dropdown in dialog header shows original + all amendments; click to switch between them.
-- Completed workflow dialog shows all 4 stages with their uploaded documents in "All Stages" section (clickable to open file viewer)
-- API routes: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/advance-stage`, `skip-source`, `skip-payment`, `approve-stage`, `reject-stage`, `void-stage`, `amend`
-- `GET /api/engagements/:id/amendments` — returns original + all amendments for any engagement in the filing tree
-- `documents.stage` column tracks which workflow stage each document belongs to
-- `engagements.workflow_stage` + `engagements.is_amendment` + `engagements.amended_engagement_id` columns added
+- Stages: `source_collection`, `draft_return`, `confirmation`, `payment` — all **independent and parallel**
+- **Model**: Accountant can work on all 4 stages simultaneously. Each stage has its own approval cycle. Filing is complete only when all 4 stages are individually approved.
+- **Per-stage statuses**: `not_started | in_progress | for_review | approved` (stored in 4 DB columns)
+- **Engagement-level status**: `pending` (not started) | `in_progress` (started, not all approved) | `completed` (all 4 approved)
+- **Accountant actions per stage**: upload documents, then click "Submit for Manager Approval"
+- **Manager actions per stage**: "Approve Stage" (green) or "Return for Revision" (red, requires reason)
+- **Manager: Undo Approval**: appears on each approved stage; reverts that stage to `in_progress`; if filing was completed, reverts engagement to `in_progress` and unmarks deadline
+- **Document deletion**: Locked per-stage — deletable when stage is `not_started`/`in_progress`; blocked (403) when `for_review` or `approved`. Lock icon shows on hover.
+- **Filing progress**: "X / 4 stages approved" progress bar shown at top of dialog
+- **Amended Returns**: "File Amendment" button on completed filing banner. Creates new engagement (isAmendment=true) with all 4 stages reset to `not_started`.
+- "Filing History" dropdown shows original + all amendments; click to switch views
+- **API routes**: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage` (body: {stage}), `approve-stage` (body: {stage, notes?}), `reject-stage` (body: {stage, notes}), `void-stage` (body: {stage, notes?}), `amend`
+- `GET /api/engagements/:id/amendments` — returns original + all amendments
+- Engagement serialization includes `stageStatuses: Record<stage, status>` and `stagesForReview: number`
+- Schema: `source_collection_status`, `draft_return_status`, `confirmation_status`, `payment_status` columns on engagements table
 
 ### Calendar Page
 - Route: `/calendar`, accessible by accountant and manager roles

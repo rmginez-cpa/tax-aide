@@ -145,17 +145,32 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
     return;
   }
 
-  // Guard: if attached to an engagement that is approved (for_review or completed), block deletion
+  // Guard: if the document's stage is locked (for_review or approved), block deletion
   if (existingDoc.engagementId) {
     const [eng] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, existingDoc.engagementId));
-    const userRole = (req as any).session?.role ?? req.session?.role;
-    if (eng && (eng.status === "for_review" || eng.status === "completed")) {
-      res.status(403).json({
-        error: eng.status === "completed"
-          ? "Cannot delete documents from a completed filing. The manager must void the completion first."
-          : "Cannot delete documents while the filing is pending manager approval.",
-      });
-      return;
+    if (eng) {
+      const docStage = existingDoc.stage as string | null;
+      const stageStatusMap: Record<string, string> = {
+        source_collection: eng.sourceCollectionStatus,
+        draft_return: eng.draftReturnStatus,
+        confirmation: eng.confirmationStatus,
+        payment: eng.paymentStatus,
+      };
+      const stageStatus = docStage && stageStatusMap[docStage] ? stageStatusMap[docStage] : null;
+
+      if (stageStatus === "for_review") {
+        res.status(403).json({ error: "Cannot delete documents from a stage that is pending manager approval." });
+        return;
+      }
+      if (stageStatus === "approved") {
+        res.status(403).json({ error: "Cannot delete documents from an approved stage. The manager must undo the approval first." });
+        return;
+      }
+      // Fallback: if whole filing is completed, also block
+      if (eng.status === "completed" && !stageStatus) {
+        res.status(403).json({ error: "Cannot delete documents from a completed filing." });
+        return;
+      }
     }
   }
 

@@ -10,13 +10,14 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Progress } from "@/components/ui/progress";
 import { FileViewer } from "@/components/FileViewer";
 import {
-  Upload, Check, ChevronRight, FileText, FileSpreadsheet,
-  FileType, Image as ImageIcon, AlertCircle, Loader2,
-  PlayCircle, SkipForward, SendHorizontal, ThumbsUp, ThumbsDown,
+  Upload, Check, FileText, FileSpreadsheet,
+  FileType, Image as ImageIcon, Loader2,
+  PlayCircle, ThumbsUp, ThumbsDown,
   Inbox, PenLine, Receipt, CreditCard, RotateCcw, Trash2,
-  ChevronDown, FilePlus, History
+  ChevronDown, FilePlus, History, Lock, Send
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,8 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+type StageKey = "source_collection" | "draft_return" | "confirmation" | "payment";
+
 interface Engagement {
   id: number;
   status: string;
@@ -42,6 +45,8 @@ interface Engagement {
   assignedToName: string | null;
   isAmendment?: boolean;
   amendedEngagementId?: number | null;
+  stageStatuses: Record<StageKey, string>;
+  stagesForReview: number;
 }
 
 interface Comment {
@@ -66,9 +71,15 @@ interface Props {
   onUpdate: () => void;
 }
 
-// ── Stages ───────────────────────────────────────────────────────────────────
+// ── Stage definitions ─────────────────────────────────────────────────────────
 
-const STAGES = [
+const STAGES: Array<{
+  id: StageKey;
+  label: string;
+  shortLabel: string;
+  icon: React.ElementType;
+  hint: string;
+}> = [
   {
     id: "source_collection",
     label: "Source Documents",
@@ -99,20 +110,10 @@ const STAGES = [
   },
 ];
 
-const STAGE_ORDER = STAGES.map(s => s.id);
-
-function stageIndex(stage: string | null) {
-  if (!stage) return -1;
-  return STAGE_ORDER.indexOf(stage);
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
-
-function apiUrl(path: string) {
-  return `${BASE}/api${path}`;
-}
+function apiUrl(path: string) { return `${BASE}/api${path}`; }
 
 async function apiCall(method: string, path: string, body?: object) {
   const res = await fetch(apiUrl(path), {
@@ -145,6 +146,13 @@ function formatBytes(b: number) {
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
 
+const STAGE_STATUS_STYLES: Record<string, { label: string; className: string }> = {
+  not_started: { label: "Not Started", className: "bg-gray-100 text-gray-600 border-gray-200" },
+  in_progress: { label: "In Progress", className: "bg-blue-100 text-blue-700 border-blue-200" },
+  for_review: { label: "Pending Approval", className: "bg-amber-100 text-amber-700 border-amber-200" },
+  approved: { label: "Approved", className: "bg-green-100 text-green-700 border-green-200" },
+};
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function FilingWorkflowDialog({
@@ -168,36 +176,27 @@ export function FilingWorkflowDialog({
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
-
-  // All filings for this form (original + amendments)
-  const [allFilings, setAllFilings] = useState<Engagement[]>([]);
-
-  // Upload state
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploadDesc, setUploadDesc] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Manager action state
-  const [rejectReason, setRejectReason] = useState("");
-  const [approvalNote, setApprovalNote] = useState("");
-  const [showRejectForm, setShowRejectForm] = useState(false);
-  const [showVoidForm, setShowVoidForm] = useState(false);
-  const [voidReason, setVoidReason] = useState("");
-
-  // Submit / advance note
-  const [submitNote, setSubmitNote] = useState("");
-
-  // Document deletion
-  const [deletingDocId, setDeletingDocId] = useState<number | null>(null);
-
-  // Amendment creation
   const [amending, setAmending] = useState(false);
 
-  // Viewer
+  const [allFilings, setAllFilings] = useState<Engagement[]>([]);
+
+  // Per-stage upload state
+  const [stageFiles, setStageFiles] = useState<Partial<Record<StageKey, File>>>({});
+  const [stageDescs, setStageDescs] = useState<Partial<Record<StageKey, string>>>({});
+  const [uploadingStage, setUploadingStage] = useState<StageKey | null>(null);
+  const fileInputRefs = useRef<Partial<Record<StageKey, HTMLInputElement>>>({});
+
+  // Per-stage manager action state
+  const [stageApprovalNotes, setStageApprovalNotes] = useState<Partial<Record<StageKey, string>>>({});
+  const [stageRejectReasons, setStageRejectReasons] = useState<Partial<Record<StageKey, string>>>({});
+  const [showRejectForm, setShowRejectForm] = useState<Partial<Record<StageKey, boolean>>>({});
+  const [showVoidForm, setShowVoidForm] = useState<Partial<Record<StageKey, boolean>>>({});
+  const [voidReasons, setVoidReasons] = useState<Partial<Record<StageKey, string>>>({});
+  const [actionLoadingStage, setActionLoadingStage] = useState<StageKey | null>(null);
+
+  const [deletingDocId, setDeletingDocId] = useState<number | null>(null);
   const [viewerDoc, setViewerDoc] = useState<any>(null);
 
-  // Documents for this engagement
   const { data: allDocs } = useListDocuments();
   const engagementDocs = (allDocs ?? []).filter(d => d.engagementId === engagementId);
 
@@ -206,7 +205,7 @@ export function FilingWorkflowDialog({
     setEngagementId(initialEngagementId);
   }, [initialEngagementId]);
 
-  // Load engagement data whenever engagementId changes
+  // Load engagement data
   useEffect(() => {
     if (!engagementId) { setEngagement(null); return; }
     setLoading(true);
@@ -216,7 +215,7 @@ export function FilingWorkflowDialog({
       .finally(() => setLoading(false));
   }, [engagementId, open]);
 
-  // Load all filings (original + amendments) when we have an engagementId
+  // Load amendments list
   useEffect(() => {
     if (!engagementId) { setAllFilings([]); return; }
     apiCall("GET", `/engagements/${engagementId}/amendments`)
@@ -230,19 +229,26 @@ export function FilingWorkflowDialog({
     apiCall("GET", `/comments?engagementId=${engagementId}`)
       .then(data => setComments(Array.isArray(data) ? data : []))
       .catch(() => {});
-  }, [engagementId, open, engagement?.status]);
+  }, [engagementId, open, engagement?.stageStatuses]);
 
-  const refreshEngagement = () => {
+  const refreshEngagement = async () => {
     if (!engagementId) return;
-    return apiCall("GET", `/engagements/${engagementId}`)
-      .then(data => setEngagement(data))
-      .catch(() => {});
+    const data = await apiCall("GET", `/engagements/${engagementId}`);
+    setEngagement(data);
+    return data;
   };
 
   const refreshAll = async () => {
-    await refreshEngagement();
+    const data = await refreshEngagement();
     queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
+    // Also refresh comments
+    if (engagementId) {
+      apiCall("GET", `/comments?engagementId=${engagementId}`)
+        .then(c => setComments(Array.isArray(c) ? c : []))
+        .catch(() => {});
+    }
     onUpdate();
+    return data;
   };
 
   // ── Start workflow ─────────────────────────────────────────────────────────
@@ -261,17 +267,19 @@ export function FilingWorkflowDialog({
     }
   };
 
-  // ── Upload document ────────────────────────────────────────────────────────
-  const handleUpload = async () => {
-    if (!selectedFile || !engagementId) return;
-    setUploading(true);
+  // ── Upload document to a specific stage ────────────────────────────────────
+  const handleUpload = async (stageId: StageKey) => {
+    const file = stageFiles[stageId];
+    if (!file || !engagementId) return;
+    setUploadingStage(stageId);
     try {
       const fd = new FormData();
-      fd.append("file", selectedFile);
+      fd.append("file", file);
       fd.append("engagementId", String(engagementId));
       fd.append("clientId", String(clientId));
-      fd.append("stage", engagement?.workflowStage ?? "source_collection");
-      if (uploadDesc.trim()) fd.append("description", uploadDesc.trim());
+      fd.append("stage", stageId);
+      const desc = stageDescs[stageId];
+      if (desc?.trim()) fd.append("description", desc.trim());
 
       const res = await fetch(apiUrl("/documents/upload"), {
         method: "POST",
@@ -279,15 +287,23 @@ export function FilingWorkflowDialog({
         body: fd,
       });
       if (!res.ok) throw new Error("Upload failed");
-      setSelectedFile(null);
-      setUploadDesc("");
-      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      setStageFiles(prev => { const n = { ...prev }; delete n[stageId]; return n; });
+      setStageDescs(prev => { const n = { ...prev }; delete n[stageId]; return n; });
+      const ref = fileInputRefs.current[stageId];
+      if (ref) ref.value = "";
+
+      // Auto-advance stage to in_progress if it was not_started
+      if (engagement?.stageStatuses[stageId] === "not_started") {
+        await refreshEngagement();
+      }
+
       queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
       toast({ title: "Document uploaded" });
     } catch (e: any) {
       toast({ title: e.message || "Upload failed", variant: "destructive" });
     } finally {
-      setUploading(false);
+      setUploadingStage(null);
     }
   };
 
@@ -312,114 +328,71 @@ export function FilingWorkflowDialog({
     }
   };
 
-  // ── Advance / submit stage ─────────────────────────────────────────────────
-  const handleAdvance = async () => {
+  // ── Submit a stage for manager review ─────────────────────────────────────
+  const handleSubmitStage = async (stageId: StageKey) => {
     if (!engagementId) return;
-    setLoading(true);
+    setActionLoadingStage(stageId);
     try {
-      await apiCall("POST", `/engagements/${engagementId}/advance-stage`, {
-        notes: submitNote.trim() || undefined,
-      });
-      setSubmitNote("");
-      await refreshEngagement();
-      const next = nextStageLabel();
-      toast({ title: next ? `Advanced to ${next}` : "Submitted for manager approval" });
-      onUpdate();
+      await apiCall("POST", `/engagements/${engagementId}/submit-stage`, { stage: stageId });
+      await refreshAll();
+      toast({ title: `${STAGES.find(s => s.id === stageId)?.label} submitted for approval` });
     } catch (e: any) {
-      toast({ title: e.message || "Action failed", variant: "destructive" });
+      toast({ title: e.message || "Submit failed", variant: "destructive" });
     } finally {
-      setLoading(false);
+      setActionLoadingStage(null);
     }
   };
 
-  const nextStageLabel = () => {
-    const idx = stageIndex(engagement?.workflowStage ?? null);
-    if (idx === -1) return null;
-    return idx < STAGES.length - 1 ? STAGES[idx + 1].label : null;
-  };
-
-  const isLastStage = stageIndex(engagement?.workflowStage ?? null) === STAGES.length - 1;
-
-  const handleSkipSource = async () => {
+  // ── Manager: approve a stage ───────────────────────────────────────────────
+  const handleApproveStage = async (stageId: StageKey) => {
     if (!engagementId) return;
-    setLoading(true);
+    setActionLoadingStage(stageId);
     try {
-      await apiCall("POST", `/engagements/${engagementId}/skip-source`);
+      const notes = stageApprovalNotes[stageId]?.trim() || undefined;
+      const updated = await apiCall("POST", `/engagements/${engagementId}/approve-stage`, { stage: stageId, notes });
+      setStageApprovalNotes(prev => { const n = { ...prev }; delete n[stageId]; return n; });
       await refreshAll();
-      toast({ title: "Proceeded to Draft Tax Return (no transactions)" });
-    } catch (e: any) {
-      toast({ title: e.message || "Action failed", variant: "destructive" });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSkipPayment = async () => {
-    if (!engagementId) return;
-    setLoading(true);
-    try {
-      await apiCall("POST", `/engagements/${engagementId}/skip-payment`);
-      await refreshAll();
-      toast({ title: "Submitted for manager approval (no payment required)" });
-    } catch (e: any) {
-      toast({ title: e.message || "Action failed", variant: "destructive" });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ── Manager actions ────────────────────────────────────────────────────────
-  const handleApprove = async () => {
-    if (!engagementId) return;
-    setLoading(true);
-    try {
-      await apiCall("POST", `/engagements/${engagementId}/approve-stage`, {
-        notes: approvalNote.trim() || undefined,
-      });
-      setApprovalNote("");
-      await refreshAll();
-      toast({ title: "Filing approved and marked complete" });
+      toast({ title: updated.status === "completed" ? "All stages approved — filing complete!" : `${STAGES.find(s => s.id === stageId)?.label} approved` });
     } catch (e: any) {
       toast({ title: e.message || "Approve failed", variant: "destructive" });
     } finally {
-      setLoading(false);
+      setActionLoadingStage(null);
     }
   };
 
-  const handleReject = async () => {
-    if (!engagementId || !rejectReason.trim()) return;
-    setLoading(true);
+  // ── Manager: return a stage ────────────────────────────────────────────────
+  const handleRejectStage = async (stageId: StageKey) => {
+    const reason = stageRejectReasons[stageId]?.trim();
+    if (!engagementId || !reason) return;
+    setActionLoadingStage(stageId);
     try {
-      await apiCall("POST", `/engagements/${engagementId}/reject-stage`, {
-        notes: rejectReason.trim(),
-      });
-      setRejectReason("");
-      setShowRejectForm(false);
-      await refreshEngagement();
-      toast({ title: "Filing returned for revision" });
-      onUpdate();
-    } catch (e: any) {
-      toast({ title: e.message || "Reject failed", variant: "destructive" });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleVoid = async () => {
-    if (!engagementId) return;
-    setLoading(true);
-    try {
-      await apiCall("POST", `/engagements/${engagementId}/void-stage`, {
-        notes: voidReason.trim() || undefined,
-      });
-      setVoidReason("");
-      setShowVoidForm(false);
+      await apiCall("POST", `/engagements/${engagementId}/reject-stage`, { stage: stageId, notes: reason });
+      setStageRejectReasons(prev => { const n = { ...prev }; delete n[stageId]; return n; });
+      setShowRejectForm(prev => { const n = { ...prev }; delete n[stageId]; return n; });
       await refreshAll();
-      toast({ title: "Voided — returned to accountant" });
+      toast({ title: `${STAGES.find(s => s.id === stageId)?.label} returned for revision` });
+    } catch (e: any) {
+      toast({ title: e.message || "Return failed", variant: "destructive" });
+    } finally {
+      setActionLoadingStage(null);
+    }
+  };
+
+  // ── Manager: void a stage approval ────────────────────────────────────────
+  const handleVoidStage = async (stageId: StageKey) => {
+    if (!engagementId) return;
+    setActionLoadingStage(stageId);
+    try {
+      const notes = voidReasons[stageId]?.trim() || undefined;
+      await apiCall("POST", `/engagements/${engagementId}/void-stage`, { stage: stageId, notes });
+      setVoidReasons(prev => { const n = { ...prev }; delete n[stageId]; return n; });
+      setShowVoidForm(prev => { const n = { ...prev }; delete n[stageId]; return n; });
+      await refreshAll();
+      toast({ title: `${STAGES.find(s => s.id === stageId)?.label} approval voided` });
     } catch (e: any) {
       toast({ title: e.message || "Void failed", variant: "destructive" });
     } finally {
-      setLoading(false);
+      setActionLoadingStage(null);
     }
   };
 
@@ -429,7 +402,7 @@ export function FilingWorkflowDialog({
     setAmending(true);
     try {
       const amendment = await apiCall("POST", `/engagements/${engagementId}/amend`);
-      toast({ title: `Amendment filing started` });
+      toast({ title: "Amendment filing started" });
       setEngagementId(amendment.id);
       onUpdate();
     } catch (e: any) {
@@ -439,22 +412,24 @@ export function FilingWorkflowDialog({
     }
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-
+  // ── Derived state ──────────────────────────────────────────────────────────
   const isManager = user?.role === "manager";
   const isViewer = user?.role === "viewer";
-  const currentStageIdx = stageIndex(engagement?.workflowStage ?? null);
   const isCompleted = engagement?.status === "completed";
-  const isForReview = engagement?.status === "for_review";
-  const isInProgress = engagement?.status === "in_progress";
-  const isSourceStage = engagement?.workflowStage === "source_collection";
-  const isPaymentStage = engagement?.workflowStage === "payment";
-  const isLocked = isForReview || isCompleted;
+  const isStarted = !!engagementId && !!engagement;
 
-  const stageDocs = (stage: string) =>
-    engagementDocs.filter(d => (d as any).stage === stage);
+  const stageStatuses = engagement?.stageStatuses ?? {
+    source_collection: "not_started",
+    draft_return: "not_started",
+    confirmation: "not_started",
+    payment: "not_started",
+  };
 
-  // ── Filing history dropdown label ─────────────────────────────────────────
+  const approvedCount = Object.values(stageStatuses).filter(s => s === "approved").length;
+
+  const stageDocs = (stageId: StageKey) =>
+    engagementDocs.filter(d => (d as any).stage === stageId);
+
   const activeFilingLabel = engagement?.isAmendment
     ? `${engagement.title.includes("Amendment") ? engagement.title.split("—")[1]?.trim() ?? "Amendment" : "Amendment"}`
     : "Original Filing";
@@ -467,7 +442,7 @@ export function FilingWorkflowDialog({
         <DialogHeader className="px-6 pt-6 pb-4 border-b">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
-              <DialogTitle className="text-lg font-semibold flex items-center gap-2">
+              <DialogTitle className="text-lg font-semibold flex items-center gap-2 flex-wrap">
                 <span className="font-mono text-primary">{formNumber}</span>
                 <span className="text-muted-foreground text-sm font-normal">— Filing Workflow</span>
                 {engagement?.isAmendment && (
@@ -481,7 +456,6 @@ export function FilingWorkflowDialog({
               </DialogDescription>
             </div>
 
-            {/* Filing history dropdown */}
             {hasMultipleFilings && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -513,7 +487,7 @@ export function FilingWorkflowDialog({
           </div>
         </DialogHeader>
 
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-5">
 
           {/* ── Not started ─────────────────────────────────────────────── */}
           {!engagementId && (
@@ -524,7 +498,7 @@ export function FilingWorkflowDialog({
               <div className="text-center">
                 <p className="font-semibold text-lg">Start Filing Workflow</p>
                 <p className="text-sm text-muted-foreground max-w-sm mt-1">
-                  Begin the 4-stage filing process for this BIR return. Work through each stage freely and submit for manager approval when ready.
+                  Begin the 4-stage filing process. Work on all stages simultaneously and submit each for manager approval independently.
                 </p>
               </div>
               {!isViewer && (
@@ -540,400 +514,337 @@ export function FilingWorkflowDialog({
           )}
 
           {/* ── Workflow in progress ─────────────────────────────────────── */}
-          {engagementId && (
+          {isStarted && loading && (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          )}
+
+          {isStarted && !loading && (
             <>
-              {/* Stepper */}
-              <div className="flex items-center gap-1 overflow-x-auto">
+              {/* Progress header */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium text-muted-foreground">
+                    {isCompleted ? "Filing Complete" : `${approvedCount} / 4 stages approved`}
+                  </span>
+                  {isCompleted && <Badge className="bg-green-600 text-white border-green-600">Completed</Badge>}
+                  {!isCompleted && approvedCount > 0 && (
+                    <span className="text-xs text-muted-foreground">{4 - approvedCount} remaining</span>
+                  )}
+                </div>
+                <Progress value={(approvedCount / 4) * 100} className="h-2" />
+              </div>
+
+              {/* Completed banner */}
+              {isCompleted && (
+                <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-green-800">
+                  <Check className="h-5 w-5 flex-shrink-0" />
+                  <div className="flex-1">
+                    <span className="font-medium">All 4 stages approved — Filing Complete!</span>
+                    <span className="text-sm ml-1">The deadline has been marked as filed.</span>
+                  </div>
+                  {!isViewer && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-amber-300 text-amber-700 hover:bg-amber-50 shrink-0"
+                      onClick={handleAmend}
+                      disabled={amending}
+                    >
+                      {amending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <FilePlus className="h-3.5 w-3.5 mr-1.5" />}
+                      File Amendment
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              {/* ── 4 Stage Cards ──────────────────────────────────────── */}
+              <div className="space-y-3">
                 {STAGES.map((stage, idx) => {
-                  const done = isCompleted || idx < currentStageIdx;
-                  const active = idx === currentStageIdx && !isCompleted;
+                  const stageStatus = stageStatuses[stage.id] ?? "not_started";
+                  const statusStyle = STAGE_STATUS_STYLES[stageStatus] ?? STAGE_STATUS_STYLES.not_started;
                   const Icon = stage.icon;
+                  const docs = stageDocs(stage.id);
+
+                  const isStageApproved = stageStatus === "approved";
+                  const isStageForReview = stageStatus === "for_review";
+                  const isStageEditable = stageStatus === "not_started" || stageStatus === "in_progress";
+                  const isStageLoading = actionLoadingStage === stage.id;
+                  const isStageUploading = uploadingStage === stage.id;
+
+                  const selectedFile = stageFiles[stage.id];
+                  const descValue = stageDescs[stage.id] ?? "";
+
                   return (
-                    <div key={stage.id} className="flex items-center gap-1 flex-shrink-0">
-                      <div className={cn(
-                        "flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-                        done && "bg-green-100 text-green-700",
-                        active && "bg-primary/10 text-primary ring-1 ring-primary",
-                        !done && !active && "bg-muted text-muted-foreground"
-                      )}>
-                        {done ? (
-                          <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
-                        ) : (
-                          <Icon className="h-4 w-4 flex-shrink-0" />
+                    <div
+                      key={stage.id}
+                      className={cn(
+                        "border rounded-lg p-4 space-y-3 transition-colors",
+                        isStageApproved && "border-green-200 bg-green-50/30",
+                        isStageForReview && "border-amber-200 bg-amber-50/30",
+                        isStageEditable && "border-border"
+                      )}
+                    >
+                      {/* Stage header */}
+                      <div className="flex items-center gap-2">
+                        <div className={cn(
+                          "rounded-full p-1.5",
+                          isStageApproved ? "bg-green-100" : isStageForReview ? "bg-amber-100" : "bg-muted"
+                        )}>
+                          {isStageApproved
+                            ? <Check className="h-3.5 w-3.5 text-green-700" />
+                            : <Icon className={cn("h-3.5 w-3.5", isStageForReview ? "text-amber-700" : "text-muted-foreground")} />
+                          }
+                        </div>
+                        <span className="font-medium text-sm">Stage {idx + 1}: {stage.label}</span>
+                        <Badge
+                          variant="outline"
+                          className={cn("ml-auto text-xs", statusStyle.className)}
+                        >
+                          {statusStyle.label}
+                        </Badge>
+                        {isStageForReview && isManager && (
+                          <span className="text-xs text-amber-600 font-medium">Action required</span>
                         )}
-                        <span className="hidden sm:inline">{stage.shortLabel}</span>
                       </div>
-                      {idx < STAGES.length - 1 && (
-                        <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+
+                      <p className="text-xs text-muted-foreground">{stage.hint}</p>
+
+                      {/* Documents */}
+                      {docs.length > 0 && (
+                        <div className="space-y-1">
+                          {docs.map(doc => (
+                            <div
+                              key={doc.id}
+                              className="flex items-center gap-2 p-2 rounded-md bg-muted/50 hover:bg-muted group"
+                            >
+                              <button
+                                className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                                onClick={() => setViewerDoc(doc)}
+                              >
+                                <FileIcon mimeType={doc.mimeType} name={doc.originalName} />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium truncate">{doc.originalName}</p>
+                                  {doc.description && <p className="text-xs text-muted-foreground truncate">{doc.description}</p>}
+                                </div>
+                                <span className="text-xs text-muted-foreground shrink-0">{formatBytes(doc.fileSize)}</span>
+                              </button>
+
+                              {/* Delete — only when stage is editable */}
+                              {!isViewer && isStageEditable && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                                  disabled={deletingDocId === doc.id}
+                                  onClick={() => handleDeleteDoc(doc.id)}
+                                  title="Remove attachment"
+                                >
+                                  {deletingDocId === doc.id
+                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    : <Trash2 className="h-3.5 w-3.5" />
+                                  }
+                                </Button>
+                              )}
+                              {!isViewer && !isStageEditable && (
+                                <Lock className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0 opacity-0 group-hover:opacity-100" />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Upload — when stage is editable (not_started or in_progress) */}
+                      {!isViewer && isStageEditable && (
+                        <div className="space-y-2 pt-1">
+                          <div className="flex gap-2">
+                            <Input
+                              type="file"
+                              ref={el => { if (el) fileInputRefs.current[stage.id] = el; }}
+                              accept=".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.dat"
+                              onChange={e => {
+                                const file = e.target.files?.[0] ?? undefined;
+                                setStageFiles(prev => file ? { ...prev, [stage.id]: file } : prev);
+                              }}
+                              className="text-sm flex-1"
+                            />
+                          </div>
+                          {selectedFile && (
+                            <div className="flex gap-2 items-start">
+                              <Input
+                                placeholder="Description (optional)"
+                                value={descValue}
+                                onChange={e => setStageDescs(prev => ({ ...prev, [stage.id]: e.target.value }))}
+                                className="text-sm flex-1"
+                              />
+                              <Button size="sm" onClick={() => handleUpload(stage.id)} disabled={isStageUploading}>
+                                {isStageUploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
+                                Upload
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Manager can also upload when stage is for_review */}
+                      {isManager && isStageForReview && (
+                        <div className="space-y-2 pt-1 border-t">
+                          <p className="text-xs text-muted-foreground">Upload additional documents (optional)</p>
+                          <div className="flex gap-2">
+                            <Input
+                              type="file"
+                              ref={el => { if (el) fileInputRefs.current[stage.id] = el; }}
+                              accept=".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.dat"
+                              onChange={e => {
+                                const file = e.target.files?.[0] ?? undefined;
+                                setStageFiles(prev => file ? { ...prev, [stage.id]: file } : prev);
+                              }}
+                              className="text-sm flex-1"
+                            />
+                          </div>
+                          {selectedFile && (
+                            <div className="flex gap-2 items-start">
+                              <Input
+                                placeholder="Description (optional)"
+                                value={descValue}
+                                onChange={e => setStageDescs(prev => ({ ...prev, [stage.id]: e.target.value }))}
+                                className="text-sm flex-1"
+                              />
+                              <Button size="sm" onClick={() => handleUpload(stage.id)} disabled={isStageUploading}>
+                                {isStageUploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
+                                Upload
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Accountant: Submit button */}
+                      {!isViewer && !isManager && isStageEditable && !isCompleted && (
+                        <div className="pt-1 border-t">
+                          <Button
+                            size="sm"
+                            onClick={() => handleSubmitStage(stage.id)}
+                            disabled={isStageLoading}
+                            className="bg-amber-600 hover:bg-amber-700 text-white"
+                          >
+                            {isStageLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
+                            Submit for Manager Approval
+                          </Button>
+                        </div>
+                      )}
+
+                      {/* Manager: Approve / Return (when for_review) */}
+                      {isManager && isStageForReview && (
+                        <div className="pt-2 border-t space-y-2">
+                          {!showRejectForm[stage.id] ? (
+                            <div className="space-y-2">
+                              <Input
+                                placeholder="Approval note (optional)"
+                                value={stageApprovalNotes[stage.id] ?? ""}
+                                onChange={e => setStageApprovalNotes(prev => ({ ...prev, [stage.id]: e.target.value }))}
+                                className="text-sm"
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  className="bg-green-600 hover:bg-green-700 text-white"
+                                  onClick={() => handleApproveStage(stage.id)}
+                                  disabled={isStageLoading}
+                                >
+                                  {isStageLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <ThumbsUp className="h-4 w-4 mr-2" />}
+                                  Approve Stage
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => setShowRejectForm(prev => ({ ...prev, [stage.id]: true }))}
+                                  disabled={isStageLoading}
+                                >
+                                  <ThumbsDown className="h-4 w-4 mr-2" />
+                                  Return for Revision
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <Label className="text-sm">Reason for returning (required)</Label>
+                              <Textarea
+                                rows={2}
+                                placeholder="Describe what needs to be corrected..."
+                                value={stageRejectReasons[stage.id] ?? ""}
+                                onChange={e => setStageRejectReasons(prev => ({ ...prev, [stage.id]: e.target.value }))}
+                                className="text-sm"
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => handleRejectStage(stage.id)}
+                                  disabled={isStageLoading || !stageRejectReasons[stage.id]?.trim()}
+                                >
+                                  {isStageLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <ThumbsDown className="h-4 w-4 mr-2" />}
+                                  Confirm Return
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setShowRejectForm(prev => { const n = { ...prev }; delete n[stage.id]; return n; });
+                                    setStageRejectReasons(prev => { const n = { ...prev }; delete n[stage.id]; return n; });
+                                  }}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Manager: Undo Approval (when approved) */}
+                      {isManager && isStageApproved && (
+                        <div className="pt-2 border-t">
+                          {!showVoidForm[stage.id] ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-rose-600 hover:bg-rose-50 text-xs h-7"
+                              onClick={() => setShowVoidForm(prev => ({ ...prev, [stage.id]: true }))}
+                            >
+                              <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                              Undo Approval
+                            </Button>
+                          ) : (
+                            <div className="space-y-2 rounded-md bg-rose-50 border border-rose-200 p-3">
+                              <p className="text-xs font-medium text-rose-800">Undo approval for {stage.label}?</p>
+                              <Input
+                                placeholder="Reason (optional)"
+                                value={voidReasons[stage.id] ?? ""}
+                                onChange={e => setVoidReasons(prev => ({ ...prev, [stage.id]: e.target.value }))}
+                                className="text-sm bg-white"
+                              />
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="destructive" onClick={() => handleVoidStage(stage.id)} disabled={isStageLoading}>
+                                  {isStageLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
+                                  Confirm Undo
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => {
+                                  setShowVoidForm(prev => { const n = { ...prev }; delete n[stage.id]; return n; });
+                                  setVoidReasons(prev => { const n = { ...prev }; delete n[stage.id]; return n; });
+                                }}>Cancel</Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
                 })}
-                {isCompleted && (
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-green-100 text-green-700">
-                      <Check className="h-4 w-4" />
-                      <span>Filed</span>
-                    </div>
-                  </div>
-                )}
               </div>
 
-              {/* Status banners */}
-              {isCompleted && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-green-800">
-                    <Check className="h-5 w-5 flex-shrink-0" />
-                    <div className="flex-1">
-                      <span className="font-medium">Filing Complete</span>
-                      <span className="text-sm ml-1">— All stages done, approved by manager.</span>
-                    </div>
-                    <div className="flex gap-2 flex-shrink-0">
-                      {!isViewer && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="border-amber-300 text-amber-700 hover:bg-amber-50"
-                          onClick={handleAmend}
-                          disabled={amending}
-                        >
-                          {amending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <FilePlus className="h-3.5 w-3.5 mr-1.5" />}
-                          File Amendment
-                        </Button>
-                      )}
-                      {isManager && !showVoidForm && (
-                        <Button size="sm" variant="outline" className="border-rose-300 text-rose-700 hover:bg-rose-50" onClick={() => setShowVoidForm(true)}>
-                          <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
-                          Void Completion
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  {isManager && showVoidForm && (
-                    <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 space-y-3">
-                      <p className="text-sm font-medium text-rose-800">Void Filing Completion</p>
-                      <p className="text-xs text-rose-700">This will revert the filing back to the payment stage so the accountant can redo it. The deadline will be unmarked as filed.</p>
-                      <Input
-                        placeholder="Reason for voiding (optional)"
-                        value={voidReason}
-                        onChange={e => setVoidReason(e.target.value)}
-                        className="text-sm bg-white"
-                      />
-                      <div className="flex gap-2">
-                        <Button size="sm" variant="destructive" onClick={handleVoid} disabled={loading}>
-                          {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
-                          Confirm Void
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => { setShowVoidForm(false); setVoidReason(""); }}>Cancel</Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {isForReview && !isCompleted && (
-                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-amber-800">
-                  <AlertCircle className="h-5 w-5 flex-shrink-0" />
-                  <div className="flex-1">
-                    <span className="font-medium">Awaiting Manager Approval</span>
-                    <span className="text-sm ml-1">— All stages submitted. Pending final review.</span>
-                  </div>
-                  {isManager && !showVoidForm && (
-                    <Button size="sm" variant="ghost" className="text-rose-600 hover:bg-rose-50 text-xs shrink-0" onClick={() => setShowVoidForm(true)}>
-                      <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                      Return
-                    </Button>
-                  )}
-                </div>
-              )}
-              {isManager && showVoidForm && isForReview && (
-                <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 space-y-3">
-                  <p className="text-sm font-medium text-rose-800">Return for Revision</p>
-                  <p className="text-xs text-rose-700">The accountant will be able to update documents and resubmit.</p>
-                  <Input
-                    placeholder="Reason (optional)"
-                    value={voidReason}
-                    onChange={e => setVoidReason(e.target.value)}
-                    className="text-sm bg-white"
-                  />
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="destructive" onClick={handleVoid} disabled={loading}>
-                      {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
-                      Confirm Return
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => { setShowVoidForm(false); setVoidReason(""); }}>Cancel</Button>
-                  </div>
-                </div>
-              )}
-              {engagement?.approvalNotes && isInProgress && (
-                <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3 text-rose-800">
-                  <RotateCcw className="h-5 w-5 mt-0.5 flex-shrink-0" />
-                  <div>
-                    <p className="font-medium text-sm">Returned for revision</p>
-                    <p className="text-sm mt-0.5">{engagement.approvalNotes}</p>
-                  </div>
-                </div>
-              )}
-
-              {/* ── Stage content ─────────────────────────────────────── */}
-              {!isCompleted && (
-                <div className="space-y-4">
-                  {(() => {
-                    const stage = STAGES[currentStageIdx];
-                    if (!stage) return null;
-                    const Icon = stage.icon;
-                    const docs = stageDocs(stage.id);
-                    return (
-                      <div className="border rounded-lg p-4 space-y-4">
-                        <div className="flex items-center gap-2">
-                          <Icon className="h-5 w-5 text-primary" />
-                          <h3 className="font-semibold">Stage {currentStageIdx + 1}: {stage.label}</h3>
-                          <Badge variant="outline" className="text-xs ml-auto">
-                            {isForReview ? "Awaiting Approval" : "In Progress"}
-                          </Badge>
-                        </div>
-                        <p className="text-sm text-muted-foreground">{stage.hint}</p>
-
-                        {/* Documents list for this stage */}
-                        {docs.length > 0 && (
-                          <div className="space-y-2">
-                            <p className="text-sm font-medium text-muted-foreground">Uploaded Documents</p>
-                            {docs.map(doc => (
-                              <div
-                                key={doc.id}
-                                className="flex items-center gap-3 p-2 rounded-md bg-muted/50 hover:bg-muted group"
-                              >
-                                <button
-                                  className="flex items-center gap-3 flex-1 min-w-0 text-left cursor-pointer"
-                                  onClick={() => setViewerDoc(doc)}
-                                >
-                                  <FileIcon mimeType={doc.mimeType} name={doc.originalName} />
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium truncate">{doc.originalName}</p>
-                                    {doc.description && <p className="text-xs text-muted-foreground truncate">{doc.description}</p>}
-                                  </div>
-                                  <span className="text-xs text-muted-foreground shrink-0">{formatBytes(doc.fileSize)}</span>
-                                </button>
-                                {/* Delete button — only when not locked, and not viewer */}
-                                {!isViewer && !isLocked && (
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 text-rose-500 hover:text-rose-700 hover:bg-rose-50"
-                                    disabled={deletingDocId === doc.id}
-                                    onClick={() => handleDeleteDoc(doc.id)}
-                                    title="Remove attachment"
-                                  >
-                                    {deletingDocId === doc.id
-                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      : <Trash2 className="h-3.5 w-3.5" />
-                                    }
-                                  </Button>
-                                )}
-                                {isLocked && !isViewer && (
-                                  <span className="text-xs text-muted-foreground shrink-0 opacity-0 group-hover:opacity-100">
-                                    {isCompleted ? "Locked" : "Pending review"}
-                                  </span>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Upload area — only when in_progress (not for_review) */}
-                        {!isViewer && isInProgress && (
-                          <div className="space-y-2 pt-2 border-t">
-                            <p className="text-sm font-medium">Upload Document</p>
-                            <div className="flex gap-2">
-                              <Input
-                                type="file"
-                                ref={fileInputRef}
-                                accept=".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.dat"
-                                onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
-                                className="text-sm"
-                              />
-                            </div>
-                            {selectedFile && (
-                              <>
-                                <Input
-                                  placeholder="Description (optional)"
-                                  value={uploadDesc}
-                                  onChange={e => setUploadDesc(e.target.value)}
-                                  className="text-sm"
-                                />
-                                <Button size="sm" onClick={handleUpload} disabled={uploading}>
-                                  {uploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
-                                  Upload
-                                </Button>
-                              </>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Manager can also upload when reviewing */}
-                        {isManager && isForReview && (
-                          <div className="space-y-2 pt-2 border-t">
-                            <p className="text-sm font-medium">Upload Document (Optional)</p>
-                            <div className="flex gap-2">
-                              <Input
-                                type="file"
-                                ref={fileInputRef}
-                                accept=".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.dat"
-                                onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
-                                className="text-sm"
-                              />
-                            </div>
-                            {selectedFile && (
-                              <>
-                                <Input
-                                  placeholder="Description (optional)"
-                                  value={uploadDesc}
-                                  onChange={e => setUploadDesc(e.target.value)}
-                                  className="text-sm"
-                                />
-                                <Button size="sm" onClick={handleUpload} disabled={uploading}>
-                                  {uploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
-                                  Upload
-                                </Button>
-                              </>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Accountant: advance / submit */}
-                        {!isViewer && !isManager && isInProgress && (
-                          <div className="flex flex-wrap gap-2 pt-2 border-t">
-                            <div className="flex-1 min-w-0 space-y-2">
-                              <Input
-                                placeholder={isLastStage ? "Notes to manager (optional)" : "Notes (optional)"}
-                                value={submitNote}
-                                onChange={e => setSubmitNote(e.target.value)}
-                                className="text-sm"
-                              />
-                              <div className="flex gap-2 flex-wrap">
-                                {isLastStage ? (
-                                  <Button size="sm" onClick={handleAdvance} disabled={loading} className="bg-amber-600 hover:bg-amber-700 text-white">
-                                    {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <SendHorizontal className="h-4 w-4 mr-2" />}
-                                    Submit for Manager Approval
-                                  </Button>
-                                ) : (
-                                  <Button size="sm" onClick={handleAdvance} disabled={loading}>
-                                    {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <ChevronRight className="h-4 w-4 mr-2" />}
-                                    Advance to {STAGES[currentStageIdx + 1]?.label ?? "Next Stage"}
-                                  </Button>
-                                )}
-                                {isSourceStage && (
-                                  <Button size="sm" variant="outline" onClick={handleSkipSource} disabled={loading}>
-                                    <SkipForward className="h-4 w-4 mr-2" />
-                                    No Transactions — Proceed
-                                  </Button>
-                                )}
-                                {isPaymentStage && (
-                                  <Button size="sm" variant="outline" onClick={handleSkipPayment} disabled={loading}>
-                                    <SkipForward className="h-4 w-4 mr-2" />
-                                    No Payment Required — File Directly
-                                  </Button>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Manager approval actions (final review) */}
-                        {isManager && isForReview && (
-                          <div className="pt-2 border-t space-y-3">
-                            <p className="text-sm font-medium">Manager Decision — Final Approval</p>
-                            {!showRejectForm ? (
-                              <div className="flex flex-wrap gap-2">
-                                <div className="space-y-2 flex-1">
-                                  <Input
-                                    placeholder="Approval note (optional)"
-                                    value={approvalNote}
-                                    onChange={e => setApprovalNote(e.target.value)}
-                                    className="text-sm"
-                                  />
-                                  <div className="flex gap-2">
-                                    <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={handleApprove} disabled={loading}>
-                                      {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <ThumbsUp className="h-4 w-4 mr-2" />}
-                                      Approve & Complete Filing
-                                    </Button>
-                                    <Button size="sm" variant="destructive" onClick={() => setShowRejectForm(true)} disabled={loading}>
-                                      <ThumbsDown className="h-4 w-4 mr-2" />
-                                      Return for Revision
-                                    </Button>
-                                  </div>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="space-y-2">
-                                <Label className="text-sm">Reason for returning (required)</Label>
-                                <Textarea
-                                  rows={3}
-                                  placeholder="Describe what needs to be corrected..."
-                                  value={rejectReason}
-                                  onChange={e => setRejectReason(e.target.value)}
-                                  className="text-sm"
-                                />
-                                <div className="flex gap-2">
-                                  <Button size="sm" variant="destructive" onClick={handleReject} disabled={loading || !rejectReason.trim()}>
-                                    {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <ThumbsDown className="h-4 w-4 mr-2" />}
-                                    Return for Revision
-                                  </Button>
-                                  <Button size="sm" variant="outline" onClick={() => { setShowRejectForm(false); setRejectReason(""); }}>
-                                    Cancel
-                                  </Button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
-
-              {/* Previous stages with doc summary */}
-              {(currentStageIdx > 0 || isCompleted) && (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-muted-foreground">
-                    {isCompleted ? "All Stages" : "Previous Stages"}
-                  </p>
-                  {STAGES.slice(0, isCompleted ? STAGES.length : currentStageIdx).map((stage) => {
-                    const docs = stageDocs(stage.id);
-                    const Icon = stage.icon;
-                    return (
-                      <div key={stage.id} className="flex items-start gap-3 p-3 rounded-lg bg-green-50 border border-green-100">
-                        <div className="rounded-full bg-green-100 p-1 mt-0.5">
-                          <Check className="h-3 w-3 text-green-700" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-green-800">{stage.label}</p>
-                          {docs.length > 0 ? (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {docs.map(d => (
-                                <button
-                                  key={d.id}
-                                  className="flex items-center gap-1 text-xs bg-white border border-green-200 rounded px-2 py-0.5 hover:bg-green-50 truncate max-w-[200px]"
-                                  onClick={() => setViewerDoc(d)}
-                                >
-                                  <FileIcon mimeType={d.mimeType} name={d.originalName} />
-                                  <span className="truncate">{d.originalName}</span>
-                                </button>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-xs text-green-700 mt-0.5">No documents (skipped or N/A)</p>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Comments */}
+              {/* Comments / Activity Log */}
               {comments.length > 0 && (
                 <div className="space-y-2">
                   <Separator />
@@ -942,7 +853,7 @@ export function FilingWorkflowDialog({
                     {comments.map(c => (
                       <div key={c.id} className={cn(
                         "text-sm p-3 rounded-lg",
-                        c.isApproval ? "bg-amber-50 border border-amber-100 text-amber-800" : "bg-muted"
+                        c.isApproval ? "bg-green-50 border border-green-100 text-green-800" : "bg-muted"
                       )}>
                         <p>{c.content}</p>
                         <p className="text-xs text-muted-foreground mt-1">

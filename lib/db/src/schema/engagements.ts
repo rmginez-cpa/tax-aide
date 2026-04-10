@@ -16,9 +16,14 @@ export const engagementsTable = pgTable("engagements", {
   approvalNotes: text("approval_notes"),
   dueDate: text("due_date"),
   notes: text("notes"),
-  workflowStage: text("workflow_stage"), // 'source_collection' | 'draft_return' | 'confirmation' | 'payment'
+  workflowStage: text("workflow_stage"), // kept for compat / document stage tagging
+  // Per-stage independent statuses: not_started | in_progress | for_review | approved
+  sourceCollectionStatus: text("source_collection_status").notNull().default("not_started"),
+  draftReturnStatus: text("draft_return_status").notNull().default("not_started"),
+  confirmationStatus: text("confirmation_status").notNull().default("not_started"),
+  paymentStatus: text("payment_status").notNull().default("not_started"),
   isAmendment: boolean("is_amendment").notNull().default(false),
-  amendedEngagementId: integer("amended_engagement_id"), // reference to original engagement
+  amendedEngagementId: integer("amended_engagement_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
