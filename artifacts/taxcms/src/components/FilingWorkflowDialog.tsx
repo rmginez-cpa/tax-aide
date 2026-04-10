@@ -168,6 +168,8 @@ export function FilingWorkflowDialog({
   const [rejectReason, setRejectReason] = useState("");
   const [approvalNote, setApprovalNote] = useState("");
   const [showRejectForm, setShowRejectForm] = useState(false);
+  const [showVoidForm, setShowVoidForm] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
 
   // Submit note
   const [submitNote, setSubmitNote] = useState("");
@@ -334,6 +336,26 @@ export function FilingWorkflowDialog({
     }
   };
 
+  const handleVoid = async () => {
+    if (!engagementId) return;
+    setLoading(true);
+    try {
+      await apiCall("POST", `/engagements/${engagementId}/void-stage`, {
+        notes: voidReason.trim() || undefined,
+      });
+      setVoidReason("");
+      setShowVoidForm(false);
+      await refreshEngagement();
+      invalidateDocs();
+      toast({ title: "Stage voided — accountant can redo" });
+      onUpdate();
+    } catch (e: any) {
+      toast({ title: e.message || "Void failed", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const isManager = user?.role === "manager";
@@ -432,10 +454,39 @@ export function FilingWorkflowDialog({
 
               {/* Status banner */}
               {isCompleted && (
-                <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-green-800">
-                  <Check className="h-5 w-5" />
-                  <span className="font-medium">Filing Complete</span>
-                  <span className="text-sm ml-1">— All stages approved, deadline marked as filed.</span>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-green-800">
+                    <Check className="h-5 w-5 flex-shrink-0" />
+                    <div className="flex-1">
+                      <span className="font-medium">Filing Complete</span>
+                      <span className="text-sm ml-1">— All stages approved, deadline marked as filed.</span>
+                    </div>
+                    {isManager && !showVoidForm && (
+                      <Button size="sm" variant="outline" className="border-rose-300 text-rose-700 hover:bg-rose-50 flex-shrink-0" onClick={() => setShowVoidForm(true)}>
+                        <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                        Void Completion
+                      </Button>
+                    )}
+                  </div>
+                  {isManager && showVoidForm && (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 space-y-3">
+                      <p className="text-sm font-medium text-rose-800">Void Filing Completion</p>
+                      <p className="text-xs text-rose-700">This will revert the filing to "Payment" stage so the accountant can redo it. The deadline will be unmarked as filed.</p>
+                      <Input
+                        placeholder="Reason for voiding (optional)"
+                        value={voidReason}
+                        onChange={e => setVoidReason(e.target.value)}
+                        className="text-sm bg-white"
+                      />
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="destructive" onClick={handleVoid} disabled={loading}>
+                          {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
+                          Confirm Void
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => { setShowVoidForm(false); setVoidReason(""); }}>Cancel</Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {isForReview && !isCompleted && (
@@ -574,6 +625,31 @@ export function FilingWorkflowDialog({
                                   Upload
                                 </Button>
                               </>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Manager: undo last approval (when accountant is in progress on a non-first stage) */}
+                        {isManager && isInProgress && currentStageIdx > 0 && (
+                          <div className="pt-2 border-t">
+                            {!showVoidForm ? (
+                              <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-rose-700 text-xs" onClick={() => setShowVoidForm(true)}>
+                                <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                                Undo Last Approval (revert to previous stage)
+                              </Button>
+                            ) : (
+                              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 space-y-2">
+                                <p className="text-sm font-medium text-rose-800">Undo Last Approval</p>
+                                <p className="text-xs text-rose-700">Reverts to "{STAGES[currentStageIdx - 1]?.label}" so the accountant can redo that stage.</p>
+                                <Input placeholder="Reason (optional)" value={voidReason} onChange={e => setVoidReason(e.target.value)} className="text-sm bg-white" />
+                                <div className="flex gap-2">
+                                  <Button size="sm" variant="destructive" onClick={handleVoid} disabled={loading}>
+                                    {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
+                                    Confirm Undo
+                                  </Button>
+                                  <Button size="sm" variant="outline" onClick={() => { setShowVoidForm(false); setVoidReason(""); }}>Cancel</Button>
+                                </div>
+                              </div>
                             )}
                           </div>
                         )}

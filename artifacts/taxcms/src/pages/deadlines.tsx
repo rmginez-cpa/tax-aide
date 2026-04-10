@@ -6,17 +6,17 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Calendar, CheckCircle2, AlertTriangle, Clock, Trash2, Check } from "lucide-react";
+import { Plus, Search, Calendar, CheckCircle2, AlertTriangle, Clock, Trash2, Check, GitBranch } from "lucide-react";
 import { format, parseISO, isPast, isToday, differenceInDays } from "date-fns";
+import { FilingWorkflowDialog } from "@/components/FilingWorkflowDialog";
 
 const PRIORITY_STYLES = {
   high: "bg-red-100 text-red-700 border-red-200",
@@ -36,6 +36,29 @@ export default function Deadlines() {
   const [filter, setFilter] = useState("all");
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ title: "", description: "", dueDate: "", priority: "medium" as const });
+  const [workflowDeadline, setWorkflowDeadline] = useState<{
+    deadlineId: number;
+    engagementId: number | null;
+    clientId: number | null;
+    formNumber: string;
+    description: string;
+    period: string;
+    dueDate: string;
+  } | null>(null);
+
+  const openWorkflow = (d: typeof filtered[0]) => {
+    if (!d.clientId) return;
+    const formMatch = d.title.match(/(\d{4}[A-Z]?(?:EZ)?)\b/);
+    setWorkflowDeadline({
+      deadlineId: d.id,
+      engagementId: d.engagementId ?? null,
+      clientId: d.clientId,
+      formNumber: formMatch ? `BIR Form ${formMatch[1]}` : d.title,
+      description: d.clientName ? `${d.clientName}` : d.description ?? "",
+      period: d.description ?? "",
+      dueDate: d.dueDate,
+    });
+  };
 
   const filtered = deadlines?.filter(d => {
     const matchSearch = d.title.toLowerCase().includes(search.toLowerCase()) || (d.clientName ?? "").toLowerCase().includes(search.toLowerCase());
@@ -196,8 +219,10 @@ export default function Deadlines() {
           {filtered.map(d => {
             const status = getDeadlineStatus(d);
             const StatusIcon = status.icon;
+            const hasWorkflow = !!d.clientId;
             return (
-              <Card key={d.id} className={d.status === "completed" ? "opacity-60" : ""}>
+              <Card key={d.id} className={`transition-colors ${d.status === "completed" ? "opacity-70" : ""} ${hasWorkflow ? "hover:border-primary/40 cursor-pointer" : ""}`}
+                onClick={hasWorkflow ? () => openWorkflow(d) : undefined}>
                 <CardContent className="p-4">
                   <div className="flex items-center gap-4">
                     <StatusIcon className={`h-5 w-5 shrink-0 ${status.className}`} />
@@ -207,21 +232,28 @@ export default function Deadlines() {
                         <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${PRIORITY_STYLES[d.priority as keyof typeof PRIORITY_STYLES]}`}>
                           {d.priority}
                         </span>
+                        {hasWorkflow && (
+                          <span className="text-xs text-primary flex items-center gap-1">
+                            <GitBranch className="h-3 w-3" /> Workflow
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
                         <span>{format(parseISO(d.dueDate), 'MMMM d, yyyy')}</span>
-                        {d.clientName && <span>{d.clientName}</span>}
+                        {d.clientName && <span className="font-medium">{d.clientName}</span>}
                         {d.description && <span className="truncate max-w-xs">{d.description}</span>}
                       </div>
                     </div>
                     <span className={`text-xs font-semibold ${status.className}`}>{status.label}</span>
-                    {user?.role !== "viewer" && d.status !== "completed" && (
-                      <Button variant="outline" size="icon" className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50" onClick={() => handleMarkDone(d.id)}>
+                    {user?.role !== "viewer" && d.status !== "completed" && !hasWorkflow && (
+                      <Button variant="outline" size="icon" className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                        onClick={e => { e.stopPropagation(); handleMarkDone(d.id); }}>
                         <Check className="h-4 w-4" />
                       </Button>
                     )}
                     {user?.role === "manager" && (
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(d.id, d.title)}>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={e => { e.stopPropagation(); handleDelete(d.id, d.title); }}>
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     )}
@@ -231,6 +263,22 @@ export default function Deadlines() {
             );
           })}
         </div>
+      )}
+
+      {/* Filing Workflow Dialog — opens when clicking a client-linked deadline */}
+      {workflowDeadline && (
+        <FilingWorkflowDialog
+          open={!!workflowDeadline}
+          onClose={() => setWorkflowDeadline(null)}
+          deadlineId={workflowDeadline.deadlineId}
+          engagementId={workflowDeadline.engagementId}
+          clientId={workflowDeadline.clientId}
+          formNumber={workflowDeadline.formNumber}
+          description={workflowDeadline.description}
+          period={workflowDeadline.period}
+          dueDate={workflowDeadline.dueDate}
+          onUpdate={() => queryClient.invalidateQueries({ queryKey: getListDeadlinesQueryKey() })}
+        />
       )}
     </div>
   );

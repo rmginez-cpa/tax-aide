@@ -423,6 +423,84 @@ router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req
   res.json(await serializeEngagement(updated));
 });
 
+// ── POST /api/engagements/:id/void-stage ────────────────────────────────────
+// Manager voids/undoes the last stage approval, reverting to the previous stage
+router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  const wasCompleted = engagement.status === "completed";
+  const currentStage = wasCompleted ? "payment" : (engagement.workflowStage ?? "");
+
+  // Cannot void the first stage
+  if (currentStage === "source_collection" && !wasCompleted) {
+    res.status(400).json({ error: "Cannot void the first stage" }); return;
+  }
+
+  // Find the previous stage (or stay at payment if coming from completed)
+  let targetStage: string;
+  if (wasCompleted) {
+    targetStage = "payment"; // revert from completed → payment in_progress
+  } else {
+    const idx = STAGE_ORDER.indexOf(currentStage as any);
+    targetStage = idx > 0 ? STAGE_ORDER[idx - 1] : "source_collection";
+  }
+
+  const notes = req.body.notes?.trim() || null;
+  const reason = notes || "Stage voided by manager";
+
+  const [updated] = await db.update(engagementsTable)
+    .set({
+      workflowStage: targetStage,
+      status: "in_progress",
+      approvedBy: null,
+      approvedAt: null,
+      approvalNotes: null,
+    })
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  // If was completed, revert the linked deadline status
+  if (wasCompleted) {
+    await db.update(deadlinesTable)
+      .set({ status: "pending" })
+      .where(eq(deadlinesTable.engagementId, id));
+  }
+
+  // Add void comment
+  await db.insert(commentsTable).values({
+    engagementId: id,
+    authorId: req.session.userId!,
+    content: `Voided — reverted to "${STAGE_LABELS[targetStage]}". Reason: ${reason}`,
+    isApproval: false,
+  });
+
+  // Notify assigned accountant
+  if (engagement.assignedTo) {
+    await db.insert(notificationsTable).values({
+      userId: engagement.assignedTo,
+      title: "Stage Voided",
+      message: `"${STAGE_LABELS[wasCompleted ? "payment" : currentStage] ?? currentStage}" has been voided. Please redo "${STAGE_LABELS[targetStage]}" stage.`,
+      type: "engagement_approved",
+      relatedId: engagement.id,
+      relatedType: "engagement",
+    });
+  }
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "reject",
+    entityType: "engagement",
+    entityId: id,
+    description: `Voided stage — reverted "${engagement.title}" from "${wasCompleted ? "completed" : STAGE_LABELS[currentStage]}" to "${STAGE_LABELS[targetStage]}"`,
+  });
+
+  res.json(await serializeEngagement(updated));
+});
+
 // ── POST /api/engagements/:id/reject-stage ───────────────────────────────────
 // Manager rejects current stage, returns to accountant
 router.post("/engagements/:id/reject-stage", requireRole("manager"), async (req, res): Promise<void> => {

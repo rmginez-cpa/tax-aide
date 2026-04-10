@@ -18,6 +18,7 @@ import Documents from "@/pages/documents";
 import Users from "@/pages/users";
 import Notifications from "@/pages/notifications";
 import AuditLog from "@/pages/audit-log";
+import CalendarPage from "@/pages/calendar";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -74,6 +75,10 @@ function AppRoutes() {
 
       <Route path="/deadlines">
         <Layout><ProtectedRoute component={Deadlines} roles={["accountant", "manager"]} /></Layout>
+      </Route>
+
+      <Route path="/calendar">
+        <Layout><ProtectedRoute component={CalendarPage} roles={["accountant", "manager"]} /></Layout>
       </Route>
 
       <Route path="/documents">

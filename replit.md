@@ -54,15 +54,27 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 
 ### 4-Stage Filing Workflow
 - Compliance items in client-detail.tsx are clickable buttons that open `FilingWorkflowDialog`
+- Deadlines in deadlines.tsx and calendar.tsx are also clickable and open `FilingWorkflowDialog`
 - Dialog is at `artifacts/taxcms/src/components/FilingWorkflowDialog.tsx`
 - Stages: `source_collection` → `draft_return` → `confirmation` → `payment`
 - State: `engagement.workflowStage` (current stage) + `engagement.status` (in_progress | for_review | completed)
 - Accountant actions: upload docs, submit for review, skip source collection ("No Transactions")
-- Manager actions: approve (advances to next stage or completes filing) or reject (returns with comment)
+- Manager actions: approve (advances to next stage or completes filing), reject (returns with comment), **void/undo** (reverts to previous stage)
 - Completing payment stage marks the linked `deadline.status = 'completed'` automatically
-- New API routes: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage`, `skip-source`, `approve-stage`, `reject-stage`
+- Completed workflows show "Void Completion" button for managers, which reverts to payment + in_progress and unmarks the deadline as filed
+- In-progress non-first stages show "Undo Last Approval" button for managers (reverts to previous stage)
+- Completed workflow dialog shows all 4 stages with their uploaded documents in a "Previous Stages" section
+- API routes: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage`, `skip-source`, `approve-stage`, `reject-stage`, `void-stage`
 - `documents.stage` column added to track which workflow stage each document belongs to
 - `engagements.workflow_stage` column added to track current filing stage
+
+### Calendar Page
+- Route: `/calendar`, accessible by accountant and manager roles
+- Monthly calendar grid view with day-of-week headers and month navigation
+- All BIR deadlines shown as color-coded pills on their due dates (red=overdue, green=completed, amber=high priority, blue=default)
+- Right sidebar shows scrollable list of all deadlines in the current month
+- Clicking any deadline with a clientId opens `FilingWorkflowDialog` directly from the calendar
+- "Calendar" added to sidebar navigation with CalendarDays icon (between Deadlines and Documents)
 
 ## Key Commands
 
