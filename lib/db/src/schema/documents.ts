@@ -14,6 +14,7 @@ export const documentsTable = pgTable("documents", {
   version: integer("version").notNull().default(1),
   description: text("description"),
   uploadedBy: integer("uploaded_by").notNull(),
+  stage: text("stage"), // 'source_collection' | 'draft_return' | 'confirmation' | 'payment'
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

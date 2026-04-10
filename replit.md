@@ -48,9 +48,21 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 ### BIR 2303 Features
 - Client schema has BIR 2303 fields: tradeName, rdoCode, registrationDate, lineOfBusiness, incomeTaxType (individual/corporate), vatRegistered, percentageTaxRegistered, withholdsCompensation, withholdsEwt, subjectToDst, fiscalYearStart, fiscalYearEnd, hasInventory, isLessor, isEsalesRequired
 - `POST /api/clients/:id/generate-deadlines` — auto-generates all required BIR deadlines for a tax year
-- `GET /api/clients/:id/compliance?year=YYYY` — computed compliance checklist with filed/pending/overdue status
+- `GET /api/clients/:id/compliance?year=YYYY` — computed compliance checklist with filed/pending/overdue status; each item includes `engagementId`, `workflowStage`, `workflowStatus` for filing workflow integration
 - BIR forms/submissions covered: 2550M, 2550Q, 2551Q, 1601C, 1601EQ, 1604CF, 1604E, 1702, 1702Q, 1701, 1701Q, 2000, AFS, Alphalist (employees), 2316 (substituted filing), Annex C, Annex F, QAP (quarterly alphalist of payees), SLS, SLP, eSales, Annual Inventory List, Lessee Information Statement
 - File uploads: PDF, Excel, Word, images, CSV, DAT (SLS/SLP data files)
+
+### 4-Stage Filing Workflow
+- Compliance items in client-detail.tsx are clickable buttons that open `FilingWorkflowDialog`
+- Dialog is at `artifacts/taxcms/src/components/FilingWorkflowDialog.tsx`
+- Stages: `source_collection` → `draft_return` → `confirmation` → `payment`
+- State: `engagement.workflowStage` (current stage) + `engagement.status` (in_progress | for_review | completed)
+- Accountant actions: upload docs, submit for review, skip source collection ("No Transactions")
+- Manager actions: approve (advances to next stage or completes filing) or reject (returns with comment)
+- Completing payment stage marks the linked `deadline.status = 'completed'` automatically
+- New API routes: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage`, `skip-source`, `approve-stage`, `reject-stage`
+- `documents.stage` column added to track which workflow stage each document belongs to
+- `engagements.workflow_stage` column added to track current filing stage
 
 ## Key Commands
 

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { eq, and } from "drizzle-orm";
-import { db, engagementsTable, usersTable, clientsTable, notificationsTable } from "@workspace/db";
+import { db, engagementsTable, usersTable, clientsTable, notificationsTable, deadlinesTable, commentsTable } from "@workspace/db";
 import {
   CreateEngagementBody,
   UpdateEngagementBody,
@@ -11,7 +11,7 @@ import {
   ApproveEngagementBody,
   ListEngagementsQueryParams,
 } from "@workspace/api-zod";
-import { requireAuth } from "../middlewares/auth";
+import { requireAuth, requireRole } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
 
 const router = Router();
@@ -51,10 +51,28 @@ async function serializeEngagement(e: typeof engagementsTable.$inferSelect) {
     approvalNotes: e.approvalNotes ?? null,
     dueDate: e.dueDate ?? null,
     notes: e.notes ?? null,
+    workflowStage: e.workflowStage ?? null,
     createdAt: e.createdAt.toISOString(),
     updatedAt: e.updatedAt.toISOString(),
   };
 }
+
+// ── Helper: stage progression ────────────────────────────────────────────────
+const STAGE_ORDER = ["source_collection", "draft_return", "confirmation", "payment"] as const;
+type WorkflowStage = (typeof STAGE_ORDER)[number];
+
+function nextStage(current: string): WorkflowStage | null {
+  const idx = STAGE_ORDER.indexOf(current as WorkflowStage);
+  if (idx === -1 || idx === STAGE_ORDER.length - 1) return null;
+  return STAGE_ORDER[idx + 1];
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  source_collection: "Source Documents",
+  draft_return: "Draft Tax Return",
+  confirmation: "Confirmation Receipt",
+  payment: "Payment Confirmation",
+};
 
 router.get("/engagements", requireAuth, async (req, res): Promise<void> => {
   const queryParams = ListEngagementsQueryParams.safeParse(req.query);
@@ -230,6 +248,231 @@ router.post("/engagements/:id/approve", requireAuth, async (req, res): Promise<v
   });
 
   res.json(await serializeEngagement(engagement));
+});
+
+// ── POST /api/engagements/:id/submit-stage ───────────────────────────────────
+// Accountant submits current stage for manager review
+router.post("/engagements/:id/submit-stage", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  if (engagement.status !== "in_progress") {
+    res.status(400).json({ error: "Engagement is not in progress" }); return;
+  }
+  if (!engagement.workflowStage) {
+    res.status(400).json({ error: "Engagement has no workflow stage" }); return;
+  }
+
+  const notes = req.body.notes?.trim() || null;
+
+  const [updated] = await db.update(engagementsTable)
+    .set({ status: "for_review", notes: notes ?? engagement.notes })
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  // Notify all managers
+  const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
+  for (const mgr of managers) {
+    await db.insert(notificationsTable).values({
+      userId: mgr.id,
+      title: "Stage Ready for Review",
+      message: `"${engagement.title}" — ${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage} is ready for your approval.`,
+      type: "engagement_approved",
+      relatedId: engagement.id,
+      relatedType: "engagement",
+    });
+  }
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "update",
+    entityType: "engagement",
+    entityId: id,
+    description: `Submitted "${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage}" stage for review`,
+  });
+
+  res.json(await serializeEngagement(updated));
+});
+
+// ── POST /api/engagements/:id/skip-source ────────────────────────────────────
+// Accountant skips source collection (no transactions) — no manager approval needed
+router.post("/engagements/:id/skip-source", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  if (engagement.workflowStage !== "source_collection" || engagement.status !== "in_progress") {
+    res.status(400).json({ error: "Can only skip source collection when in progress" }); return;
+  }
+
+  const [updated] = await db.update(engagementsTable)
+    .set({ workflowStage: "draft_return", status: "in_progress", notes: "No taxpayer transactions to report for this period." })
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  // Add comment
+  await db.insert(commentsTable).values({
+    engagementId: id,
+    authorId: req.session.userId!,
+    content: "Source collection skipped — no taxpayer transactions for this period.",
+    isApproval: false,
+  });
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "update",
+    entityType: "engagement",
+    entityId: id,
+    description: `Skipped source collection (no transactions) — advanced to Draft Tax Return`,
+  });
+
+  res.json(await serializeEngagement(updated));
+});
+
+// ── POST /api/engagements/:id/approve-stage ──────────────────────────────────
+// Manager approves current stage, advances to next (or completes)
+router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  if (engagement.status !== "for_review") {
+    res.status(400).json({ error: "Engagement is not awaiting review" }); return;
+  }
+
+  const notes = req.body.notes?.trim() || null;
+  const next = nextStage(engagement.workflowStage ?? "");
+
+  let updatedData: Partial<typeof engagementsTable.$inferSelect>;
+  let deadlineCompleted = false;
+
+  if (next) {
+    // Advance to next stage
+    updatedData = {
+      workflowStage: next,
+      status: "in_progress",
+      approvedBy: req.session.userId!,
+      approvedAt: new Date(),
+      approvalNotes: notes,
+    };
+  } else {
+    // Final stage (payment) approved → complete
+    updatedData = {
+      status: "completed",
+      approvedBy: req.session.userId!,
+      approvedAt: new Date(),
+      approvalNotes: notes,
+    };
+    deadlineCompleted = true;
+  }
+
+  const [updated] = await db.update(engagementsTable)
+    .set(updatedData as any)
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  // If completed: mark linked deadline as completed
+  if (deadlineCompleted) {
+    await db.update(deadlinesTable)
+      .set({ status: "completed" })
+      .where(eq(deadlinesTable.engagementId, id));
+  }
+
+  // Add approval comment
+  if (notes) {
+    await db.insert(commentsTable).values({
+      engagementId: id,
+      authorId: req.session.userId!,
+      content: notes,
+      isApproval: true,
+    });
+  }
+
+  // Notify assigned accountant
+  if (engagement.assignedTo) {
+    const message = deadlineCompleted
+      ? `Filing workflow for "${engagement.title}" is now complete!`
+      : `"${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage}" approved. Proceed to ${STAGE_LABELS[next!] ?? next}.`;
+    await db.insert(notificationsTable).values({
+      userId: engagement.assignedTo,
+      title: deadlineCompleted ? "Filing Complete" : "Stage Approved",
+      message,
+      type: "engagement_approved",
+      relatedId: engagement.id,
+      relatedType: "engagement",
+    });
+  }
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "approve",
+    entityType: "engagement",
+    entityId: id,
+    description: deadlineCompleted
+      ? `Approved final payment stage — filing complete for "${engagement.title}"`
+      : `Approved "${STAGE_LABELS[engagement.workflowStage!]}" — advanced to "${STAGE_LABELS[next!]}"`,
+  });
+
+  res.json(await serializeEngagement(updated));
+});
+
+// ── POST /api/engagements/:id/reject-stage ───────────────────────────────────
+// Manager rejects current stage, returns to accountant
+router.post("/engagements/:id/reject-stage", requireRole("manager"), async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  if (engagement.status !== "for_review") {
+    res.status(400).json({ error: "Engagement is not awaiting review" }); return;
+  }
+
+  const notes = (req.body.notes || "").trim();
+  if (!notes) { res.status(400).json({ error: "Rejection reason is required" }); return; }
+
+  const [updated] = await db.update(engagementsTable)
+    .set({ status: "in_progress", approvalNotes: notes })
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  // Add rejection comment
+  await db.insert(commentsTable).values({
+    engagementId: id,
+    authorId: req.session.userId!,
+    content: `Rejected: ${notes}`,
+    isApproval: false,
+  });
+
+  // Notify assigned accountant
+  if (engagement.assignedTo) {
+    await db.insert(notificationsTable).values({
+      userId: engagement.assignedTo,
+      title: "Stage Returned for Revision",
+      message: `"${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage}" returned. ${notes}`,
+      type: "engagement_approved",
+      relatedId: engagement.id,
+      relatedType: "engagement",
+    });
+  }
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "reject",
+    entityType: "engagement",
+    entityId: id,
+    description: `Rejected "${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage}" — ${notes}`,
+  });
+
+  res.json(await serializeEngagement(updated));
 });
 
 export default router;

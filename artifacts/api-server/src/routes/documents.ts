@@ -43,6 +43,7 @@ async function serializeDocument(doc: typeof documentsTable.$inferSelect) {
     description: doc.description ?? null,
     uploadedBy: doc.uploadedBy,
     uploadedByName,
+    stage: doc.stage ?? null,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
   };

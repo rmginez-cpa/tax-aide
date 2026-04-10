@@ -16,6 +16,7 @@ export const engagementsTable = pgTable("engagements", {
   approvalNotes: text("approval_notes"),
   dueDate: text("due_date"),
   notes: text("notes"),
+  workflowStage: text("workflow_stage"), // 'source_collection' | 'draft_return' | 'confirmation' | 'payment'
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

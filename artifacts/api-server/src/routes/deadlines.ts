@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { eq } from "drizzle-orm";
-import { db, deadlinesTable, clientsTable } from "@workspace/db";
+import { db, deadlinesTable, clientsTable, engagementsTable } from "@workspace/db";
 import {
   CreateDeadlineBody,
   UpdateDeadlineBody,
@@ -151,6 +151,56 @@ router.delete("/deadlines/:id", requireAuth, async (req, res): Promise<void> => 
   });
 
   res.sendStatus(204);
+});
+
+// ── POST /api/deadlines/:id/start-workflow ───────────────────────────────────
+// Start a filing workflow for this deadline (creates an engagement)
+router.post("/deadlines/:id/start-workflow", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [deadline] = await db.select().from(deadlinesTable).where(eq(deadlinesTable.id, id));
+  if (!deadline) { res.status(404).json({ error: "Deadline not found" }); return; }
+
+  if (deadline.engagementId) {
+    // Already started — return existing engagement
+    const [existing] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, deadline.engagementId));
+    if (existing) { res.json(existing); return; }
+  }
+
+  // Determine client name for title
+  let clientName = "Client";
+  if (deadline.clientId) {
+    const [client] = await db.select().from(clientsTable).where(eq(clientsTable.id, deadline.clientId));
+    clientName = client?.name ?? clientName;
+  }
+
+  const [engagement] = await db.insert(engagementsTable).values({
+    clientId: deadline.clientId ?? undefined,
+    title: deadline.title,
+    taxType: deadline.title,
+    period: deadline.period ?? "",
+    status: "in_progress",
+    workflowStage: "source_collection",
+    assignedTo: req.session.userId!,
+    dueDate: deadline.dueDate ?? null,
+    notes: null,
+  } as any).returning();
+
+  // Link deadline to engagement
+  await db.update(deadlinesTable)
+    .set({ engagementId: engagement.id })
+    .where(eq(deadlinesTable.id, id));
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "create",
+    entityType: "engagement",
+    entityId: engagement.id,
+    description: `Started filing workflow for "${deadline.title}" (${deadline.period ?? ""})`,
+  });
+
+  res.status(201).json(engagement);
 });
 
 export default router;

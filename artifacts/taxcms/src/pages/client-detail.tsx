@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useParams, Link } from "wouter";
 import {
   useGetClient, useUpdateClient, useListEngagements, useListDocuments,
@@ -22,9 +22,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ArrowLeft, Building2, Mail, Phone, MapPin, FileText, Briefcase,
   Calendar, ExternalLink, Edit2, Wand2, CheckCircle2, AlertCircle, Clock,
-  FileCheck, ChevronDown, ChevronUp
+  FileCheck, ChevronDown, ChevronUp, PlayCircle
 } from "lucide-react";
 import { format, parseISO, isPast } from "date-fns";
+import { FilingWorkflowDialog } from "@/components/FilingWorkflowDialog";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const BUSINESS_TYPES = ["Corporation","Sole Proprietorship","Partnership","Cooperative","Non-Profit Organization","One Person Corporation (OPC)","Barangay Micro Business Enterprise (BMBE)"];
@@ -102,6 +103,26 @@ export default function ClientDetail() {
   const [overwrite, setOverwrite] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [bir2303Expanded, setBir2303Expanded] = useState(false);
+
+  // Filing workflow dialog
+  const [workflowOpen, setWorkflowOpen] = useState(false);
+  const [workflowItem, setWorkflowItem] = useState<{
+    deadlineId: number | null;
+    engagementId: number | null;
+    formNumber: string;
+    description: string;
+    period: string;
+    dueDate: string;
+  } | null>(null);
+
+  const openWorkflow = useCallback((item: typeof workflowItem) => {
+    setWorkflowItem(item);
+    setWorkflowOpen(true);
+  }, []);
+
+  const handleWorkflowUpdate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: getGetClientComplianceQueryKey(id, { year: complianceYear }) });
+  }, [queryClient, id, complianceYear]);
 
   const [editForm, setEditForm] = useState<any>({});
   const ef = (key: string, val: any) => setEditForm((prev: any) => ({ ...prev, [key]: val }));
@@ -417,8 +438,35 @@ export default function ClientDetail() {
                 const freqColor = FREQUENCY_COLORS[item.frequency];
                 const isOverdue = item.status === "overdue";
                 const isFiled = item.status === "filed";
+                const hasWorkflow = !!(item as any).engagementId;
+                const wfStage = (item as any).workflowStage as string | null;
+                const wfStatus = (item as any).workflowStatus as string | null;
+                const STAGE_SHORT: Record<string, string> = {
+                  source_collection: "Sources",
+                  draft_return: "Draft",
+                  confirmation: "Confirmation",
+                  payment: "Payment",
+                };
+                const STAGE_COLORS: Record<string, string> = {
+                  source_collection: "bg-blue-100 text-blue-700",
+                  draft_return: "bg-amber-100 text-amber-700",
+                  confirmation: "bg-violet-100 text-violet-700",
+                  payment: "bg-cyan-100 text-cyan-700",
+                };
+                const isForReview = wfStatus === "for_review";
                 return (
-                  <div key={idx} className={`flex items-center gap-3 p-3 rounded-md border ${freqColor} ${isOverdue ? "border-red-300" : ""}`}>
+                  <button
+                    key={idx}
+                    className={`flex items-center gap-3 p-3 rounded-md border w-full text-left transition-colors hover:brightness-95 cursor-pointer ${freqColor} ${isOverdue ? "border-red-300" : ""}`}
+                    onClick={() => openWorkflow({
+                      deadlineId: (item as any).deadlineId ?? null,
+                      engagementId: (item as any).engagementId ?? null,
+                      formNumber: item.formNumber,
+                      description: item.description,
+                      period: item.period,
+                      dueDate: item.dueDate,
+                    })}
+                  >
                     <StatusIcon className={`h-4 w-4 shrink-0 ${statusInfo.className}`} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -426,6 +474,11 @@ export default function ClientDetail() {
                         <span className={`text-sm font-medium ${isFiled ? "line-through text-muted-foreground" : ""}`}>
                           {FORM_DESCRIPTIONS[item.formNumber] || item.formNumber}
                         </span>
+                        {hasWorkflow && wfStage && !isFiled && (
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${isForReview ? "bg-amber-100 text-amber-700" : STAGE_COLORS[wfStage] || "bg-gray-100 text-gray-700"}`}>
+                            {isForReview ? `${STAGE_SHORT[wfStage] || wfStage} · For Review` : `${STAGE_SHORT[wfStage] || wfStage} · In Progress`}
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
                         <span>{item.period}</span>
@@ -433,8 +486,13 @@ export default function ClientDetail() {
                         <span className="capitalize">{item.frequency}</span>
                       </div>
                     </div>
-                    <span className={`text-xs font-semibold shrink-0 ${statusInfo.className}`}>{statusInfo.label}</span>
-                  </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-xs font-semibold ${statusInfo.className}`}>{statusInfo.label}</span>
+                      {!hasWorkflow && !isFiled && (
+                        <PlayCircle className="h-4 w-4 text-muted-foreground/60" />
+                      )}
+                    </div>
+                  </button>
                 );
               })}
             </div>
@@ -666,6 +724,22 @@ export default function ClientDetail() {
           </Tabs>
         </DialogContent>
       </Dialog>
+
+      {/* Filing Workflow Dialog */}
+      {workflowItem && (
+        <FilingWorkflowDialog
+          open={workflowOpen}
+          onClose={() => setWorkflowOpen(false)}
+          deadlineId={workflowItem.deadlineId}
+          engagementId={workflowItem.engagementId}
+          clientId={id}
+          formNumber={workflowItem.formNumber}
+          description={workflowItem.description}
+          period={workflowItem.period}
+          dueDate={workflowItem.dueDate}
+          onUpdate={handleWorkflowUpdate}
+        />
+      )}
     </div>
   );
 }

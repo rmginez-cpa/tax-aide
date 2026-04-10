@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { eq, and, gte, lt } from "drizzle-orm";
-import { db, clientsTable, deadlinesTable } from "@workspace/db";
+import { db, clientsTable, deadlinesTable, engagementsTable } from "@workspace/db";
 import {
   CreateClientBody,
   UpdateClientBody,
@@ -468,6 +468,9 @@ interface ComplianceItem {
   frequency: "monthly" | "quarterly" | "annual";
   status: "pending" | "filed" | "overdue";
   deadlineId: number | null;
+  engagementId: number | null;
+  workflowStage: string | null;
+  workflowStatus: string | null;
 }
 
 const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
@@ -567,6 +570,21 @@ async function buildComplianceItems(
 
   const now = new Date();
 
+  // Fetch engagements for all matched deadlines (those that have an engagementId)
+  const deadlineEngagementIds = existing
+    .map(e => e.engagementId)
+    .filter((eid): eid is number => eid !== null && eid !== undefined);
+
+  const engagementsMap = new Map<number, typeof engagementsTable.$inferSelect>();
+  if (deadlineEngagementIds.length > 0) {
+    const engagements = await db.select().from(engagementsTable);
+    for (const eng of engagements) {
+      if (deadlineEngagementIds.includes(eng.id)) {
+        engagementsMap.set(eng.id, eng);
+      }
+    }
+  }
+
   return required.map(req => {
     const formNumber = extractFormNumber(req.title);
     const period = extractPeriod(req.title);
@@ -581,6 +599,9 @@ async function buildComplianceItems(
       status = "overdue";
     }
 
+    const engagementId = matched?.engagementId ?? null;
+    const eng = engagementId ? engagementsMap.get(engagementId) : null;
+
     return {
       formNumber,
       description: req.description,
@@ -589,6 +610,9 @@ async function buildComplianceItems(
       frequency,
       status,
       deadlineId: matched?.id ?? null,
+      engagementId: engagementId ?? null,
+      workflowStage: eng?.workflowStage ?? null,
+      workflowStatus: eng?.status ?? null,
     };
   });
 }

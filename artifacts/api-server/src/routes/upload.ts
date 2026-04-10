@@ -61,6 +61,7 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
   const engagementId = req.body.engagementId ? parseInt(req.body.engagementId) : null;
   const clientId = req.body.clientId ? parseInt(req.body.clientId) : null;
   const description = req.body.description?.trim() || null;
+  const stage = req.body.stage?.trim() || null;
 
   const [doc] = await db.insert(documentsTable).values({
     filename: req.file.filename,
@@ -73,7 +74,8 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
     clientId,
     uploadedBy: req.session.userId!,
     version: 1,
-  }).returning();
+    stage,
+  } as any).returning();
 
   // Update fileUrl now that we have the real ID
   const [updated] = await db.update(documentsTable)
