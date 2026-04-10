@@ -16,9 +16,9 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - **API codegen**: Orval (from OpenAPI spec)
 - **Build**: esbuild (CJS bundle)
 
-## Project: BIR TaxCMS
+## Project: TaxAide
 
-Full-stack BIR Tax Client Management System for Philippine accounting firms.
+Full-stack BIR Tax Compliance Management System for Philippine accounting firms (branded "TaxAide").
 
 ### Pages (artifacts/taxcms/src/pages/)
 - `login.tsx` — Auth page with demo credentials
@@ -46,10 +46,11 @@ Full-stack BIR Tax Client Management System for Philippine accounting firms.
 - pdfkit externalized in esbuild (added to external[] in build.mjs) so Node.js can access font files at runtime
 
 ### BIR 2303 Features
-- Client schema has BIR 2303 fields: tradeName, rdoCode, registrationDate, lineOfBusiness, incomeTaxType (individual/corporate), vatRegistered, percentageTaxRegistered, withholdsCompensation, withholdsEwt, subjectToDst, fiscalYearStart, fiscalYearEnd
-- `POST /api/clients/:id/generate-deadlines` — auto-generates all required BIR deadlines for a tax year (35+ entries for fully-registered client)
+- Client schema has BIR 2303 fields: tradeName, rdoCode, registrationDate, lineOfBusiness, incomeTaxType (individual/corporate), vatRegistered, percentageTaxRegistered, withholdsCompensation, withholdsEwt, subjectToDst, fiscalYearStart, fiscalYearEnd, hasInventory, isLessor, isEsalesRequired
+- `POST /api/clients/:id/generate-deadlines` — auto-generates all required BIR deadlines for a tax year
 - `GET /api/clients/:id/compliance?year=YYYY` — computed compliance checklist with filed/pending/overdue status
-- BIR forms covered: 2550M, 2550Q, 2551Q, 1601C, 1601EQ, 1604CF, 1604E, 1702, 1702Q, 1701, 1701Q, 2000, AFS, Alphalist
+- BIR forms/submissions covered: 2550M, 2550Q, 2551Q, 1601C, 1601EQ, 1604CF, 1604E, 1702, 1702Q, 1701, 1701Q, 2000, AFS, Alphalist (employees), 2316 (substituted filing), Annex C, Annex F, QAP (quarterly alphalist of payees), SLS, SLP, eSales, Annual Inventory List, Lessee Information Statement
+- File uploads: PDF, Excel, Word, images, CSV, DAT (SLS/SLP data files)
 
 ## Key Commands
 

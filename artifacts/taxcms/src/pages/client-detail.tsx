@@ -58,7 +58,16 @@ const FORM_DESCRIPTIONS: Record<string, string> = {
   "1701Q": "Quarterly Income Tax Return — Individuals",
   "2000": "Documentary Stamp Tax Declaration",
   "AFS": "Audited Financial Statements",
-  "Alphalist": "Alphalist of Employees",
+  "Alphalist": "Alphalist of Employees/Payees",
+  "2316": "Certificate of Compensation Payment/Tax Withheld (Substituted Filing)",
+  "AnnexC": "Annex C — Employees Qualified for Substituted Filing",
+  "AnnexF": "Annex F — Annual Alphalist of Employees",
+  "QAP": "Quarterly Alphalist of Payees (EWT)",
+  "SLS": "Summary List of Sales",
+  "SLP": "Summary List of Purchases",
+  "eSales": "eSales Report",
+  "Inventory": "Annual Inventory List",
+  "LesseeInfo": "Lessee Information Statement",
 };
 
 const FREQUENCY_COLORS = {
@@ -110,6 +119,9 @@ export default function ClientDetail() {
       vatRegistered: client.vatRegistered, percentageTaxRegistered: client.percentageTaxRegistered,
       withholdsCompensation: client.withholdsCompensation, withholdsEwt: client.withholdsEwt,
       subjectToDst: client.subjectToDst,
+      hasInventory: client.hasInventory ?? false,
+      isLessor: client.isLessor ?? false,
+      isEsalesRequired: client.isEsalesRequired ?? false,
     });
     setEditOpen(true);
   };
@@ -126,6 +138,8 @@ export default function ClientDetail() {
       vatRegistered: editForm.vatRegistered, percentageTaxRegistered: editForm.percentageTaxRegistered,
       withholdsCompensation: editForm.withholdsCompensation, withholdsEwt: editForm.withholdsEwt,
       subjectToDst: editForm.subjectToDst,
+      hasInventory: editForm.hasInventory, isLessor: editForm.isLessor,
+      isEsalesRequired: editForm.isEsalesRequired,
     }}, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getGetClientQueryKey(id) });
@@ -166,7 +180,7 @@ export default function ClientDetail() {
     );
   }
 
-  const hasBir2303 = client.rdoCode || client.registrationDate || client.lineOfBusiness || client.incomeTaxType || client.vatRegistered || client.percentageTaxRegistered || client.withholdsCompensation || client.withholdsEwt || client.subjectToDst;
+  const hasBir2303 = client.rdoCode || client.registrationDate || client.lineOfBusiness || client.incomeTaxType || client.vatRegistered || client.percentageTaxRegistered || client.withholdsCompensation || client.withholdsEwt || client.subjectToDst || client.hasInventory || client.isLessor || client.isEsalesRequired;
   const registeredTypes: { label: string; color: string }[] = [];
   if (client.incomeTaxType === "corporate") registeredTypes.push({ label: "1702/1702Q — Corp ITR", color: "bg-emerald-100 text-emerald-700" });
   if (client.incomeTaxType === "individual") registeredTypes.push({ label: "1701/1701Q — Indiv ITR", color: "bg-green-100 text-green-700" });
@@ -175,6 +189,9 @@ export default function ClientDetail() {
   if (client.withholdsCompensation) registeredTypes.push({ label: "1601C/1604CF — WHT Comp", color: "bg-amber-100 text-amber-700" });
   if (client.withholdsEwt) registeredTypes.push({ label: "1601EQ/1604E — EWT", color: "bg-orange-100 text-orange-700" });
   if (client.subjectToDst) registeredTypes.push({ label: "2000 — DST", color: "bg-slate-100 text-slate-700" });
+  if (client.hasInventory) registeredTypes.push({ label: "Annual Inventory List", color: "bg-teal-100 text-teal-700" });
+  if (client.isLessor) registeredTypes.push({ label: "Lessee Info Statement", color: "bg-pink-100 text-pink-700" });
+  if (client.isEsalesRequired) registeredTypes.push({ label: "eSales Report", color: "bg-indigo-100 text-indigo-700" });
 
   const filteredCompliance = compliance?.items.filter(item =>
     complianceFilter === "all" || item.frequency === complianceFilter
@@ -617,6 +634,19 @@ export default function ClientDetail() {
                     <Checkbox checked={!!editForm.subjectToDst} onCheckedChange={v => ef("subjectToDst", v)} />
                     <div><p className="text-sm font-medium">Documentary Stamp Tax (DST)</p><p className="text-xs text-muted-foreground">Monthly Form 2000</p></div>
                   </div>
+                </div>
+                <div className="p-3 rounded-md border space-y-2 bg-muted/30">
+                  <Label className="text-xs text-muted-foreground uppercase">Additional Compliance Requirements</Label>
+                  {[
+                    { key: "hasInventory", label: "Has Inventory", sub: "Annual Inventory List due January 30" },
+                    { key: "isLessor", label: "Lessor of Commercial Property", sub: "Lessee Information Statement due January 31" },
+                    { key: "isEsalesRequired", label: "eSales Reporting Required", sub: "Monthly eSales report due 20th of following month" },
+                  ].map(item => (
+                    <div key={item.key} className="flex items-start gap-3">
+                      <Checkbox checked={!!editForm[item.key]} onCheckedChange={v => ef(item.key, v)} />
+                      <div><p className="text-sm font-medium">{item.label}</p><p className="text-xs text-muted-foreground">{item.sub}</p></div>
+                    </div>
+                  ))}
                 </div>
               </div>
               <div className="flex justify-between pt-2">

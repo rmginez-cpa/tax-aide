@@ -55,7 +55,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <div className="mb-8 px-4">
         <h1 className="text-xl font-bold text-primary flex items-center gap-2">
           <Briefcase className="h-6 w-6" />
-          <span>TaxCMS</span>
+          <span>TaxAide</span>
         </h1>
         <p className="text-xs text-muted-foreground mt-1 tracking-wider uppercase font-semibold">
           BIR Compliance
@@ -81,7 +81,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <div className="md:hidden flex items-center justify-between p-4 border-b bg-card">
         <div className="flex items-center gap-2">
           <Briefcase className="h-5 w-5 text-primary" />
-          <span className="font-bold">TaxCMS</span>
+          <span className="font-bold">TaxAide</span>
         </div>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="icon" onClick={handleLogout} title="Log out" className="text-muted-foreground hover:text-foreground">

@@ -37,8 +37,11 @@ const upload = multer({
       "image/webp",
       "text/plain",
       "text/csv",
+      "application/octet-stream", // .dat files often come through as octet-stream
     ];
-    if (allowed.includes(file.mimetype)) {
+    // Also allow by extension for .dat and .csv files regardless of reported MIME
+    const ext = (file.originalname.split(".").pop() || "").toLowerCase();
+    if (allowed.includes(file.mimetype) || ext === "dat" || ext === "csv") {
       cb(null, true);
     } else {
       cb(new Error(`Unsupported file type: ${file.mimetype}`));

@@ -28,6 +28,11 @@ export const clientsTable = pgTable("clients", {
   subjectToDst: boolean("subject_to_dst").notNull().default(false),              // 2000 monthly
   fiscalYearStart: text("fiscal_year_start"),    // Starting month of fiscal year (e.g. "January")
 
+  // Additional compliance requirements
+  hasInventory: boolean("has_inventory").notNull().default(false),               // Annual Inventory List (Jan 30)
+  isLessor: boolean("is_lessor").notNull().default(false),                       // Lessee Info Statement (Jan 31)
+  isEsalesRequired: boolean("is_esales_required").notNull().default(false),      // eSales Report (monthly)
+
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

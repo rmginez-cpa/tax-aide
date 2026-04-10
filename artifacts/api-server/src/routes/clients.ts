@@ -39,6 +39,9 @@ function serializeClient(c: typeof clientsTable.$inferSelect) {
     withholdsCompensation: c.withholdsCompensation,
     withholdsEwt: c.withholdsEwt,
     subjectToDst: c.subjectToDst,
+    hasInventory: c.hasInventory,
+    isLessor: c.isLessor,
+    isEsalesRequired: c.isEsalesRequired,
     createdAt: c.createdAt.toISOString(),
     updatedAt: c.updatedAt.toISOString(),
   };
@@ -290,6 +293,123 @@ function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: nu
       priority: "medium",
       category: "Withholding Tax",
     });
+    // Annual Alphalist of Payees (1604E attachment)
+    deadlines.push({
+      title: `Annual Alphalist of Payees (1604E Attachment) — ${year}`,
+      description: `Alphabetical list of payees from whom expanded withholding taxes have been withheld. Filed with Form 1604E by March 1 of the following year.`,
+      dueDate: isoDate(year + 1, 3, 1),
+      priority: "medium",
+      category: "Withholding Tax",
+    });
+  }
+
+  // ── 2316 / Annex C / Annex F — Substituted Filing (Compensation) ─────────
+  if (client.withholdsCompensation) {
+    // BIR Form 2316: Certificate of Compensation Payment/Tax Withheld
+    // Must be issued to each employee and submitted to BIR by February 28
+    deadlines.push({
+      title: `BIR Form 2316 (Substituted Filing) — ${year}`,
+      description: `Certificate of Compensation Payment/Tax Withheld. Must be issued to all employees and, for those qualifying for substituted filing, submitted to the BIR. Due February 28 of the following year.`,
+      dueDate: isoDate(year + 1, 2, 28),
+      priority: "medium",
+      category: "Withholding Tax",
+    });
+    // Annex C: List of employees qualified for substituted filing
+    deadlines.push({
+      title: `Annex C (Substituted Filing Employees) — ${year}`,
+      description: `List of employees who qualify for substituted filing under RR 2-98, attached to Form 1604CF. Due March 1 of the following year.`,
+      dueDate: isoDate(year + 1, 3, 1),
+      priority: "low",
+      category: "Withholding Tax",
+    });
+    // Annex F: Alphabetical list of employees/payees (1604CF attachment)
+    deadlines.push({
+      title: `Annex F (Annual Alphalist of Employees) — ${year}`,
+      description: `Alphabetical list of employees from whom compensation was paid and taxes withheld, attached to Form 1604CF. Due March 1 of the following year.`,
+      dueDate: isoDate(year + 1, 3, 1),
+      priority: "low",
+      category: "Withholding Tax",
+    });
+  }
+
+  // ── Quarterly Alphalist of Payees (QAP) — for EWT filers ─────────────────
+  if (client.withholdsEwt) {
+    quarters.forEach(([endMonth, yOff], qIdx) => {
+      const qYear = year + yOff;
+      const qLabel = `Q${qIdx + 1} ${year}`;
+      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
+      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
+      const lastDay = new Date(Date.UTC(dueYear, dueMonth, 0)).getUTCDate();
+      deadlines.push({
+        title: `Quarterly Alphalist of Payees (QAP) — ${qLabel}`,
+        description: `Alphabetical list of payees subjected to expanded withholding tax for ${qLabel}. Attached to Form 1601EQ. Due last day of month following quarter end.`,
+        dueDate: isoDate(dueYear, dueMonth, lastDay),
+        priority: "medium",
+        category: "Withholding Tax",
+      });
+    });
+  }
+
+  // ── SLS / SLP — Summary List of Sales & Purchases (VAT) ──────────────────
+  if (client.vatRegistered) {
+    quarters.forEach(([endMonth, yOff], qIdx) => {
+      const qYear = year + yOff;
+      const qLabel = `Q${qIdx + 1} ${year}`;
+      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
+      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
+      deadlines.push({
+        title: `Summary List of Sales (SLS) — ${qLabel}`,
+        description: `Quarterly Summary List of Sales for VAT-registered taxpayers for ${qLabel}. Due 25th of the month following quarter end (filed with 2550Q).`,
+        dueDate: isoDate(dueYear, dueMonth, 25),
+        priority: "medium",
+        category: "VAT",
+      });
+      deadlines.push({
+        title: `Summary List of Purchases (SLP) — ${qLabel}`,
+        description: `Quarterly Summary List of Purchases for VAT-registered taxpayers for ${qLabel}. Due 25th of the month following quarter end (filed with 2550Q).`,
+        dueDate: isoDate(dueYear, dueMonth, 25),
+        priority: "medium",
+        category: "VAT",
+      });
+    });
+  }
+
+  // ── eSales Report — Monthly (if required) ────────────────────────────────
+  if (client.isEsalesRequired) {
+    for (let m = 1; m <= 12; m++) {
+      const dueMonth = m === 12 ? 1 : m + 1;
+      const dueYear = m === 12 ? year + 1 : year;
+      const period = `${MONTHS[m - 1]} ${year}`;
+      deadlines.push({
+        title: `eSales Report — ${period}`,
+        description: `Monthly electronic sales report for ${period}. Due 20th of the following month (same deadline as VAT return).`,
+        dueDate: isoDate(dueYear, dueMonth, 20),
+        priority: "medium",
+        category: "eSales",
+      });
+    }
+  }
+
+  // ── Annual Inventory List ─────────────────────────────────────────────────
+  if (client.hasInventory) {
+    deadlines.push({
+      title: `Annual Inventory List — FY ${year}`,
+      description: `Annual list of inventory at the end of the taxable year, submitted to the RDO on or before January 30 of the following year.`,
+      dueDate: isoDate(year + 1, 1, 30),
+      priority: "medium",
+      category: "Other",
+    });
+  }
+
+  // ── Lessee Information Statement ──────────────────────────────────────────
+  if (client.isLessor) {
+    deadlines.push({
+      title: `Lessee Information Statement — ${year}`,
+      description: `Annual statement of lessee information submitted by lessors of commercial properties to the RDO. Due January 31 of the following year.`,
+      dueDate: isoDate(year + 1, 1, 31),
+      priority: "medium",
+      category: "Other",
+    });
   }
 
   return deadlines;
@@ -324,13 +444,31 @@ const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
   "2000": "monthly",
   "AFS": "annual",
   "Alphalist": "annual",
+  "2316": "annual",
+  "AnnexC": "annual",
+  "AnnexF": "annual",
+  "QAP": "quarterly",
+  "SLS": "quarterly",
+  "SLP": "quarterly",
+  "eSales": "monthly",
+  "Inventory": "annual",
+  "LesseeInfo": "annual",
 };
 
 function extractFormNumber(title: string): string {
   const match = title.match(/BIR Form (\w+)/);
   if (match) return match[1];
   if (title.includes("Audited Financial Statements") || title.includes("AFS")) return "AFS";
-  if (title.includes("Alphalist")) return "Alphalist";
+  if (title.includes("Alphalist of Payees") && title.includes("Quarterly")) return "QAP";
+  if (title.includes("Alphalist of Payees") || title.includes("Annual Alphalist")) return "Alphalist";
+  if (title.includes("Alphalist of Employees")) return "Alphalist";
+  if (title.includes("Annex C")) return "AnnexC";
+  if (title.includes("Annex F")) return "AnnexF";
+  if (title.includes("Summary List of Sales")) return "SLS";
+  if (title.includes("Summary List of Purchases")) return "SLP";
+  if (title.includes("eSales")) return "eSales";
+  if (title.includes("Annual Inventory")) return "Inventory";
+  if (title.includes("Lessee Information")) return "LesseeInfo";
   return "OTHER";
 }
 

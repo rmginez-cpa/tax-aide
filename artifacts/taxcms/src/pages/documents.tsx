@@ -31,16 +31,19 @@ function FileIcon({ mimeType, className = "h-5 w-5" }: { mimeType: string; class
   return <FileText className={`${className} text-muted-foreground`} />;
 }
 
-function getMimeLabel(mimeType: string): { label: string; color: string } {
+function getMimeLabel(mimeType: string, originalName?: string): { label: string; color: string } {
+  const ext = (originalName?.split(".").pop() || "").toLowerCase();
   if (mimeType === "application/pdf") return { label: "PDF", color: "bg-red-100 text-red-700" };
   if (mimeType.includes("spreadsheetml") || mimeType.includes("ms-excel")) return { label: "Excel", color: "bg-green-100 text-green-700" };
   if (mimeType.includes("wordprocessingml") || mimeType === "application/msword") return { label: "Word", color: "bg-blue-100 text-blue-700" };
   if (mimeType.startsWith("image/")) return { label: "Image", color: "bg-violet-100 text-violet-700" };
+  if (mimeType === "text/csv" || ext === "csv") return { label: "CSV", color: "bg-green-100 text-green-800" };
+  if (ext === "dat") return { label: "DAT", color: "bg-yellow-100 text-yellow-800" };
   if (mimeType.startsWith("text/")) return { label: "Text", color: "bg-slate-100 text-slate-700" };
   return { label: "File", color: "bg-gray-100 text-gray-700" };
 }
 
-const ACCEPTED_TYPES = ".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv";
+const ACCEPTED_TYPES = ".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.dat";
 
 export default function Documents() {
   const { user } = useAuth();
@@ -156,6 +159,7 @@ export default function Documents() {
     // Only show View for docs uploaded via the real file system (fileUrl points to content endpoint)
     if (!doc.fileUrl?.startsWith("/api/documents/")) return false;
     const mt: string = doc.mimeType;
+    const ext = (doc.originalName?.split(".").pop() || "").toLowerCase();
     return (
       mt === "application/pdf" ||
       mt.includes("spreadsheetml") ||
@@ -163,7 +167,10 @@ export default function Documents() {
       mt.includes("wordprocessingml") ||
       mt === "application/msword" ||
       mt.startsWith("image/") ||
-      mt.startsWith("text/")
+      mt.startsWith("text/") ||
+      mt === "text/csv" ||
+      ext === "csv" ||
+      ext === "dat"
     );
   };
 
@@ -285,7 +292,7 @@ export default function Documents() {
       ) : (
         <div className="space-y-2">
           {filtered.map(doc => {
-            const { label, color } = getMimeLabel(doc.mimeType);
+            const { label, color } = getMimeLabel(doc.mimeType, doc.originalName);
             return (
               <Card key={doc.id} className="hover:shadow-sm transition-shadow">
                 <CardContent className="p-4">

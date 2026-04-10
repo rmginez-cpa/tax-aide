@@ -28,6 +28,7 @@ const initialForm = {
   incomeTaxType: "" as "" | "individual" | "corporate",
   vatRegistered: false, percentageTaxRegistered: false,
   withholdsCompensation: false, withholdsEwt: false, subjectToDst: false,
+  hasInventory: false, isLessor: false, isEsalesRequired: false,
 };
 
 function TaxTypeBadges({ client }: { client: any }) {
@@ -39,6 +40,9 @@ function TaxTypeBadges({ client }: { client: any }) {
   if (client.subjectToDst) badges.push({ label: "DST", color: "bg-slate-100 text-slate-700" });
   if (client.incomeTaxType === "corporate") badges.push({ label: "Corp ITR", color: "bg-emerald-100 text-emerald-700" });
   if (client.incomeTaxType === "individual") badges.push({ label: "Indiv ITR", color: "bg-green-100 text-green-700" });
+  if (client.hasInventory) badges.push({ label: "Inventory", color: "bg-teal-100 text-teal-700" });
+  if (client.isLessor) badges.push({ label: "Lessor", color: "bg-pink-100 text-pink-700" });
+  if (client.isEsalesRequired) badges.push({ label: "eSales", color: "bg-indigo-100 text-indigo-700" });
   return (
     <div className="flex flex-wrap gap-1 mt-2">
       {badges.map(b => (
@@ -306,6 +310,33 @@ export default function Clients() {
                         <div>
                           <label htmlFor="dst" className="text-sm font-medium cursor-pointer">Documentary Stamp Tax (DST)</label>
                           <p className="text-xs text-muted-foreground">Monthly Form 2000 (due 5th of following month)</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 p-3 rounded-md border bg-muted/30">
+                      <Label className="text-xs text-muted-foreground uppercase tracking-wider">Additional Compliance Requirements</Label>
+                      <div className="space-y-2">
+                        <div className="flex items-start gap-3">
+                          <Checkbox id="inv" checked={form.hasInventory} onCheckedChange={() => toggle("hasInventory")} />
+                          <div>
+                            <label htmlFor="inv" className="text-sm font-medium cursor-pointer">Has Inventory</label>
+                            <p className="text-xs text-muted-foreground">Annual Inventory List due January 30</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <Checkbox id="lessor" checked={form.isLessor} onCheckedChange={() => toggle("isLessor")} />
+                          <div>
+                            <label htmlFor="lessor" className="text-sm font-medium cursor-pointer">Lessor of Commercial Property</label>
+                            <p className="text-xs text-muted-foreground">Lessee Information Statement due January 31</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <Checkbox id="esales" checked={form.isEsalesRequired} onCheckedChange={() => toggle("isEsalesRequired")} />
+                          <div>
+                            <label htmlFor="esales" className="text-sm font-medium cursor-pointer">eSales Reporting Required</label>
+                            <p className="text-xs text-muted-foreground">Monthly eSales report due 20th of following month</p>
+                          </div>
                         </div>
                       </div>
                     </div>

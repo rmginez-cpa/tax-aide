@@ -30,14 +30,18 @@ function isPdf(mime: string) { return mime === "application/pdf"; }
 function isExcel(mime: string) { return mime.includes("spreadsheetml") || mime.includes("ms-excel"); }
 function isWord(mime: string) { return mime.includes("wordprocessingml") || mime === "application/msword"; }
 function isImage(mime: string) { return mime.startsWith("image/"); }
-function isText(mime: string) { return mime.startsWith("text/"); }
+function isText(mime: string, name?: string) {
+  if (mime.startsWith("text/")) return true;
+  const ext = (name?.split(".").pop() || "").toLowerCase();
+  return ext === "dat" || ext === "csv";
+}
 
-function getFileIcon(mimeType: string): string {
+function getFileIcon(mimeType: string, name?: string): string {
   if (isPdf(mimeType)) return "📄";
   if (isExcel(mimeType)) return "📊";
   if (isWord(mimeType)) return "📝";
   if (isImage(mimeType)) return "🖼️";
-  if (isText(mimeType)) return "📃";
+  if (isText(mimeType, name)) return "📃";
   return "📁";
 }
 
@@ -80,7 +84,7 @@ export function FileViewer({ doc, onClose }: FileViewerProps) {
           const mammoth = await import("mammoth");
           const result = await mammoth.convertToHtml({ arrayBuffer });
           setHtmlContent(result.value);
-        } else if (isText(doc.mimeType)) {
+        } else if (isText(doc.mimeType, doc.originalName)) {
           const text = await blob.text();
           setTextContent(text);
         } else {
@@ -125,7 +129,7 @@ export function FileViewer({ doc, onClose }: FileViewerProps) {
         <DialogHeader className="px-5 py-3 border-b shrink-0">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-xl shrink-0">{doc ? getFileIcon(doc.mimeType) : "📁"}</span>
+              <span className="text-xl shrink-0">{doc ? getFileIcon(doc.mimeType, doc.originalName) : "📁"}</span>
               <div className="min-w-0">
                 <DialogTitle className="text-sm font-semibold truncate">{doc?.originalName}</DialogTitle>
                 <p className="text-xs text-muted-foreground">
