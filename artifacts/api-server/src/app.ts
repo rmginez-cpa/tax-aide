@@ -9,6 +9,17 @@ import { pool } from "@workspace/db";
 
 const PgSession = connectPgSimple(session);
 
+// Ensure session table exists without relying on the bundled table.sql file
+pool.query(`
+  CREATE TABLE IF NOT EXISTS "user_sessions" (
+    "sid" varchar NOT NULL COLLATE "default",
+    "sess" json NOT NULL,
+    "expire" timestamp(6) NOT NULL,
+    CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE
+  );
+  CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "user_sessions" ("expire");
+`).catch((err: Error) => logger.warn({ err }, "Session table setup warning (may already exist)"));
+
 const app: Express = express();
 
 app.use(
@@ -39,7 +50,7 @@ app.use(
     store: new PgSession({
       pool,
       tableName: "user_sessions",
-      createTableIfMissing: true,
+      createTableIfMissing: false,
     }),
     secret: process.env.SESSION_SECRET || "tax-cms-secret-key",
     resave: false,
