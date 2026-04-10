@@ -334,6 +334,61 @@ router.post("/engagements/:id/skip-source", requireAuth, async (req, res): Promi
   res.json(await serializeEngagement(updated));
 });
 
+// ── POST /api/engagements/:id/skip-payment ───────────────────────────────────
+// Accountant skips payment (no payment due) — directly completes without manager approval
+router.post("/engagements/:id/skip-payment", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  if (engagement.workflowStage !== "payment" || engagement.status !== "in_progress") {
+    res.status(400).json({ error: "Can only skip payment when in the payment stage and in progress" }); return;
+  }
+
+  const [updated] = await db.update(engagementsTable)
+    .set({ status: "completed", notes: (engagement.notes ? engagement.notes + " | " : "") + "No payment required for this filing." })
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  // Mark linked deadline as completed
+  await db.update(deadlinesTable)
+    .set({ status: "completed" })
+    .where(eq(deadlinesTable.engagementId, id));
+
+  // Add comment
+  await db.insert(commentsTable).values({
+    engagementId: id,
+    authorId: req.session.userId!,
+    content: "Payment stage skipped — no payment required for this filing. Filing marked as complete.",
+    isApproval: false,
+  });
+
+  // Notify managers
+  const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
+  for (const mgr of managers) {
+    await db.insert(notificationsTable).values({
+      userId: mgr.id,
+      title: "Filing Complete (No Payment)",
+      message: `"${engagement.title}" has been filed. No payment was required.`,
+      type: "engagement_approved",
+      relatedId: engagement.id,
+      relatedType: "engagement",
+    });
+  }
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "update",
+    entityType: "engagement",
+    entityId: id,
+    description: `Payment skipped (no payment required) — filing complete for "${engagement.title}"`,
+  });
+
+  res.json(await serializeEngagement(updated));
+});
+
 // ── POST /api/engagements/:id/approve-stage ──────────────────────────────────
 // Manager approves current stage, advances to next (or completes)
 router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req, res): Promise<void> => {

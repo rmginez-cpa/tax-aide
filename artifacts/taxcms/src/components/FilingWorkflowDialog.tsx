@@ -297,6 +297,22 @@ export function FilingWorkflowDialog({
     }
   };
 
+  const handleSkipPayment = async () => {
+    if (!engagementId) return;
+    setLoading(true);
+    try {
+      await apiCall("POST", `/engagements/${engagementId}/skip-payment`);
+      await refreshEngagement();
+      invalidateDocs();
+      toast({ title: "Filing complete — no payment required" });
+      onUpdate();
+    } catch (e: any) {
+      toast({ title: e.message || "Action failed", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ── Manager actions ────────────────────────────────────────────────────────
   const handleApprove = async () => {
     if (!engagementId) return;
@@ -365,6 +381,7 @@ export function FilingWorkflowDialog({
   const isForReview = engagement?.status === "for_review";
   const isInProgress = engagement?.status === "in_progress";
   const isSourceStage = engagement?.workflowStage === "source_collection";
+  const isPaymentStage = engagement?.workflowStage === "payment";
 
   const stageDocs = (stage: string) =>
     engagementDocs.filter(d => (d as any).stage === stage);
@@ -592,6 +609,12 @@ export function FilingWorkflowDialog({
                                   <Button size="sm" variant="outline" onClick={handleSkipSource} disabled={loading}>
                                     <SkipForward className="h-4 w-4 mr-2" />
                                     No Transactions — Proceed
+                                  </Button>
+                                )}
+                                {isPaymentStage && (
+                                  <Button size="sm" variant="outline" onClick={handleSkipPayment} disabled={loading}>
+                                    <SkipForward className="h-4 w-4 mr-2" />
+                                    No Payment Required — File Directly
                                   </Button>
                                 )}
                               </div>
