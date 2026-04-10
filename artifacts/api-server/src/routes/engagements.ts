@@ -52,6 +52,8 @@ async function serializeEngagement(e: typeof engagementsTable.$inferSelect) {
     dueDate: e.dueDate ?? null,
     notes: e.notes ?? null,
     workflowStage: e.workflowStage ?? null,
+    isAmendment: e.isAmendment ?? false,
+    amendedEngagementId: e.amendedEngagementId ?? null,
     createdAt: e.createdAt.toISOString(),
     updatedAt: e.updatedAt.toISOString(),
   };
@@ -123,6 +125,27 @@ router.get("/engagements/:id", requireAuth, async (req, res): Promise<void> => {
   }
 
   res.json(await serializeEngagement(engagement));
+});
+
+// ── GET /api/engagements/:id/amendments ──────────────────────────────────────
+// Returns all amendments for an engagement (original or amendment)
+router.get("/engagements/:id/amendments", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  // First resolve to original: if this is itself an amendment, get its root
+  const [thisEng] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!thisEng) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  const rootId = thisEng.amendedEngagementId ?? id;
+
+  // Get original + all amendments
+  const [original] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, rootId));
+  const amendments = await db.select().from(engagementsTable).where(eq(engagementsTable.amendedEngagementId, rootId));
+
+  const all = [original, ...amendments].filter(Boolean);
+  const serialized = await Promise.all(all.map(serializeEngagement));
+  res.json(serialized);
 });
 
 router.patch("/engagements/:id", requireAuth, async (req, res): Promise<void> => {
@@ -250,8 +273,77 @@ router.post("/engagements/:id/approve", requireAuth, async (req, res): Promise<v
   res.json(await serializeEngagement(engagement));
 });
 
+// ── POST /api/engagements/:id/advance-stage ──────────────────────────────────
+// NEW: Accountant advances to next stage directly (no manager approval needed between stages).
+// At the FINAL stage (payment), this submits for manager review instead.
+router.post("/engagements/:id/advance-stage", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  if (engagement.status !== "in_progress") {
+    res.status(400).json({ error: "Engagement is not in progress" }); return;
+  }
+  if (!engagement.workflowStage) {
+    res.status(400).json({ error: "Engagement has no workflow stage" }); return;
+  }
+
+  const notes = req.body.notes?.trim() || null;
+  const next = nextStage(engagement.workflowStage);
+
+  let updatedData: Partial<typeof engagementsTable.$inferInsert>;
+  let action: string;
+
+  if (next) {
+    // Not the last stage: advance directly without manager approval
+    updatedData = {
+      workflowStage: next,
+      status: "in_progress",
+      notes: notes ?? engagement.notes,
+    };
+    action = `Advanced from "${STAGE_LABELS[engagement.workflowStage]}" to "${STAGE_LABELS[next]}"`;
+  } else {
+    // Last stage (payment): submit for manager review
+    updatedData = {
+      status: "for_review",
+      notes: notes ?? engagement.notes,
+    };
+    action = `Submitted "${STAGE_LABELS[engagement.workflowStage]}" for manager review`;
+
+    // Notify all managers
+    const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
+    for (const mgr of managers) {
+      await db.insert(notificationsTable).values({
+        userId: mgr.id,
+        title: "Filing Ready for Approval",
+        message: `"${engagement.title}" — all stages complete. Ready for your final approval.`,
+        type: "engagement_approved",
+        relatedId: engagement.id,
+        relatedType: "engagement",
+      });
+    }
+  }
+
+  const [updated] = await db.update(engagementsTable)
+    .set(updatedData as any)
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "update",
+    entityType: "engagement",
+    entityId: id,
+    description: action,
+  });
+
+  res.json(await serializeEngagement(updated));
+});
+
 // ── POST /api/engagements/:id/submit-stage ───────────────────────────────────
-// Accountant submits current stage for manager review
+// Legacy: kept for backward compat. Behaves same as advance-stage.
 router.post("/engagements/:id/submit-stage", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -267,38 +359,37 @@ router.post("/engagements/:id/submit-stage", requireAuth, async (req, res): Prom
   }
 
   const notes = req.body.notes?.trim() || null;
+  const next = nextStage(engagement.workflowStage);
 
-  const [updated] = await db.update(engagementsTable)
-    .set({ status: "for_review", notes: notes ?? engagement.notes })
-    .where(eq(engagementsTable.id, id))
-    .returning();
+  let updatedData: Partial<typeof engagementsTable.$inferInsert>;
 
-  // Notify all managers
-  const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
-  for (const mgr of managers) {
-    await db.insert(notificationsTable).values({
-      userId: mgr.id,
-      title: "Stage Ready for Review",
-      message: `"${engagement.title}" — ${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage} is ready for your approval.`,
-      type: "engagement_approved",
-      relatedId: engagement.id,
-      relatedType: "engagement",
-    });
+  if (next) {
+    updatedData = { workflowStage: next, status: "in_progress", notes: notes ?? engagement.notes };
+  } else {
+    updatedData = { status: "for_review", notes: notes ?? engagement.notes };
+
+    const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
+    for (const mgr of managers) {
+      await db.insert(notificationsTable).values({
+        userId: mgr.id,
+        title: "Filing Ready for Approval",
+        message: `"${engagement.title}" — all stages complete. Ready for your final approval.`,
+        type: "engagement_approved",
+        relatedId: engagement.id,
+        relatedType: "engagement",
+      });
+    }
   }
 
-  await logAudit({
-    userId: req.session.userId,
-    action: "update",
-    entityType: "engagement",
-    entityId: id,
-    description: `Submitted "${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage}" stage for review`,
-  });
+  const [updated] = await db.update(engagementsTable)
+    .set(updatedData as any)
+    .where(eq(engagementsTable.id, id))
+    .returning();
 
   res.json(await serializeEngagement(updated));
 });
 
 // ── POST /api/engagements/:id/skip-source ────────────────────────────────────
-// Accountant skips source collection (no transactions) — no manager approval needed
 router.post("/engagements/:id/skip-source", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -315,7 +406,6 @@ router.post("/engagements/:id/skip-source", requireAuth, async (req, res): Promi
     .where(eq(engagementsTable.id, id))
     .returning();
 
-  // Add comment
   await db.insert(commentsTable).values({
     engagementId: id,
     authorId: req.session.userId!,
@@ -335,7 +425,6 @@ router.post("/engagements/:id/skip-source", requireAuth, async (req, res): Promi
 });
 
 // ── POST /api/engagements/:id/skip-payment ───────────────────────────────────
-// Accountant skips payment (no payment due) — directly completes without manager approval
 router.post("/engagements/:id/skip-payment", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -348,20 +437,14 @@ router.post("/engagements/:id/skip-payment", requireAuth, async (req, res): Prom
   }
 
   const [updated] = await db.update(engagementsTable)
-    .set({ status: "completed", notes: (engagement.notes ? engagement.notes + " | " : "") + "No payment required for this filing." })
+    .set({ status: "for_review", notes: (engagement.notes ? engagement.notes + " | " : "") + "No payment required for this filing." })
     .where(eq(engagementsTable.id, id))
     .returning();
 
-  // Mark linked deadline as completed
-  await db.update(deadlinesTable)
-    .set({ status: "completed" })
-    .where(eq(deadlinesTable.engagementId, id));
-
-  // Add comment
   await db.insert(commentsTable).values({
     engagementId: id,
     authorId: req.session.userId!,
-    content: "Payment stage skipped — no payment required for this filing. Filing marked as complete.",
+    content: "Payment stage skipped — no payment required. Submitted for manager approval.",
     isApproval: false,
   });
 
@@ -370,8 +453,8 @@ router.post("/engagements/:id/skip-payment", requireAuth, async (req, res): Prom
   for (const mgr of managers) {
     await db.insert(notificationsTable).values({
       userId: mgr.id,
-      title: "Filing Complete (No Payment)",
-      message: `"${engagement.title}" has been filed. No payment was required.`,
+      title: "Filing Ready for Approval (No Payment)",
+      message: `"${engagement.title}" — no payment required. Ready for your approval.`,
       type: "engagement_approved",
       relatedId: engagement.id,
       relatedType: "engagement",
@@ -383,14 +466,14 @@ router.post("/engagements/:id/skip-payment", requireAuth, async (req, res): Prom
     action: "update",
     entityType: "engagement",
     entityId: id,
-    description: `Payment skipped (no payment required) — filing complete for "${engagement.title}"`,
+    description: `Payment skipped — submitted for manager approval`,
   });
 
   res.json(await serializeEngagement(updated));
 });
 
 // ── POST /api/engagements/:id/approve-stage ──────────────────────────────────
-// Manager approves current stage, advances to next (or completes)
+// Manager approves the complete filing (all stages done → completed)
 router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -403,44 +486,22 @@ router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req
   }
 
   const notes = req.body.notes?.trim() || null;
-  const next = nextStage(engagement.workflowStage ?? "");
 
-  let updatedData: Partial<typeof engagementsTable.$inferSelect>;
-  let deadlineCompleted = false;
-
-  if (next) {
-    // Advance to next stage
-    updatedData = {
-      workflowStage: next,
-      status: "in_progress",
-      approvedBy: req.session.userId!,
-      approvedAt: new Date(),
-      approvalNotes: notes,
-    };
-  } else {
-    // Final stage (payment) approved → complete
-    updatedData = {
+  const [updated] = await db.update(engagementsTable)
+    .set({
       status: "completed",
       approvedBy: req.session.userId!,
       approvedAt: new Date(),
       approvalNotes: notes,
-    };
-    deadlineCompleted = true;
-  }
-
-  const [updated] = await db.update(engagementsTable)
-    .set(updatedData as any)
+    } as any)
     .where(eq(engagementsTable.id, id))
     .returning();
 
-  // If completed: mark linked deadline as completed
-  if (deadlineCompleted) {
-    await db.update(deadlinesTable)
-      .set({ status: "completed" })
-      .where(eq(deadlinesTable.engagementId, id));
-  }
+  // Mark linked deadline as completed
+  await db.update(deadlinesTable)
+    .set({ status: "completed" })
+    .where(eq(deadlinesTable.engagementId, id));
 
-  // Add approval comment
   if (notes) {
     await db.insert(commentsTable).values({
       engagementId: id,
@@ -450,15 +511,11 @@ router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req
     });
   }
 
-  // Notify assigned accountant
   if (engagement.assignedTo) {
-    const message = deadlineCompleted
-      ? `Filing workflow for "${engagement.title}" is now complete!`
-      : `"${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage}" approved. Proceed to ${STAGE_LABELS[next!] ?? next}.`;
     await db.insert(notificationsTable).values({
       userId: engagement.assignedTo,
-      title: deadlineCompleted ? "Filing Complete" : "Stage Approved",
-      message,
+      title: "Filing Complete",
+      message: `Filing workflow for "${engagement.title}" is now complete and approved!`,
       type: "engagement_approved",
       relatedId: engagement.id,
       relatedType: "engagement",
@@ -470,16 +527,14 @@ router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req
     action: "approve",
     entityType: "engagement",
     entityId: id,
-    description: deadlineCompleted
-      ? `Approved final payment stage — filing complete for "${engagement.title}"`
-      : `Approved "${STAGE_LABELS[engagement.workflowStage!]}" — advanced to "${STAGE_LABELS[next!]}"`,
+    description: `Approved and completed filing for "${engagement.title}"`,
   });
 
   res.json(await serializeEngagement(updated));
 });
 
 // ── POST /api/engagements/:id/void-stage ────────────────────────────────────
-// Manager voids/undoes the last stage approval, reverting to the previous stage
+// Manager voids/undoes the filing approval — reverts back to in_progress
 router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -488,28 +543,17 @@ router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, r
   if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
 
   const wasCompleted = engagement.status === "completed";
-  const currentStage = wasCompleted ? "payment" : (engagement.workflowStage ?? "");
+  const wasForReview = engagement.status === "for_review";
 
-  // Cannot void the first stage
-  if (currentStage === "source_collection" && !wasCompleted) {
-    res.status(400).json({ error: "Cannot void the first stage" }); return;
-  }
-
-  // Find the previous stage (or stay at payment if coming from completed)
-  let targetStage: string;
-  if (wasCompleted) {
-    targetStage = "payment"; // revert from completed → payment in_progress
-  } else {
-    const idx = STAGE_ORDER.indexOf(currentStage as any);
-    targetStage = idx > 0 ? STAGE_ORDER[idx - 1] : "source_collection";
+  if (!wasCompleted && !wasForReview) {
+    res.status(400).json({ error: "Can only void completed or for-review engagements" }); return;
   }
 
   const notes = req.body.notes?.trim() || null;
-  const reason = notes || "Stage voided by manager";
+  const reason = notes || "Voided by manager";
 
   const [updated] = await db.update(engagementsTable)
     .set({
-      workflowStage: targetStage,
       status: "in_progress",
       approvedBy: null,
       approvedAt: null,
@@ -525,20 +569,18 @@ router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, r
       .where(eq(deadlinesTable.engagementId, id));
   }
 
-  // Add void comment
   await db.insert(commentsTable).values({
     engagementId: id,
     authorId: req.session.userId!,
-    content: `Voided — reverted to "${STAGE_LABELS[targetStage]}". Reason: ${reason}`,
+    content: `${wasCompleted ? "Filing completion voided" : "Review submission voided"} — returned to accountant. Reason: ${reason}`,
     isApproval: false,
   });
 
-  // Notify assigned accountant
   if (engagement.assignedTo) {
     await db.insert(notificationsTable).values({
       userId: engagement.assignedTo,
-      title: "Stage Voided",
-      message: `"${STAGE_LABELS[wasCompleted ? "payment" : currentStage] ?? currentStage}" has been voided. Please redo "${STAGE_LABELS[targetStage]}" stage.`,
+      title: wasCompleted ? "Filing Completion Voided" : "Review Returned",
+      message: `"${engagement.title}" has been returned for revision. ${reason}`,
       type: "engagement_approved",
       relatedId: engagement.id,
       relatedType: "engagement",
@@ -550,7 +592,7 @@ router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, r
     action: "reject",
     entityType: "engagement",
     entityId: id,
-    description: `Voided stage — reverted "${engagement.title}" from "${wasCompleted ? "completed" : STAGE_LABELS[currentStage]}" to "${STAGE_LABELS[targetStage]}"`,
+    description: `Voided ${wasCompleted ? "completed" : "for-review"} status for "${engagement.title}" — returned to in_progress`,
   });
 
   res.json(await serializeEngagement(updated));
@@ -577,20 +619,18 @@ router.post("/engagements/:id/reject-stage", requireRole("manager"), async (req,
     .where(eq(engagementsTable.id, id))
     .returning();
 
-  // Add rejection comment
   await db.insert(commentsTable).values({
     engagementId: id,
     authorId: req.session.userId!,
-    content: `Rejected: ${notes}`,
+    content: `Returned for revision: ${notes}`,
     isApproval: false,
   });
 
-  // Notify assigned accountant
   if (engagement.assignedTo) {
     await db.insert(notificationsTable).values({
       userId: engagement.assignedTo,
-      title: "Stage Returned for Revision",
-      message: `"${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage}" returned. ${notes}`,
+      title: "Filing Returned for Revision",
+      message: `"${engagement.title}" returned. ${notes}`,
       type: "engagement_approved",
       relatedId: engagement.id,
       relatedType: "engagement",
@@ -602,10 +642,61 @@ router.post("/engagements/:id/reject-stage", requireRole("manager"), async (req,
     action: "reject",
     entityType: "engagement",
     entityId: id,
-    description: `Rejected "${STAGE_LABELS[engagement.workflowStage!] ?? engagement.workflowStage}" — ${notes}`,
+    description: `Rejected filing for "${engagement.title}" — ${notes}`,
   });
 
   res.json(await serializeEngagement(updated));
+});
+
+// ── POST /api/engagements/:id/amend ──────────────────────────────────────────
+// Create an amended return filing for a completed engagement
+router.post("/engagements/:id/amend", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const [original] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!original) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  if (original.status !== "completed") {
+    res.status(400).json({ error: "Can only amend a completed filing" }); return;
+  }
+
+  // Count existing amendments to number this one
+  const existingAmendments = await db.select()
+    .from(engagementsTable)
+    .where(eq(engagementsTable.amendedEngagementId, id));
+  const amendmentNumber = existingAmendments.length + 1;
+
+  const [amendment] = await db.insert(engagementsTable).values({
+    clientId: original.clientId,
+    title: `${original.title} — Amendment #${amendmentNumber}`,
+    taxType: original.taxType,
+    period: original.period,
+    fiscalYear: original.fiscalYear,
+    status: "in_progress",
+    assignedTo: original.assignedTo,
+    dueDate: original.dueDate,
+    workflowStage: "source_collection",
+    isAmendment: true,
+    amendedEngagementId: id,
+  }).returning();
+
+  await db.insert(commentsTable).values({
+    engagementId: amendment.id,
+    authorId: req.session.userId!,
+    content: `Amendment #${amendmentNumber} filing started based on original filing ID #${id}.`,
+    isApproval: false,
+  });
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "create",
+    entityType: "engagement",
+    entityId: amendment.id,
+    description: `Created Amendment #${amendmentNumber} for "${original.title}"`,
+  });
+
+  res.status(201).json(await serializeEngagement(amendment));
 });
 
 export default router;

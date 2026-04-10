@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -17,6 +17,8 @@ export const engagementsTable = pgTable("engagements", {
   dueDate: text("due_date"),
   notes: text("notes"),
   workflowStage: text("workflow_stage"), // 'source_collection' | 'draft_return' | 'confirmation' | 'payment'
+  isAmendment: boolean("is_amendment").notNull().default(false),
+  amendedEngagementId: integer("amended_engagement_id"), // reference to original engagement
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

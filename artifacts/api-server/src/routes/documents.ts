@@ -2,7 +2,7 @@ import { Router } from "express";
 import { eq } from "drizzle-orm";
 import path from "path";
 import fs from "fs";
-import { db, documentsTable, usersTable, clientsTable } from "@workspace/db";
+import { db, documentsTable, usersTable, clientsTable, engagementsTable } from "@workspace/db";
 import {
   UploadDocumentBody,
   UpdateDocumentBody,
@@ -136,6 +136,27 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
+  }
+
+  // Look up the document first to check engagement lock state
+  const [existingDoc] = await db.select().from(documentsTable).where(eq(documentsTable.id, params.data.id));
+  if (!existingDoc) {
+    res.status(404).json({ error: "Document not found" });
+    return;
+  }
+
+  // Guard: if attached to an engagement that is approved (for_review or completed), block deletion
+  if (existingDoc.engagementId) {
+    const [eng] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, existingDoc.engagementId));
+    const userRole = (req as any).session?.role ?? req.session?.role;
+    if (eng && (eng.status === "for_review" || eng.status === "completed")) {
+      res.status(403).json({
+        error: eng.status === "completed"
+          ? "Cannot delete documents from a completed filing. The manager must void the completion first."
+          : "Cannot delete documents while the filing is pending manager approval.",
+      });
+      return;
+    }
   }
 
   const [doc] = await db.delete(documentsTable).where(eq(documentsTable.id, params.data.id)).returning();

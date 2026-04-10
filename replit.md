@@ -58,15 +58,18 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 - Dialog is at `artifacts/taxcms/src/components/FilingWorkflowDialog.tsx`
 - Stages: `source_collection` → `draft_return` → `confirmation` → `payment`
 - State: `engagement.workflowStage` (current stage) + `engagement.status` (in_progress | for_review | completed)
-- Accountant actions: upload docs, submit for review, skip source collection ("No Transactions")
-- Manager actions: approve (advances to next stage or completes filing), reject (returns with comment), **void/undo** (reverts to previous stage)
-- Completing payment stage marks the linked `deadline.status = 'completed'` automatically
-- Completed workflows show "Void Completion" button for managers, which reverts to payment + in_progress and unmarks the deadline as filed
-- In-progress non-first stages show "Undo Last Approval" button for managers (reverts to previous stage)
-- Completed workflow dialog shows all 4 stages with their uploaded documents in a "Previous Stages" section
-- API routes: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage`, `skip-source`, `approve-stage`, `reject-stage`, `void-stage`
-- `documents.stage` column added to track which workflow stage each document belongs to
-- `engagements.workflow_stage` column added to track current filing stage
+- **New workflow (no inter-stage gating)**: Accountant advances freely through stages 1-3 using "Advance to [Next Stage]" button (no manager approval needed between stages). Only at Stage 4 (payment) does accountant click "Submit for Manager Approval" → status goes `for_review` → manager approves → `completed`
+- Accountant extra actions: skip source collection ("No Transactions"), skip payment ("No Payment Required — File Directly")
+- Manager final approval: "Approve & Complete Filing" button marks filing as completed, marks deadline as completed
+- Manager return: "Return for Revision" sends back to accountant (requires reason text)
+- Manager void: "Void Completion" reverts completed → payment in_progress (and unmarks deadline); also "Return" button on for_review state
+- **Document deletion**: Accountant can delete documents while engagement is `in_progress`. When `for_review` or `completed`, delete is blocked (403). Lock label appears on hover. Manager must void to unlock.
+- **Amended Returns**: "File Amendment" button appears in completed filing banner. Creates new engagement (isAmendment=true, amendedEngagementId=original). Amendment follows full 4-stage workflow. "Filing History" dropdown in dialog header shows original + all amendments; click to switch between them.
+- Completed workflow dialog shows all 4 stages with their uploaded documents in "All Stages" section (clickable to open file viewer)
+- API routes: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/advance-stage`, `skip-source`, `skip-payment`, `approve-stage`, `reject-stage`, `void-stage`, `amend`
+- `GET /api/engagements/:id/amendments` — returns original + all amendments for any engagement in the filing tree
+- `documents.stage` column tracks which workflow stage each document belongs to
+- `engagements.workflow_stage` + `engagements.is_amendment` + `engagements.amended_engagement_id` columns added
 
 ### Calendar Page
 - Route: `/calendar`, accessible by accountant and manager roles

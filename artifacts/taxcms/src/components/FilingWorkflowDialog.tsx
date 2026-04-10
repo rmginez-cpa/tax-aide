@@ -15,10 +15,19 @@ import {
   Upload, Check, ChevronRight, FileText, FileSpreadsheet,
   FileType, Image as ImageIcon, AlertCircle, Loader2,
   PlayCircle, SkipForward, SendHorizontal, ThumbsUp, ThumbsDown,
-  Inbox, PenLine, Receipt, CreditCard, RotateCcw
+  Inbox, PenLine, Receipt, CreditCard, RotateCcw, Trash2,
+  ChevronDown, FilePlus, History
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +40,8 @@ interface Engagement {
   approvalNotes: string | null;
   assignedTo: number | null;
   assignedToName: string | null;
+  isAmendment?: boolean;
+  amendedEngagementId?: number | null;
 }
 
 interface Comment {
@@ -70,7 +81,7 @@ const STAGES = [
     label: "Draft Tax Return",
     shortLabel: "Draft",
     icon: PenLine,
-    hint: "Prepare and upload the draft BIR tax return for manager review.",
+    hint: "Prepare and upload the draft BIR tax return.",
   },
   {
     id: "confirmation",
@@ -158,6 +169,9 @@ export function FilingWorkflowDialog({
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
 
+  // All filings for this form (original + amendments)
+  const [allFilings, setAllFilings] = useState<Engagement[]>([]);
+
   // Upload state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadDesc, setUploadDesc] = useState("");
@@ -171,17 +185,21 @@ export function FilingWorkflowDialog({
   const [showVoidForm, setShowVoidForm] = useState(false);
   const [voidReason, setVoidReason] = useState("");
 
-  // Submit note
+  // Submit / advance note
   const [submitNote, setSubmitNote] = useState("");
+
+  // Document deletion
+  const [deletingDocId, setDeletingDocId] = useState<number | null>(null);
+
+  // Amendment creation
+  const [amending, setAmending] = useState(false);
 
   // Viewer
   const [viewerDoc, setViewerDoc] = useState<any>(null);
 
   // Documents for this engagement
   const { data: allDocs } = useListDocuments();
-  const engagementDocs = (allDocs ?? []).filter(
-    d => d.engagementId === engagementId
-  );
+  const engagementDocs = (allDocs ?? []).filter(d => d.engagementId === engagementId);
 
   // Sync engagementId from prop
   useEffect(() => {
@@ -198,6 +216,14 @@ export function FilingWorkflowDialog({
       .finally(() => setLoading(false));
   }, [engagementId, open]);
 
+  // Load all filings (original + amendments) when we have an engagementId
+  useEffect(() => {
+    if (!engagementId) { setAllFilings([]); return; }
+    apiCall("GET", `/engagements/${engagementId}/amendments`)
+      .then(data => setAllFilings(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [engagementId, open, engagement?.status]);
+
   // Load comments
   useEffect(() => {
     if (!engagementId) { setComments([]); return; }
@@ -213,8 +239,10 @@ export function FilingWorkflowDialog({
       .catch(() => {});
   };
 
-  const invalidateDocs = () => {
+  const refreshAll = async () => {
+    await refreshEngagement();
     queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
+    onUpdate();
   };
 
   // ── Start workflow ─────────────────────────────────────────────────────────
@@ -254,7 +282,7 @@ export function FilingWorkflowDialog({
       setSelectedFile(null);
       setUploadDesc("");
       if (fileInputRef.current) fileInputRef.current.value = "";
-      invalidateDocs();
+      queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
       toast({ title: "Document uploaded" });
     } catch (e: any) {
       toast({ title: e.message || "Upload failed", variant: "destructive" });
@@ -263,33 +291,62 @@ export function FilingWorkflowDialog({
     }
   };
 
-  // ── Accountant actions ─────────────────────────────────────────────────────
-  const handleSubmit = async () => {
+  // ── Delete document ────────────────────────────────────────────────────────
+  const handleDeleteDoc = async (docId: number) => {
+    setDeletingDocId(docId);
+    try {
+      const res = await fetch(apiUrl(`/documents/${docId}`), {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Delete failed" }));
+        throw new Error(err.error || "Delete failed");
+      }
+      queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
+      toast({ title: "Document removed" });
+    } catch (e: any) {
+      toast({ title: e.message || "Could not delete document", variant: "destructive" });
+    } finally {
+      setDeletingDocId(null);
+    }
+  };
+
+  // ── Advance / submit stage ─────────────────────────────────────────────────
+  const handleAdvance = async () => {
     if (!engagementId) return;
     setLoading(true);
     try {
-      await apiCall("POST", `/engagements/${engagementId}/submit-stage`, {
+      await apiCall("POST", `/engagements/${engagementId}/advance-stage`, {
         notes: submitNote.trim() || undefined,
       });
       setSubmitNote("");
       await refreshEngagement();
-      toast({ title: "Submitted for manager review" });
+      const next = nextStageLabel();
+      toast({ title: next ? `Advanced to ${next}` : "Submitted for manager approval" });
       onUpdate();
     } catch (e: any) {
-      toast({ title: e.message || "Submit failed", variant: "destructive" });
+      toast({ title: e.message || "Action failed", variant: "destructive" });
     } finally {
       setLoading(false);
     }
   };
+
+  const nextStageLabel = () => {
+    const idx = stageIndex(engagement?.workflowStage ?? null);
+    if (idx === -1) return null;
+    return idx < STAGES.length - 1 ? STAGES[idx + 1].label : null;
+  };
+
+  const isLastStage = stageIndex(engagement?.workflowStage ?? null) === STAGES.length - 1;
 
   const handleSkipSource = async () => {
     if (!engagementId) return;
     setLoading(true);
     try {
       await apiCall("POST", `/engagements/${engagementId}/skip-source`);
-      await refreshEngagement();
+      await refreshAll();
       toast({ title: "Proceeded to Draft Tax Return (no transactions)" });
-      onUpdate();
     } catch (e: any) {
       toast({ title: e.message || "Action failed", variant: "destructive" });
     } finally {
@@ -302,10 +359,8 @@ export function FilingWorkflowDialog({
     setLoading(true);
     try {
       await apiCall("POST", `/engagements/${engagementId}/skip-payment`);
-      await refreshEngagement();
-      invalidateDocs();
-      toast({ title: "Filing complete — no payment required" });
-      onUpdate();
+      await refreshAll();
+      toast({ title: "Submitted for manager approval (no payment required)" });
     } catch (e: any) {
       toast({ title: e.message || "Action failed", variant: "destructive" });
     } finally {
@@ -322,10 +377,8 @@ export function FilingWorkflowDialog({
         notes: approvalNote.trim() || undefined,
       });
       setApprovalNote("");
-      await refreshEngagement();
-      invalidateDocs();
-      toast({ title: "Stage approved" });
-      onUpdate();
+      await refreshAll();
+      toast({ title: "Filing approved and marked complete" });
     } catch (e: any) {
       toast({ title: e.message || "Approve failed", variant: "destructive" });
     } finally {
@@ -343,7 +396,7 @@ export function FilingWorkflowDialog({
       setRejectReason("");
       setShowRejectForm(false);
       await refreshEngagement();
-      toast({ title: "Stage returned for revision" });
+      toast({ title: "Filing returned for revision" });
       onUpdate();
     } catch (e: any) {
       toast({ title: e.message || "Reject failed", variant: "destructive" });
@@ -361,14 +414,28 @@ export function FilingWorkflowDialog({
       });
       setVoidReason("");
       setShowVoidForm(false);
-      await refreshEngagement();
-      invalidateDocs();
-      toast({ title: "Stage voided — accountant can redo" });
-      onUpdate();
+      await refreshAll();
+      toast({ title: "Voided — returned to accountant" });
     } catch (e: any) {
       toast({ title: e.message || "Void failed", variant: "destructive" });
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ── File amendment ─────────────────────────────────────────────────────────
+  const handleAmend = async () => {
+    if (!engagementId) return;
+    setAmending(true);
+    try {
+      const amendment = await apiCall("POST", `/engagements/${engagementId}/amend`);
+      toast({ title: `Amendment filing started` });
+      setEngagementId(amendment.id);
+      onUpdate();
+    } catch (e: any) {
+      toast({ title: e.message || "Could not create amendment", variant: "destructive" });
+    } finally {
+      setAmending(false);
     }
   };
 
@@ -382,23 +449,68 @@ export function FilingWorkflowDialog({
   const isInProgress = engagement?.status === "in_progress";
   const isSourceStage = engagement?.workflowStage === "source_collection";
   const isPaymentStage = engagement?.workflowStage === "payment";
+  const isLocked = isForReview || isCompleted;
 
   const stageDocs = (stage: string) =>
     engagementDocs.filter(d => (d as any).stage === stage);
+
+  // ── Filing history dropdown label ─────────────────────────────────────────
+  const activeFilingLabel = engagement?.isAmendment
+    ? `${engagement.title.includes("Amendment") ? engagement.title.split("—")[1]?.trim() ?? "Amendment" : "Amendment"}`
+    : "Original Filing";
+
+  const hasMultipleFilings = allFilings.length > 1;
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b">
-          <DialogTitle className="text-lg font-semibold flex items-center gap-2">
-            <span className="font-mono text-primary">{formNumber}</span>
-            <span className="text-muted-foreground text-sm font-normal">— Filing Workflow</span>
-          </DialogTitle>
-          <DialogDescription asChild>
-            <div className="text-sm text-muted-foreground">
-              {description} · <span className="font-medium text-foreground">{period}</span> · Due {dueDate ? format(parseISO(dueDate), "MMM d, yyyy") : "—"}
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <DialogTitle className="text-lg font-semibold flex items-center gap-2">
+                <span className="font-mono text-primary">{formNumber}</span>
+                <span className="text-muted-foreground text-sm font-normal">— Filing Workflow</span>
+                {engagement?.isAmendment && (
+                  <Badge variant="outline" className="text-amber-700 border-amber-300 bg-amber-50 text-xs">Amendment</Badge>
+                )}
+              </DialogTitle>
+              <DialogDescription asChild>
+                <div className="text-sm text-muted-foreground mt-1">
+                  {description} · <span className="font-medium text-foreground">{period}</span> · Due {dueDate ? format(parseISO(dueDate), "MMM d, yyyy") : "—"}
+                </div>
+              </DialogDescription>
             </div>
-          </DialogDescription>
+
+            {/* Filing history dropdown */}
+            {hasMultipleFilings && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="shrink-0 gap-1.5">
+                    <History className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">{activeFilingLabel}</span>
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-60">
+                  <DropdownMenuLabel>Filing History</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {allFilings.map((f, idx) => (
+                    <DropdownMenuItem
+                      key={f.id}
+                      className={cn("gap-2", f.id === engagementId && "font-medium bg-muted")}
+                      onClick={() => setEngagementId(f.id)}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm truncate">{f.isAmendment ? `Amendment #${idx}` : "Original Filing"}</p>
+                        <p className="text-xs text-muted-foreground capitalize">{f.status.replace("_", " ")}</p>
+                      </div>
+                      {f.id === engagementId && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
         </DialogHeader>
 
         <div className="p-6 space-y-6">
@@ -412,8 +524,7 @@ export function FilingWorkflowDialog({
               <div className="text-center">
                 <p className="font-semibold text-lg">Start Filing Workflow</p>
                 <p className="text-sm text-muted-foreground max-w-sm mt-1">
-                  Begin the 4-stage filing process for this BIR return. You'll collect source documents,
-                  prepare the draft return, and confirm submission and payment.
+                  Begin the 4-stage filing process for this BIR return. Work through each stage freely and submit for manager approval when ready.
                 </p>
               </div>
               {!isViewer && (
@@ -469,26 +580,40 @@ export function FilingWorkflowDialog({
                 )}
               </div>
 
-              {/* Status banner */}
+              {/* Status banners */}
               {isCompleted && (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-green-800">
                     <Check className="h-5 w-5 flex-shrink-0" />
                     <div className="flex-1">
                       <span className="font-medium">Filing Complete</span>
-                      <span className="text-sm ml-1">— All stages approved, deadline marked as filed.</span>
+                      <span className="text-sm ml-1">— All stages done, approved by manager.</span>
                     </div>
-                    {isManager && !showVoidForm && (
-                      <Button size="sm" variant="outline" className="border-rose-300 text-rose-700 hover:bg-rose-50 flex-shrink-0" onClick={() => setShowVoidForm(true)}>
-                        <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
-                        Void Completion
-                      </Button>
-                    )}
+                    <div className="flex gap-2 flex-shrink-0">
+                      {!isViewer && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-amber-300 text-amber-700 hover:bg-amber-50"
+                          onClick={handleAmend}
+                          disabled={amending}
+                        >
+                          {amending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <FilePlus className="h-3.5 w-3.5 mr-1.5" />}
+                          File Amendment
+                        </Button>
+                      )}
+                      {isManager && !showVoidForm && (
+                        <Button size="sm" variant="outline" className="border-rose-300 text-rose-700 hover:bg-rose-50" onClick={() => setShowVoidForm(true)}>
+                          <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                          Void Completion
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   {isManager && showVoidForm && (
                     <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 space-y-3">
                       <p className="text-sm font-medium text-rose-800">Void Filing Completion</p>
-                      <p className="text-xs text-rose-700">This will revert the filing to "Payment" stage so the accountant can redo it. The deadline will be unmarked as filed.</p>
+                      <p className="text-xs text-rose-700">This will revert the filing back to the payment stage so the accountant can redo it. The deadline will be unmarked as filed.</p>
                       <Input
                         placeholder="Reason for voiding (optional)"
                         value={voidReason}
@@ -506,11 +631,39 @@ export function FilingWorkflowDialog({
                   )}
                 </div>
               )}
+
               {isForReview && !isCompleted && (
                 <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-amber-800">
-                  <AlertCircle className="h-5 w-5" />
-                  <span className="font-medium">Awaiting Manager Approval</span>
-                  {isManager && <span className="text-sm ml-1">— Review and approve or return below.</span>}
+                  <AlertCircle className="h-5 w-5 flex-shrink-0" />
+                  <div className="flex-1">
+                    <span className="font-medium">Awaiting Manager Approval</span>
+                    <span className="text-sm ml-1">— All stages submitted. Pending final review.</span>
+                  </div>
+                  {isManager && !showVoidForm && (
+                    <Button size="sm" variant="ghost" className="text-rose-600 hover:bg-rose-50 text-xs shrink-0" onClick={() => setShowVoidForm(true)}>
+                      <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                      Return
+                    </Button>
+                  )}
+                </div>
+              )}
+              {isManager && showVoidForm && isForReview && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 space-y-3">
+                  <p className="text-sm font-medium text-rose-800">Return for Revision</p>
+                  <p className="text-xs text-rose-700">The accountant will be able to update documents and resubmit.</p>
+                  <Input
+                    placeholder="Reason (optional)"
+                    value={voidReason}
+                    onChange={e => setVoidReason(e.target.value)}
+                    className="text-sm bg-white"
+                  />
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="destructive" onClick={handleVoid} disabled={loading}>
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
+                      Confirm Return
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => { setShowVoidForm(false); setVoidReason(""); }}>Cancel</Button>
+                  </div>
                 </div>
               )}
               {engagement?.approvalNotes && isInProgress && (
@@ -547,20 +700,48 @@ export function FilingWorkflowDialog({
                           <div className="space-y-2">
                             <p className="text-sm font-medium text-muted-foreground">Uploaded Documents</p>
                             {docs.map(doc => (
-                              <div key={doc.id} className="flex items-center gap-3 p-2 rounded-md bg-muted/50 hover:bg-muted cursor-pointer group"
-                                onClick={() => setViewerDoc(doc)}>
-                                <FileIcon mimeType={doc.mimeType} name={doc.originalName} />
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-medium truncate">{doc.originalName}</p>
-                                  {doc.description && <p className="text-xs text-muted-foreground truncate">{doc.description}</p>}
-                                </div>
-                                <span className="text-xs text-muted-foreground">{formatBytes(doc.fileSize)}</span>
+                              <div
+                                key={doc.id}
+                                className="flex items-center gap-3 p-2 rounded-md bg-muted/50 hover:bg-muted group"
+                              >
+                                <button
+                                  className="flex items-center gap-3 flex-1 min-w-0 text-left cursor-pointer"
+                                  onClick={() => setViewerDoc(doc)}
+                                >
+                                  <FileIcon mimeType={doc.mimeType} name={doc.originalName} />
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium truncate">{doc.originalName}</p>
+                                    {doc.description && <p className="text-xs text-muted-foreground truncate">{doc.description}</p>}
+                                  </div>
+                                  <span className="text-xs text-muted-foreground shrink-0">{formatBytes(doc.fileSize)}</span>
+                                </button>
+                                {/* Delete button — only when not locked, and not viewer */}
+                                {!isViewer && !isLocked && (
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                                    disabled={deletingDocId === doc.id}
+                                    onClick={() => handleDeleteDoc(doc.id)}
+                                    title="Remove attachment"
+                                  >
+                                    {deletingDocId === doc.id
+                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      : <Trash2 className="h-3.5 w-3.5" />
+                                    }
+                                  </Button>
+                                )}
+                                {isLocked && !isViewer && (
+                                  <span className="text-xs text-muted-foreground shrink-0 opacity-0 group-hover:opacity-100">
+                                    {isCompleted ? "Locked" : "Pending review"}
+                                  </span>
+                                )}
                               </div>
                             ))}
                           </div>
                         )}
 
-                        {/* Upload area — only accountant/manager, and only when in_progress */}
+                        {/* Upload area — only when in_progress (not for_review) */}
                         {!isViewer && isInProgress && (
                           <div className="space-y-2 pt-2 border-t">
                             <p className="text-sm font-medium">Upload Document</p>
@@ -587,38 +768,6 @@ export function FilingWorkflowDialog({
                                 </Button>
                               </>
                             )}
-                          </div>
-                        )}
-
-                        {/* Accountant actions */}
-                        {!isViewer && !isManager && isInProgress && (
-                          <div className="flex flex-wrap gap-2 pt-2 border-t">
-                            <div className="flex-1 min-w-0 space-y-2">
-                              <Input
-                                placeholder="Notes to manager (optional)"
-                                value={submitNote}
-                                onChange={e => setSubmitNote(e.target.value)}
-                                className="text-sm"
-                              />
-                              <div className="flex gap-2 flex-wrap">
-                                <Button size="sm" onClick={handleSubmit} disabled={loading}>
-                                  {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <SendHorizontal className="h-4 w-4 mr-2" />}
-                                  Submit for Manager Review
-                                </Button>
-                                {isSourceStage && (
-                                  <Button size="sm" variant="outline" onClick={handleSkipSource} disabled={loading}>
-                                    <SkipForward className="h-4 w-4 mr-2" />
-                                    No Transactions — Proceed
-                                  </Button>
-                                )}
-                                {isPaymentStage && (
-                                  <Button size="sm" variant="outline" onClick={handleSkipPayment} disabled={loading}>
-                                    <SkipForward className="h-4 w-4 mr-2" />
-                                    No Payment Required — File Directly
-                                  </Button>
-                                )}
-                              </div>
-                            </div>
                           </div>
                         )}
 
@@ -652,35 +801,49 @@ export function FilingWorkflowDialog({
                           </div>
                         )}
 
-                        {/* Manager: undo last approval (when accountant is in progress on a non-first stage) */}
-                        {isManager && isInProgress && currentStageIdx > 0 && (
-                          <div className="pt-2 border-t">
-                            {!showVoidForm ? (
-                              <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-rose-700 text-xs" onClick={() => setShowVoidForm(true)}>
-                                <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
-                                Undo Last Approval (revert to previous stage)
-                              </Button>
-                            ) : (
-                              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 space-y-2">
-                                <p className="text-sm font-medium text-rose-800">Undo Last Approval</p>
-                                <p className="text-xs text-rose-700">Reverts to "{STAGES[currentStageIdx - 1]?.label}" so the accountant can redo that stage.</p>
-                                <Input placeholder="Reason (optional)" value={voidReason} onChange={e => setVoidReason(e.target.value)} className="text-sm bg-white" />
-                                <div className="flex gap-2">
-                                  <Button size="sm" variant="destructive" onClick={handleVoid} disabled={loading}>
-                                    {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
-                                    Confirm Undo
+                        {/* Accountant: advance / submit */}
+                        {!isViewer && !isManager && isInProgress && (
+                          <div className="flex flex-wrap gap-2 pt-2 border-t">
+                            <div className="flex-1 min-w-0 space-y-2">
+                              <Input
+                                placeholder={isLastStage ? "Notes to manager (optional)" : "Notes (optional)"}
+                                value={submitNote}
+                                onChange={e => setSubmitNote(e.target.value)}
+                                className="text-sm"
+                              />
+                              <div className="flex gap-2 flex-wrap">
+                                {isLastStage ? (
+                                  <Button size="sm" onClick={handleAdvance} disabled={loading} className="bg-amber-600 hover:bg-amber-700 text-white">
+                                    {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <SendHorizontal className="h-4 w-4 mr-2" />}
+                                    Submit for Manager Approval
                                   </Button>
-                                  <Button size="sm" variant="outline" onClick={() => { setShowVoidForm(false); setVoidReason(""); }}>Cancel</Button>
-                                </div>
+                                ) : (
+                                  <Button size="sm" onClick={handleAdvance} disabled={loading}>
+                                    {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <ChevronRight className="h-4 w-4 mr-2" />}
+                                    Advance to {STAGES[currentStageIdx + 1]?.label ?? "Next Stage"}
+                                  </Button>
+                                )}
+                                {isSourceStage && (
+                                  <Button size="sm" variant="outline" onClick={handleSkipSource} disabled={loading}>
+                                    <SkipForward className="h-4 w-4 mr-2" />
+                                    No Transactions — Proceed
+                                  </Button>
+                                )}
+                                {isPaymentStage && (
+                                  <Button size="sm" variant="outline" onClick={handleSkipPayment} disabled={loading}>
+                                    <SkipForward className="h-4 w-4 mr-2" />
+                                    No Payment Required — File Directly
+                                  </Button>
+                                )}
                               </div>
-                            )}
+                            </div>
                           </div>
                         )}
 
-                        {/* Manager approval actions */}
+                        {/* Manager approval actions (final review) */}
                         {isManager && isForReview && (
                           <div className="pt-2 border-t space-y-3">
-                            <p className="text-sm font-medium">Manager Decision</p>
+                            <p className="text-sm font-medium">Manager Decision — Final Approval</p>
                             {!showRejectForm ? (
                               <div className="flex flex-wrap gap-2">
                                 <div className="space-y-2 flex-1">
@@ -693,7 +856,7 @@ export function FilingWorkflowDialog({
                                   <div className="flex gap-2">
                                     <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={handleApprove} disabled={loading}>
                                       {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <ThumbsUp className="h-4 w-4 mr-2" />}
-                                      {currentStageIdx === STAGES.length - 1 ? "Approve & Complete Filing" : "Approve — Advance to Next Stage"}
+                                      Approve & Complete Filing
                                     </Button>
                                     <Button size="sm" variant="destructive" onClick={() => setShowRejectForm(true)} disabled={loading}>
                                       <ThumbsDown className="h-4 w-4 mr-2" />
@@ -732,10 +895,12 @@ export function FilingWorkflowDialog({
               )}
 
               {/* Previous stages with doc summary */}
-              {currentStageIdx > 0 && (
+              {(currentStageIdx > 0 || isCompleted) && (
                 <div className="space-y-2">
-                  <p className="text-sm font-medium text-muted-foreground">Previous Stages</p>
-                  {STAGES.slice(0, isCompleted ? STAGES.length : currentStageIdx).map((stage, idx) => {
+                  <p className="text-sm font-medium text-muted-foreground">
+                    {isCompleted ? "All Stages" : "Previous Stages"}
+                  </p>
+                  {STAGES.slice(0, isCompleted ? STAGES.length : currentStageIdx).map((stage) => {
                     const docs = stageDocs(stage.id);
                     const Icon = stage.icon;
                     return (
