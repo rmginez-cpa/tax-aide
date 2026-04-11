@@ -3,9 +3,11 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
+import bcrypt from "bcryptjs";
+import { eq } from "drizzle-orm";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { pool } from "@workspace/db";
+import { pool, db, usersTable, clientsTable } from "@workspace/db";
 
 const PgSession = connectPgSimple(session);
 
@@ -64,5 +66,50 @@ app.use(
 );
 
 app.use("/api", router);
+
+// ── Startup seed: create default accounts if none exist ───────────────────────
+async function seedDefaultAccounts() {
+  try {
+    const existing = await db.select({ id: usersTable.id }).from(usersTable).limit(1);
+    if (existing.length > 0) {
+      logger.info("Seed skipped: users already exist");
+      return;
+    }
+
+    logger.info("Seeding default accounts...");
+
+    // Find EverBright client if it exists (for client user linking)
+    const [everbright] = await db.select({ id: clientsTable.id })
+      .from(clientsTable)
+      .where(eq(clientsTable.name, "Everbright Real Estate Inc."))
+      .limit(1);
+
+    const accounts = [
+      { email: "admin@firm.ph", name: "System Administrator", role: "super_admin", password: "admin123", clientId: null },
+      { email: "manager@firm.ph", name: "Maria Santos", role: "manager", password: "manager123", clientId: null },
+      { email: "accountant@firm.ph", name: "Juan Dela Cruz", role: "maker", password: "accountant123", clientId: null },
+      { email: "client@example.com", name: "Pedro Reyes", role: "client", password: "client123", clientId: everbright?.id ?? null },
+    ];
+
+    for (const acct of accounts) {
+      const passwordHash = await bcrypt.hash(acct.password, 10);
+      await db.insert(usersTable).values({
+        email: acct.email,
+        name: acct.name,
+        role: acct.role,
+        passwordHash,
+        clientId: acct.clientId,
+      }).onConflictDoNothing();
+      logger.info({ email: acct.email, role: acct.role }, "Seeded user");
+    }
+
+    logger.info("Default accounts seeded successfully");
+  } catch (err) {
+    logger.warn({ err }, "Seed failed (non-fatal — accounts may already exist)");
+  }
+}
+
+// Run seed asynchronously on startup (does not block the server from starting)
+seedDefaultAccounts();
 
 export default app;
