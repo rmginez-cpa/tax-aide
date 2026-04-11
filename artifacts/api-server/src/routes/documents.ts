@@ -60,6 +60,13 @@ router.get("/documents", requireAuth, async (req, res): Promise<void> => {
     docs = docs.filter((d) => d.clientId === queryParams.data.clientId);
   }
 
+  // Client-role users: automatically scope to their client only
+  const userRole = req.session.userRole || "";
+  const userClientId = req.session.userClientId;
+  if (userRole === "client" && userClientId) {
+    docs = docs.filter((d) => d.clientId === userClientId);
+  }
+
   const serialized = await Promise.all(docs.map(serializeDocument));
   res.json(serialized);
 });

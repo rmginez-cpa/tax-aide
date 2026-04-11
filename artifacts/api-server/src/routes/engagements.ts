@@ -127,6 +127,13 @@ router.get("/engagements", requireAuth, async (req, res): Promise<void> => {
     engagements = engagements.filter((e) => e.status === queryParams.data.status);
   }
 
+  // Client-role users: automatically scope to their client only
+  const userRole = req.session.userRole || "";
+  const userClientId = req.session.userClientId;
+  if (userRole === "client" && userClientId) {
+    engagements = engagements.filter((e) => e.clientId === userClientId);
+  }
+
   const serialized = await Promise.all(engagements.map(serializeEngagement));
   res.json(serialized);
 });

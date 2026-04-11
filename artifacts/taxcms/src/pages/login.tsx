@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Briefcase, Key } from "lucide-react";
 
 const formSchema = z.object({
@@ -24,17 +25,18 @@ const formSchema = z.object({
   password: z.string().min(1, { message: "Password is required." }),
 });
 
+const DEMO_ACCOUNTS = [
+  { label: "Super Admin", role: "super_admin", email: "admin@firm.ph", password: "admin123", badgeClass: "bg-violet-100 text-violet-800 border-violet-200" },
+  { label: "Manager", role: "manager", email: "manager@firm.ph", password: "manager123", badgeClass: "bg-blue-100 text-blue-800 border-blue-200" },
+  { label: "Maker", role: "maker", email: "accountant@firm.ph", password: "accountant123", badgeClass: "bg-emerald-100 text-emerald-800 border-emerald-200" },
+  { label: "Client", role: "client", email: "client@example.com", password: "client123", badgeClass: "bg-amber-100 text-amber-800 border-amber-200" },
+];
+
 export default function Login() {
   const [_, setLocation] = useLocation();
   const { toast } = useToast();
   const loginMutation = useLogin();
   const { user } = useAuth();
-
-  // If already logged in, redirect to dashboard
-  if (user) {
-    setLocation("/dashboard");
-    return null;
-  }
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -44,12 +46,16 @@ export default function Login() {
     },
   });
 
+  // If already logged in, redirect to dashboard
+  if (user) {
+    setLocation("/dashboard");
+    return null;
+  }
+
   function onSubmit(values: z.infer<typeof formSchema>) {
     loginMutation.mutate({ data: values }, {
       onSuccess: () => {
         toast({ title: "Welcome back", description: "Successfully logged in." });
-        // The AuthContext will refetch the user and trigger a re-render
-        // The router will then redirect to /dashboard
         window.location.href = "/dashboard";
       },
       onError: (error: any) => {
@@ -61,6 +67,11 @@ export default function Login() {
       }
     });
   }
+
+  const fillCredentials = (email: string, password: string) => {
+    form.setValue("email", email);
+    form.setValue("password", password);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8 dark:bg-slate-900">
@@ -94,7 +105,7 @@ export default function Login() {
                     <FormItem>
                       <FormLabel>Email Address</FormLabel>
                       <FormControl>
-                        <Input placeholder="name@firm.ph" {...field} />
+                        <Input placeholder="name@firm.ph" {...field} autoComplete="email" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -107,7 +118,7 @@ export default function Login() {
                     <FormItem>
                       <FormLabel>Password</FormLabel>
                       <FormControl>
-                        <Input type="password" placeholder="••••••••" {...field} />
+                        <Input type="password" placeholder="••••••••" {...field} autoComplete="current-password" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -119,23 +130,26 @@ export default function Login() {
               </form>
             </Form>
           </CardContent>
-          <CardFooter className="flex-col items-start gap-4 border-t bg-muted/50 p-6 mt-4">
+          <CardFooter className="flex-col items-start gap-3 border-t bg-muted/50 p-5">
             <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <Key className="h-4 w-4" /> Demo Credentials
             </div>
-            <div className="grid grid-cols-1 gap-2 text-sm w-full">
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-muted-foreground">Manager</span>
-                <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-xs">manager@firm.ph / manager123</code>
-              </div>
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-muted-foreground">Accountant</span>
-                <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-xs">accountant@firm.ph / accountant123</code>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Client Viewer</span>
-                <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-xs">client@example.com / client123</code>
-              </div>
+            <p className="text-xs text-muted-foreground -mt-1">Click an account to fill in the credentials.</p>
+            <div className="grid grid-cols-1 gap-2 w-full">
+              {DEMO_ACCOUNTS.map(acct => (
+                <button
+                  key={acct.email}
+                  type="button"
+                  onClick={() => fillCredentials(acct.email, acct.password)}
+                  className="flex items-center justify-between w-full p-2.5 rounded-lg border hover:bg-background text-left transition-colors group"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Badge variant="outline" className={`text-xs ${acct.badgeClass}`}>{acct.label}</Badge>
+                    <code className="text-xs text-muted-foreground font-mono">{acct.email}</code>
+                  </div>
+                  <span className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">Click to fill</span>
+                </button>
+              ))}
             </div>
           </CardFooter>
         </Card>

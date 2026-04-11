@@ -34,8 +34,18 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 - `audit-log.tsx` — Full audit trail (manager-only)
 
 ### Auth (session-based)
-- Demo: manager@firm.ph/manager123, accountant@firm.ph/accountant123, client@example.com/client123
-- Roles: manager (full access), accountant (no users/audit), viewer (read-only)
+- Demo accounts: admin@firm.ph/admin123 (super_admin), manager@firm.ph/manager123, accountant@firm.ph/accountant123 (maker), client@example.com/client123
+- **Roles**:
+  - `super_admin` — Full access + account management. Bypasses all role gates in middleware.
+  - `manager` — Can approve stages, view all data, audit log. Cannot manage accounts.
+  - `maker` (formerly `accountant`) — Prepares filings, uploads documents. Treated as `accountant` everywhere.
+  - `client` — Read-only, automatically scoped to their linked `clientId`. Pedro Reyes → EverBright (clientId=18).
+  - `viewer` — Legacy read-only role, treated same as `client`.
+- **`requireRole` middleware**: `super_admin` bypasses all role checks. `maker` ↔ `accountant` are equivalent.
+- **Client scoping**: When `role=client` hits GET /deadlines, /engagements, /documents — backend auto-filters by `session.userClientId`.
+- **Account Management page**: `/account-management` — super_admin only. Full CRUD for all users. Login page shows clickable demo account cards.
+- **`users` table**: new `client_id` column (nullable FK to clients) — used for client-role scoping.
+- **`/users` page** (formerly manager-only): Now accessible to super_admin and manager (view team members). Full account CRUD is in `/account-management`.
 
 ### API Server (artifacts/api-server)
 - Express 5 on port 8080, PostgreSQL + Drizzle ORM

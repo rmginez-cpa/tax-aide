@@ -19,6 +19,7 @@ import Users from "@/pages/users";
 import Notifications from "@/pages/notifications";
 import AuditLog from "@/pages/audit-log";
 import CalendarPage from "@/pages/calendar";
+import AccountManagement from "@/pages/account-management";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,12 +30,27 @@ const queryClient = new QueryClient({
   }
 });
 
+// Expand roles to handle equivalent roles
+function roleMatches(userRole: string, allowedRoles: string[]): boolean {
+  if (!userRole) return false;
+  // super_admin bypasses all restrictions
+  if (userRole === "super_admin") return true;
+  // maker is equivalent to accountant
+  const expanded = new Set(allowedRoles);
+  if (expanded.has("accountant")) expanded.add("maker");
+  if (expanded.has("maker")) expanded.add("accountant");
+  // viewer can access anything client can
+  if (expanded.has("client")) expanded.add("viewer");
+  if (expanded.has("viewer")) expanded.add("client");
+  return expanded.has(userRole);
+}
+
 function ProtectedRoute({ component: Component, roles }: { component: React.ComponentType; roles?: string[] }) {
   const { user, isLoading } = useAuth();
 
   if (isLoading) return <div className="flex h-screen items-center justify-center text-muted-foreground">Loading...</div>;
   if (!user) return <Redirect to="/login" />;
-  if (roles && !roles.includes(user.role)) return <Redirect to="/dashboard" />;
+  if (roles && !roleMatches(user.role, roles)) return <Redirect to="/dashboard" />;
 
   return <Component />;
 }
@@ -58,11 +74,11 @@ function AppRoutes() {
       </Route>
 
       <Route path="/clients">
-        <Layout><ProtectedRoute component={Clients} roles={["accountant", "manager"]} /></Layout>
+        <Layout><ProtectedRoute component={Clients} roles={["accountant", "maker", "manager"]} /></Layout>
       </Route>
 
       <Route path="/clients/:id">
-        <Layout><ProtectedRoute component={ClientDetail} roles={["accountant", "manager"]} /></Layout>
+        <Layout><ProtectedRoute component={ClientDetail} roles={["accountant", "maker", "manager"]} /></Layout>
       </Route>
 
       <Route path="/engagements">
@@ -74,11 +90,11 @@ function AppRoutes() {
       </Route>
 
       <Route path="/deadlines">
-        <Layout><ProtectedRoute component={Deadlines} roles={["accountant", "manager"]} /></Layout>
+        <Layout><ProtectedRoute component={Deadlines} roles={["accountant", "maker", "manager"]} /></Layout>
       </Route>
 
       <Route path="/calendar">
-        <Layout><ProtectedRoute component={CalendarPage} roles={["accountant", "manager"]} /></Layout>
+        <Layout><ProtectedRoute component={CalendarPage} roles={["accountant", "maker", "manager"]} /></Layout>
       </Route>
 
       <Route path="/documents">
@@ -86,7 +102,11 @@ function AppRoutes() {
       </Route>
 
       <Route path="/users">
-        <Layout><ProtectedRoute component={Users} roles={["manager"]} /></Layout>
+        <Layout><ProtectedRoute component={Users} roles={["manager", "super_admin"]} /></Layout>
+      </Route>
+
+      <Route path="/account-management">
+        <Layout><ProtectedRoute component={AccountManagement} roles={["super_admin"]} /></Layout>
       </Route>
 
       <Route path="/notifications">
@@ -94,7 +114,7 @@ function AppRoutes() {
       </Route>
 
       <Route path="/audit-log">
-        <Layout><ProtectedRoute component={AuditLog} roles={["manager"]} /></Layout>
+        <Layout><ProtectedRoute component={AuditLog} roles={["manager", "super_admin"]} /></Layout>
       </Route>
 
       <Route>

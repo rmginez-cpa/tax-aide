@@ -30,6 +30,7 @@ router.post("/auth/login", async (req, res): Promise<void> => {
 
   req.session.userId = user.id;
   req.session.userRole = user.role;
+  req.session.userClientId = user.clientId ?? null;
 
   res.json({
     user: {
@@ -37,6 +38,7 @@ router.post("/auth/login", async (req, res): Promise<void> => {
       email: user.email,
       name: user.name,
       role: user.role,
+      clientId: user.clientId ?? null,
       createdAt: user.createdAt.toISOString(),
       updatedAt: user.updatedAt.toISOString(),
     },
@@ -63,6 +65,7 @@ router.get("/auth/me", requireAuth, async (req, res): Promise<void> => {
     email: user.email,
     name: user.name,
     role: user.role,
+    clientId: user.clientId ?? null,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
   });

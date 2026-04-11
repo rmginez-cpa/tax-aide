@@ -47,6 +47,13 @@ router.get("/deadlines", requireAuth, async (req, res): Promise<void> => {
     deadlines = deadlines.filter((d) => d.clientId === queryParams.data.clientId);
   }
 
+  // Client-role users: automatically scope to their client only
+  const userRole = req.session.userRole || "";
+  const userClientId = req.session.userClientId;
+  if (userRole === "client" && userClientId) {
+    deadlines = deadlines.filter((d) => d.clientId === userClientId);
+  }
+
   const serialized = await Promise.all(deadlines.map(serializeDeadline));
   res.json(serialized);
 });

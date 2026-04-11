@@ -33,10 +33,10 @@ export default function UsersPage() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ email: "", name: "", role: "accountant" as "accountant" | "manager" | "viewer", password: "" });
 
-  if (currentUser?.role !== "manager") {
+  if (!["manager", "super_admin"].includes(currentUser?.role ?? "")) {
     return (
       <div className="text-center py-16 text-muted-foreground">
-        <p>You don't have permission to manage users.</p>
+        <p>You don't have permission to view this page.</p>
       </div>
     );
   }
