@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useListDocuments, getListDocumentsQueryKey } from "@workspace/api-client-react";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
+import { MergePDFDialog } from "@/components/MergePDFDialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,7 +18,7 @@ import {
   FileType, Image as ImageIcon, Loader2,
   PlayCircle, ThumbsUp, ThumbsDown,
   Inbox, PenLine, Receipt, CreditCard, RotateCcw, Trash2,
-  ChevronDown, FilePlus, History, Lock, Send
+  ChevronDown, FilePlus, History, Lock, Send, Merge
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -196,6 +197,7 @@ export function FilingWorkflowDialog({
 
   const [deletingDocId, setDeletingDocId] = useState<number | null>(null);
   const [viewerDoc, setViewerDoc] = useState<any>(null);
+  const [mergePDFStage, setMergePDFStage] = useState<StageKey | null>(null);
 
   const { data: allDocs } = useListDocuments();
   const engagementDocs = (allDocs ?? []).filter(d => d.engagementId === engagementId);
@@ -658,7 +660,7 @@ export function FilingWorkflowDialog({
                       {/* Upload — when stage is editable (not_started or in_progress) */}
                       {!isViewer && isStageEditable && (
                         <div className="space-y-2 pt-1">
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 flex-wrap">
                             <Input
                               type="file"
                               ref={el => { if (el) fileInputRefs.current[stage.id] = el; }}
@@ -669,6 +671,16 @@ export function FilingWorkflowDialog({
                               }}
                               className="text-sm flex-1"
                             />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5 shrink-0"
+                              onClick={() => setMergePDFStage(stage.id)}
+                              title="Merge multiple PDFs then upload as one file"
+                            >
+                              <Merge className="h-3.5 w-3.5" />
+                              Merge PDF
+                            </Button>
                           </div>
                           {selectedFile && (
                             <div className="flex gap-2 items-start">
@@ -691,7 +703,7 @@ export function FilingWorkflowDialog({
                       {isManager && isStageForReview && (
                         <div className="space-y-2 pt-1 border-t">
                           <p className="text-xs text-muted-foreground">Upload additional documents (optional)</p>
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 flex-wrap">
                             <Input
                               type="file"
                               ref={el => { if (el) fileInputRefs.current[stage.id] = el; }}
@@ -702,6 +714,16 @@ export function FilingWorkflowDialog({
                               }}
                               className="text-sm flex-1"
                             />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5 shrink-0"
+                              onClick={() => setMergePDFStage(stage.id)}
+                              title="Merge multiple PDFs then upload as one file"
+                            >
+                              <Merge className="h-3.5 w-3.5" />
+                              Merge PDF
+                            </Button>
                           </div>
                           {selectedFile && (
                             <div className="flex gap-2 items-start">
@@ -876,6 +898,21 @@ export function FilingWorkflowDialog({
           onClose={() => setViewerDoc(null)}
         />
       )}
+
+      {/* Merge PDF Dialog — per stage */}
+      <MergePDFDialog
+        open={mergePDFStage !== null}
+        onClose={() => setMergePDFStage(null)}
+        engagementId={engagementId}
+        clientId={clientId}
+        stageId={mergePDFStage}
+        onUploaded={() => {
+          setMergePDFStage(null);
+          queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
+          toast({ title: "Merged PDF uploaded" });
+          refreshEngagement();
+        }}
+      />
     </Dialog>
   );
 }

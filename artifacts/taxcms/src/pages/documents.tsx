@@ -11,9 +11,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { FileViewer } from "@/components/FileViewer";
+import { MergePDFDialog } from "@/components/MergePDFDialog";
 import {
   Plus, Search, FileText, Trash2, Download, User2, Eye,
-  FileSpreadsheet, FileType, Image, Sparkles, Upload
+  FileSpreadsheet, FileType, Image, Sparkles, Upload, Merge
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 
@@ -54,6 +55,7 @@ export default function Documents() {
 
   const [search, setSearch] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const [viewerDoc, setViewerDoc] = useState<any>(null);
   const [uploading, setUploading] = useState(false);
   const [seeding, setSeeding] = useState(false);
@@ -195,6 +197,14 @@ export default function Documents() {
             </Button>
           )}
           {user?.role !== "viewer" && (
+            <>
+            <Button
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => setMergeOpen(true)}
+            >
+              <Merge className="h-4 w-4" />Upload Merged PDF
+            </Button>
             <Dialog open={uploadOpen} onOpenChange={v => { setUploadOpen(v); if (!v) resetUpload(); }}>
               <DialogTrigger asChild>
                 <Button className="gap-1.5"><Plus className="h-4 w-4" />Upload File</Button>
@@ -261,6 +271,7 @@ export default function Documents() {
                 </div>
               </DialogContent>
             </Dialog>
+            </>
           )}
         </div>
       </div>
@@ -358,6 +369,16 @@ export default function Documents() {
       )}
 
       <FileViewer doc={viewerDoc} onClose={() => setViewerDoc(null)} />
+
+      <MergePDFDialog
+        open={mergeOpen}
+        onClose={() => setMergeOpen(false)}
+        onUploaded={() => {
+          queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
+          toast({ title: "Merged PDF uploaded successfully" });
+          setMergeOpen(false);
+        }}
+      />
     </div>
   );
 }
