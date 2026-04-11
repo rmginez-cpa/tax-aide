@@ -659,8 +659,9 @@ export function FilingWorkflowDialog({
 
                       {/* Upload — when stage is editable (not_started or in_progress) */}
                       {!isViewer && isStageEditable && (
-                        <div className="space-y-2 pt-1">
-                          <div className="flex gap-2 flex-wrap">
+                        <div className="space-y-2 pt-1 border-t">
+                          {/* Option 1: single file */}
+                          <div className="flex gap-2">
                             <Input
                               type="file"
                               ref={el => { if (el) fileInputRefs.current[stage.id] = el; }}
@@ -671,16 +672,6 @@ export function FilingWorkflowDialog({
                               }}
                               className="text-sm flex-1"
                             />
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="gap-1.5 shrink-0"
-                              onClick={() => setMergePDFStage(stage.id)}
-                              title="Merge multiple PDFs then upload as one file"
-                            >
-                              <Merge className="h-3.5 w-3.5" />
-                              Merge PDF
-                            </Button>
                           </div>
                           {selectedFile && (
                             <div className="flex gap-2 items-start">
@@ -696,6 +687,23 @@ export function FilingWorkflowDialog({
                               </Button>
                             </div>
                           )}
+                          {/* Divider */}
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-px bg-border" />
+                            <span className="text-xs text-muted-foreground">or</span>
+                            <div className="flex-1 h-px bg-border" />
+                          </div>
+                          {/* Option 2: merge PDFs */}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full gap-2 border-dashed"
+                            onClick={() => setMergePDFStage(stage.id)}
+                          >
+                            <Merge className="h-4 w-4" />
+                            Upload Merged PDF
+                            <span className="text-xs text-muted-foreground font-normal">(combine multiple PDFs into one)</span>
+                          </Button>
                         </div>
                       )}
 
@@ -703,7 +711,7 @@ export function FilingWorkflowDialog({
                       {isManager && isStageForReview && (
                         <div className="space-y-2 pt-1 border-t">
                           <p className="text-xs text-muted-foreground">Upload additional documents (optional)</p>
-                          <div className="flex gap-2 flex-wrap">
+                          <div className="flex gap-2">
                             <Input
                               type="file"
                               ref={el => { if (el) fileInputRefs.current[stage.id] = el; }}
@@ -714,16 +722,6 @@ export function FilingWorkflowDialog({
                               }}
                               className="text-sm flex-1"
                             />
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="gap-1.5 shrink-0"
-                              onClick={() => setMergePDFStage(stage.id)}
-                              title="Merge multiple PDFs then upload as one file"
-                            >
-                              <Merge className="h-3.5 w-3.5" />
-                              Merge PDF
-                            </Button>
                           </div>
                           {selectedFile && (
                             <div className="flex gap-2 items-start">
@@ -739,6 +737,22 @@ export function FilingWorkflowDialog({
                               </Button>
                             </div>
                           )}
+                          {/* Divider + Merge option */}
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-px bg-border" />
+                            <span className="text-xs text-muted-foreground">or</span>
+                            <div className="flex-1 h-px bg-border" />
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full gap-2 border-dashed"
+                            onClick={() => setMergePDFStage(stage.id)}
+                          >
+                            <Merge className="h-4 w-4" />
+                            Upload Merged PDF
+                            <span className="text-xs text-muted-foreground font-normal">(combine multiple PDFs into one)</span>
+                          </Button>
                         </div>
                       )}
 
