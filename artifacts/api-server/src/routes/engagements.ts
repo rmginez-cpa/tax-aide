@@ -606,6 +606,65 @@ router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, r
   res.json(await serializeEngagement(updated));
 });
 
+// ── POST /api/engagements/:id/recall-stage ───────────────────────────────────
+// Maker retracts a submitted stage back to in_progress so they can make changes.
+// Only allowed while the stage is for_review (not yet approved).
+// Body: { stage: string }
+router.post("/engagements/:id/recall-stage", requireRole("maker"), async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+  const stage = req.body.stage as string;
+  if (!stage || !isValidStage(stage)) {
+    res.status(400).json({ error: `Invalid stage. Must be one of: ${STAGE_KEYS.join(", ")}` }); return;
+  }
+
+  const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
+  if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
+
+  const col = STAGE_STATUS_COLS[stage];
+  const currentStageStatus = engagement[col] as string;
+
+  if (currentStageStatus !== "for_review") {
+    res.status(400).json({ error: "Stage can only be recalled while it is pending approval" }); return;
+  }
+
+  const [updated] = await db.update(engagementsTable)
+    .set({ [col]: "in_progress" } as any)
+    .where(eq(engagementsTable.id, id))
+    .returning();
+
+  await db.insert(commentsTable).values({
+    engagementId: id,
+    authorId: req.session.userId!,
+    content: `Recalled ${STAGE_LABELS[stage]} submission — returned to In Progress for further editing.`,
+    isApproval: false,
+  });
+
+  // Notify managers that the submission was recalled
+  const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
+  for (const mgr of managers) {
+    await db.insert(notificationsTable).values({
+      userId: mgr.id,
+      title: "Stage Submission Recalled",
+      message: `"${engagement.title}" — ${STAGE_LABELS[stage]} submission was recalled by the maker for further editing.`,
+      type: "engagement_approved",
+      relatedId: engagement.id,
+      relatedType: "engagement",
+    });
+  }
+
+  await logAudit({
+    userId: req.session.userId,
+    action: "update",
+    entityType: "engagement",
+    entityId: id,
+    description: `Recalled "${STAGE_LABELS[stage]}" submission on "${engagement.title}"`,
+  });
+
+  res.json(await serializeEngagement(updated));
+});
+
 // ── POST /api/engagements/:id/advance-stage (legacy compat) ──────────────────
 // Kept for backward compat — behaves same as submit-stage for current stage
 router.post("/engagements/:id/advance-stage", requireAuth, async (req, res): Promise<void> => {

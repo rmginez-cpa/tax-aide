@@ -76,7 +76,7 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 - **Filing progress**: "X / 4 stages approved" progress bar shown at top of dialog
 - **Amended Returns**: "File Amendment" button on completed filing banner. Creates new engagement (isAmendment=true) with all 4 stages reset to `not_started`.
 - "Filing History" dropdown shows original + all amendments; click to switch views
-- **API routes**: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage` (body: {stage}), `approve-stage` (body: {stage, notes?}), `reject-stage` (body: {stage, notes}), `void-stage` (body: {stage, notes?}), `amend`
+- **API routes**: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage` (body: {stage}), `recall-stage` (body: {stage}, maker only — retracts from for_review → in_progress), `approve-stage` (body: {stage, notes?}), `reject-stage` (body: {stage, notes}), `void-stage` (body: {stage, notes?}), `amend`
 - `GET /api/engagements/:id/amendments` — returns original + all amendments
 - Engagement serialization includes `stageStatuses: Record<stage, status>` and `stagesForReview: number`
 - Schema: `source_collection_status`, `draft_return_status`, `confirmation_status`, `payment_status` columns on engagements table

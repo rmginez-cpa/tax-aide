@@ -330,6 +330,21 @@ export function FilingWorkflowDialog({
     }
   };
 
+  // ── Recall a stage submission (maker retracts from for_review) ────────────
+  const handleRecallStage = async (stageId: StageKey) => {
+    if (!engagementId) return;
+    setActionLoadingStage(stageId);
+    try {
+      await apiCall("POST", `/engagements/${engagementId}/recall-stage`, { stage: stageId });
+      await refreshAll();
+      toast({ title: `${STAGES.find(s => s.id === stageId)?.label} submission recalled — you can now make changes` });
+    } catch (e: any) {
+      toast({ title: e.message || "Recall failed", variant: "destructive" });
+    } finally {
+      setActionLoadingStage(null);
+    }
+  };
+
   // ── Submit a stage for manager review ─────────────────────────────────────
   const handleSubmitStage = async (stageId: StageKey) => {
     if (!engagementId) return;
@@ -756,7 +771,7 @@ export function FilingWorkflowDialog({
                         </div>
                       )}
 
-                      {/* Accountant: Submit button */}
+                      {/* Maker: Submit button */}
                       {!isViewer && !isManager && isStageEditable && !isCompleted && (
                         <div className="pt-1 border-t">
                           <Button
@@ -767,6 +782,29 @@ export function FilingWorkflowDialog({
                           >
                             {isStageLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
                             Submit for Manager Approval
+                          </Button>
+                        </div>
+                      )}
+
+                      {/* Maker: Recall button — when stage is pending approval */}
+                      {!isViewer && !isManager && isStageForReview && !isCompleted && (
+                        <div className="pt-2 border-t flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-1.5 text-amber-700">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ animationPlayState: "paused" }} />
+                            <span className="text-xs font-medium">Awaiting manager approval</span>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRecallStage(stage.id)}
+                            disabled={isStageLoading}
+                            className="gap-1.5 text-muted-foreground hover:text-foreground shrink-0"
+                          >
+                            {isStageLoading
+                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              : <RotateCcw className="h-3.5 w-3.5" />
+                            }
+                            Recall Submission
                           </Button>
                         </div>
                       )}
