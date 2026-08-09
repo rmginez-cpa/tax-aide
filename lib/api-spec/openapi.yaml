@@ -1143,6 +1143,18 @@ components:
         subjectToDst:
           type: boolean
           description: "Subject to Documentary Stamp Tax — requires 2000 (monthly)"
+        withholdsFinal:
+          type: boolean
+          description: "Withholds final taxes — requires 0619F (monthly) and 1604F (annual)"
+        hasInventory:
+          type: boolean
+          description: "Maintains inventory — requires Annual Inventory List (Jan 30)"
+        isLessor:
+          type: boolean
+          description: "Is a lessor — requires Lessee Information Statement (Jan 31)"
+        isEsalesRequired:
+          type: boolean
+          description: "Required to submit eSales Report (monthly)"
         createdAt:
           type: string
         updatedAt:
@@ -1203,6 +1215,14 @@ components:
           type: boolean
         subjectToDst:
           type: boolean
+        withholdsFinal:
+          type: boolean
+        hasInventory:
+          type: boolean
+        isLessor:
+          type: boolean
+        isEsalesRequired:
+          type: boolean
       required:
         - name
         - tin
@@ -1249,6 +1269,14 @@ components:
         withholdsEwt:
           type: ["boolean", "null"]
         subjectToDst:
+          type: ["boolean", "null"]
+        withholdsFinal:
+          type: ["boolean", "null"]
+        hasInventory:
+          type: ["boolean", "null"]
+        isLessor:
+          type: ["boolean", "null"]
+        isEsalesRequired:
           type: ["boolean", "null"]
 
     GenerateDeadlinesBody:

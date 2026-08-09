@@ -50,7 +50,7 @@ export default function EngagementDetail() {
 
   const { data: engagement, isLoading } = useGetEngagement(id, { query: { enabled: !!id, queryKey: getGetEngagementQueryKey(id) } });
   const { data: checklistItems } = useListChecklistItems({ engagementId: id }, { query: { enabled: !!id, queryKey: getListChecklistItemsQueryKey({ engagementId: id }) } });
-  const { data: documents } = useListDocuments({ engagementId: id }, { query: { enabled: !!id } });
+  const { data: documents } = useListDocuments({ engagementId: id }, { query: { enabled: !!id, queryKey: getListDocumentsQueryKey({ engagementId: id }) } });
   const { data: comments } = useListComments({ engagementId: id }, { query: { enabled: !!id, queryKey: getListCommentsQueryKey({ engagementId: id }) } });
 
   const updateEngagement = useUpdateEngagement();

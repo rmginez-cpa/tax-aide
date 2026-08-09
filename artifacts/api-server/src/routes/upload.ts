@@ -6,23 +6,21 @@ import { eq } from "drizzle-orm";
 import { db, documentsTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
+import { saveFileToStorage } from "../lib/fileStore";
 
 export const UPLOADS_DIR = process.env.UPLOADS_DIR || path.resolve(process.cwd(), "../../uploads");
 
 // Ensure uploads dir exists
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-  filename: (_req, file, cb) => {
-    const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const ext = path.extname(file.originalname);
-    cb(null, `${unique}${ext}`);
-  },
-});
+function makeStoredFilename(originalname: string): string {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const ext = path.extname(originalname);
+  return `${unique}${ext}`;
+}
 
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
   fileFilter: (_req, file, cb) => {
     const allowed = [
@@ -63,8 +61,24 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
   const description = req.body.description?.trim() || null;
   const stage = req.body.stage?.trim() || null;
 
+  const storedFilename = makeStoredFilename(req.file.originalname);
+
+  // Persist file bytes durably (object storage in all environments;
+  // falls back to local disk only if object storage is unavailable).
+  try {
+    await saveFileToStorage(storedFilename, req.file.buffer, req.file.mimetype);
+  } catch (err) {
+    if (process.env.PRIVATE_OBJECT_DIR) {
+      console.error("Object storage write failed:", err);
+      res.status(500).json({ error: "Failed to store file" });
+      return;
+    }
+    // No object storage configured — write to local disk instead
+    fs.writeFileSync(path.join(UPLOADS_DIR, storedFilename), req.file.buffer);
+  }
+
   const [doc] = await db.insert(documentsTable).values({
-    filename: req.file.filename,
+    filename: storedFilename,
     originalName: req.file.originalname,
     mimeType: req.file.mimetype,
     fileSize: req.file.size,
@@ -166,6 +180,7 @@ router.post("/documents/seed-samples", requireAuth, async (req, res): Promise<vo
     });
 
     const pdfStat = fs.statSync(pdfPath);
+    try { await saveFileToStorage(pdfFilename, fs.readFileSync(pdfPath), "application/pdf"); } catch { /* local dev fallback */ }
     const [pdfDoc] = await db.insert(documentsTable).values({
       filename: pdfFilename, originalName: "BIR_Form_2303_Sample.pdf",
       mimeType: "application/pdf", fileSize: pdfStat.size,
@@ -210,6 +225,7 @@ router.post("/documents/seed-samples", requireAuth, async (req, res): Promise<vo
     utils.book_append_sheet(wb, ws2, "Client Summary");
     const xlsxBuffer = write(wb, { type: "buffer", bookType: "xlsx" });
     fs.writeFileSync(xlsxPath, xlsxBuffer);
+    try { await saveFileToStorage(xlsxFilename, xlsxBuffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); } catch { /* local dev fallback */ }
 
     const [xlsxDoc] = await db.insert(documentsTable).values({
       filename: xlsxFilename, originalName: "BIR_Tax_Calendar_2025.xlsx",
@@ -263,6 +279,7 @@ router.post("/documents/seed-samples", requireAuth, async (req, res): Promise<vo
 
     const docxBuffer = await Packer.toBuffer(wordDoc);
     fs.writeFileSync(docxPath, docxBuffer);
+    try { await saveFileToStorage(docxFilename, docxBuffer, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"); } catch { /* local dev fallback */ }
 
     const [docxDoc] = await db.insert(documentsTable).values({
       filename: docxFilename, originalName: "Engagement_Memo_Reyes_Enterprises_2024.docx",

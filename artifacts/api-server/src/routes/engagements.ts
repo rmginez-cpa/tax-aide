@@ -176,7 +176,7 @@ router.get("/engagements/:id", requireAuth, async (req, res): Promise<void> => {
 
 // ── GET /api/engagements/:id/amendments ──────────────────────────────────────
 router.get("/engagements/:id/amendments", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const [thisEng] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
@@ -302,7 +302,7 @@ router.post("/engagements/:id/approve", requireAuth, async (req, res): Promise<v
 // Accountant submits a specific stage for manager review.
 // Body: { stage: "source_collection" | "draft_return" | "confirmation" | "payment" }
 router.post("/engagements/:id/submit-stage", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const stage = req.body.stage as string;
@@ -364,7 +364,7 @@ router.post("/engagements/:id/submit-stage", requireAuth, async (req, res): Prom
 // Manager approves a specific stage. When all 4 are approved → filing complete.
 // Body: { stage: string, notes?: string }
 router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const stage = req.body.stage as string;
@@ -473,7 +473,7 @@ router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req
 // Manager returns a specific stage for revision.
 // Body: { stage: string, notes: string }
 router.post("/engagements/:id/reject-stage", requireRole("manager"), async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const stage = req.body.stage as string;
@@ -534,7 +534,7 @@ router.post("/engagements/:id/reject-stage", requireRole("manager"), async (req,
 // If stage is "approved" → revert to "in_progress"; if was completed, revert engagement status
 // If stage is "for_review" → revert to "in_progress"
 router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const stage = req.body.stage as string;
@@ -611,7 +611,7 @@ router.post("/engagements/:id/void-stage", requireRole("manager"), async (req, r
 // Only allowed while the stage is for_review (not yet approved).
 // Body: { stage: string }
 router.post("/engagements/:id/recall-stage", requireRole("maker"), async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const stage = req.body.stage as string;
@@ -683,7 +683,7 @@ router.post("/engagements/:id/skip-payment", requireAuth, async (req, res): Prom
 
 // ── POST /api/engagements/:id/amend ──────────────────────────────────────────
 router.post("/engagements/:id/amend", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const [original] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));

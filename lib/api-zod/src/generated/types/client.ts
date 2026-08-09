@@ -46,6 +46,14 @@ export interface Client {
   withholdsEwt: boolean;
   /** Subject to Documentary Stamp Tax — requires 2000 (monthly) */
   subjectToDst: boolean;
+  /** Withholds final taxes — requires 0619F (monthly) and 1604F (annual) */
+  withholdsFinal?: boolean;
+  /** Maintains inventory — requires Annual Inventory List (Jan 30) */
+  hasInventory?: boolean;
+  /** Is a lessor — requires Lessee Information Statement (Jan 31) */
+  isLessor?: boolean;
+  /** Required to submit eSales Report (monthly) */
+  isEsalesRequired?: boolean;
   createdAt: string;
   updatedAt: string;
 }

@@ -46,4 +46,12 @@ export interface UpdateClientBody {
   withholdsEwt?: boolean | null;
   /** @nullable */
   subjectToDst?: boolean | null;
+  /** @nullable */
+  withholdsFinal?: boolean | null;
+  /** @nullable */
+  hasInventory?: boolean | null;
+  /** @nullable */
+  isLessor?: boolean | null;
+  /** @nullable */
+  isEsalesRequired?: boolean | null;
 }

@@ -243,7 +243,7 @@ export default function CalendarPage() {
           onClose={() => setWorkflowDeadline(null)}
           deadlineId={workflowDeadline.deadlineId}
           engagementId={workflowDeadline.engagementId}
-          clientId={workflowDeadline.clientId}
+          clientId={workflowDeadline.clientId!}
           formNumber={workflowDeadline.formNumber}
           description={workflowDeadline.description}
           period={workflowDeadline.period}

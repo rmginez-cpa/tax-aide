@@ -165,10 +165,24 @@ export const ListClientsResponseItem = zod.object({
   subjectToDst: zod
     .boolean()
     .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
-  withholdsFinal: zod.boolean(),
-  hasInventory: zod.boolean(),
-  isLessor: zod.boolean(),
-  isEsalesRequired: zod.boolean(),
+  withholdsFinal: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Withholds final taxes — requires 0619F (monthly) and 1604F (annual)",
+    ),
+  hasInventory: zod
+    .boolean()
+    .optional()
+    .describe("Maintains inventory — requires Annual Inventory List (Jan 30)"),
+  isLessor: zod
+    .boolean()
+    .optional()
+    .describe("Is a lessor — requires Lessee Information Statement (Jan 31)"),
+  isEsalesRequired: zod
+    .boolean()
+    .optional()
+    .describe("Required to submit eSales Report (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -250,10 +264,24 @@ export const GetClientResponse = zod.object({
   subjectToDst: zod
     .boolean()
     .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
-  withholdsFinal: zod.boolean(),
-  hasInventory: zod.boolean(),
-  isLessor: zod.boolean(),
-  isEsalesRequired: zod.boolean(),
+  withholdsFinal: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Withholds final taxes — requires 0619F (monthly) and 1604F (annual)",
+    ),
+  hasInventory: zod
+    .boolean()
+    .optional()
+    .describe("Maintains inventory — requires Annual Inventory List (Jan 30)"),
+  isLessor: zod
+    .boolean()
+    .optional()
+    .describe("Is a lessor — requires Lessee Information Statement (Jan 31)"),
+  isEsalesRequired: zod
+    .boolean()
+    .optional()
+    .describe("Required to submit eSales Report (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -331,10 +359,24 @@ export const UpdateClientResponse = zod.object({
   subjectToDst: zod
     .boolean()
     .describe("Subject to Documentary Stamp Tax — requires 2000 (monthly)"),
-  withholdsFinal: zod.boolean(),
-  hasInventory: zod.boolean(),
-  isLessor: zod.boolean(),
-  isEsalesRequired: zod.boolean(),
+  withholdsFinal: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Withholds final taxes — requires 0619F (monthly) and 1604F (annual)",
+    ),
+  hasInventory: zod
+    .boolean()
+    .optional()
+    .describe("Maintains inventory — requires Annual Inventory List (Jan 30)"),
+  isLessor: zod
+    .boolean()
+    .optional()
+    .describe("Is a lessor — requires Lessee Information Statement (Jan 31)"),
+  isEsalesRequired: zod
+    .boolean()
+    .optional()
+    .describe("Required to submit eSales Report (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });

@@ -167,7 +167,7 @@ export function MergePDFDialog({
         pages.forEach(p => merged.addPage(p));
       }
       const mergedBytes = await merged.save();
-      const blob = new Blob([mergedBytes], { type: "application/pdf" });
+      const blob = new Blob([mergedBytes as unknown as BlobPart], { type: "application/pdf" });
       const safeOutputName = outputName.trim() || "merged.pdf";
       const file = new File([blob], safeOutputName.endsWith(".pdf") ? safeOutputName : `${safeOutputName}.pdf`, {
         type: "application/pdf",

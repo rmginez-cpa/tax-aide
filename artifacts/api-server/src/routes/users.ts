@@ -90,7 +90,7 @@ router.post("/users", requireRole("super_admin"), async (req, res): Promise<void
 
 // ── GET /api/users/:id ─────────────────────────────────────────────────────
 router.get("/users/:id", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const [user] = await db.select().from(usersTable).where(eq(usersTable.id, id));
@@ -101,7 +101,7 @@ router.get("/users/:id", requireAuth, async (req, res): Promise<void> => {
 
 // ── PATCH /api/users/:id ───────────────────────────────────────────────────
 router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const callerRole = req.session.userRole || "";
@@ -171,7 +171,7 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
 
 // ── DELETE /api/users/:id ──────────────────────────────────────────────────
 router.delete("/users/:id", requireRole("super_admin"), async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const callerId = req.session.userId!;

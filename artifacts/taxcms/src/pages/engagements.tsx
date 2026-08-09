@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 import {
   useListEngagements, useCreateEngagement, useListClients, useListUsers, useListDocuments,
-  useListDeadlines, getListEngagementsQueryKey
+  useListDeadlines, getListEngagementsQueryKey, getListDocumentsQueryKey
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -49,7 +49,7 @@ function EngagementDocsDialog({
 }: { engagementId: number; title: string; open: boolean; onClose: () => void }) {
   const { data: docs, isLoading } = useListDocuments(
     { engagementId },
-    { query: { enabled: open } }
+    { query: { enabled: open, queryKey: getListDocumentsQueryKey({ engagementId }) } }
   );
   type DocItem = NonNullable<typeof docs>[number];
   const [viewerDoc, setViewerDoc] = useState<DocItem | null>(null);

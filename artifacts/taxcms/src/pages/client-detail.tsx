@@ -3,7 +3,7 @@ import { useParams, Link } from "wouter";
 import {
   useGetClient, useUpdateClient, useListEngagements, useListDocuments,
   useGetClientCompliance, useGenerateClientDeadlines,
-  getGetClientQueryKey, getListEngagementsQueryKey, getGetClientComplianceQueryKey
+  getGetClientQueryKey, getListEngagementsQueryKey, getGetClientComplianceQueryKey, getListDocumentsQueryKey
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -86,7 +86,7 @@ export default function ClientDetail() {
 
   const { data: client, isLoading: loadingClient } = useGetClient(id, { query: { enabled: !!id, queryKey: getGetClientQueryKey(id) } });
   const { data: engagements } = useListEngagements({ clientId: id }, { query: { enabled: !!id, queryKey: getListEngagementsQueryKey({ clientId: id }) } });
-  const { data: documents } = useListDocuments({ clientId: id }, { query: { enabled: !!id } });
+  const { data: documents } = useListDocuments({ clientId: id }, { query: { enabled: !!id, queryKey: getListDocumentsQueryKey({ clientId: id }) } });
 
   const [complianceYear, setComplianceYear] = useState(new Date().getFullYear());
   const [complianceFilter, setComplianceFilter] = useState<"all" | "monthly" | "quarterly" | "annual">("all");

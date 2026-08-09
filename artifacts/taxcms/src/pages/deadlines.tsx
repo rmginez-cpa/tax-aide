@@ -272,7 +272,7 @@ export default function Deadlines() {
           onClose={() => setWorkflowDeadline(null)}
           deadlineId={workflowDeadline.deadlineId}
           engagementId={workflowDeadline.engagementId}
-          clientId={workflowDeadline.clientId}
+          clientId={workflowDeadline.clientId!}
           formNumber={workflowDeadline.formNumber}
           description={workflowDeadline.description}
           period={workflowDeadline.period}

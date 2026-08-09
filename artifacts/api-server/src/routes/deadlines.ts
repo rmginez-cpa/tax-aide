@@ -163,7 +163,7 @@ router.delete("/deadlines/:id", requireAuth, async (req, res): Promise<void> => 
 // ── POST /api/deadlines/:id/start-workflow ───────────────────────────────────
 // Start a filing workflow for this deadline (creates an engagement)
 router.post("/deadlines/:id/start-workflow", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const [deadline] = await db.select().from(deadlinesTable).where(eq(deadlinesTable.id, id));
@@ -186,7 +186,7 @@ router.post("/deadlines/:id/start-workflow", requireAuth, async (req, res): Prom
     clientId: deadline.clientId ?? undefined,
     title: deadline.title,
     taxType: deadline.title,
-    period: deadline.period ?? "",
+    period: (deadline as { period?: string }).period ?? "",
     status: "in_progress",
     workflowStage: "source_collection",
     assignedTo: req.session.userId!,
@@ -204,7 +204,7 @@ router.post("/deadlines/:id/start-workflow", requireAuth, async (req, res): Prom
     action: "create",
     entityType: "engagement",
     entityId: engagement.id,
-    description: `Started filing workflow for "${deadline.title}" (${deadline.period ?? ""})`,
+    description: `Started filing workflow for "${deadline.title}" (${(deadline as { period?: string }).period ?? ""})`,
   });
 
   res.status(201).json(engagement);

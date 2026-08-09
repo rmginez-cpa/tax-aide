@@ -13,9 +13,24 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
+import { getStoredFile, deleteStoredFile } from "../lib/fileStore";
 import { UPLOADS_DIR } from "./upload";
 
 const router = Router();
+
+// Client-role users may only access documents belonging to their own client.
+// Returns true if access is denied (and the 404 response has been sent).
+function deniedForClientRole(
+  req: { session: { userRole?: string; userClientId?: number | null } },
+  res: { status: (code: number) => { json: (body: unknown) => unknown } },
+  doc: { clientId: number | null },
+): boolean {
+  if (req.session.userRole === "client" && doc.clientId !== req.session.userClientId) {
+    res.status(404).json({ error: "Document not found" });
+    return true;
+  }
+  return false;
+}
 
 async function serializeDocument(doc: typeof documentsTable.$inferSelect) {
   let uploadedByName: string | null = null;
@@ -107,6 +122,7 @@ router.get("/documents/:id", requireAuth, async (req, res): Promise<void> => {
     res.status(404).json({ error: "Document not found" });
     return;
   }
+  if (deniedForClientRole(req, res, doc)) return;
 
   res.json(await serializeDocument(doc));
 });
@@ -124,16 +140,18 @@ router.patch("/documents/:id", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
+  const [existing] = await db.select().from(documentsTable).where(eq(documentsTable.id, params.data.id));
+  if (!existing) {
+    res.status(404).json({ error: "Document not found" });
+    return;
+  }
+  if (deniedForClientRole(req, res, existing)) return;
+
   const [doc] = await db
     .update(documentsTable)
     .set({ description: parsed.data.description ?? null })
     .where(eq(documentsTable.id, params.data.id))
     .returning();
-
-  if (!doc) {
-    res.status(404).json({ error: "Document not found" });
-    return;
-  }
 
   res.json(await serializeDocument(doc));
 });
@@ -151,6 +169,7 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
     res.status(404).json({ error: "Document not found" });
     return;
   }
+  if (deniedForClientRole(req, res, existingDoc)) return;
 
   // Guard: if the document's stage is locked (for_review or approved), block deletion
   if (existingDoc.engagementId) {
@@ -187,11 +206,8 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
     return;
   }
 
-  // Also remove the physical file
-  const filePath = path.join(UPLOADS_DIR, doc.filename);
-  if (fs.existsSync(filePath)) {
-    fs.unlinkSync(filePath);
-  }
+  // Also remove the stored file (object storage and/or local disk)
+  await deleteStoredFile(doc.filename, UPLOADS_DIR);
 
   await logAudit({
     userId: req.session.userId,
@@ -207,7 +223,7 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
 // ── GET /api/documents/:id/content ─────────────────────────────────────────
 // Streams the actual file bytes, authenticated. Used by the file viewer.
 router.get("/documents/:id/content", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "Invalid document id" });
     return;
@@ -218,21 +234,32 @@ router.get("/documents/:id/content", requireAuth, async (req, res): Promise<void
     res.status(404).json({ error: "Document not found" });
     return;
   }
+  if (deniedForClientRole(req, res, doc)) return;
 
-  const filePath = path.join(UPLOADS_DIR, doc.filename);
-  if (!fs.existsSync(filePath)) {
-    res.status(404).json({ error: "File not found on disk" });
+  const stored = await getStoredFile(doc.filename, UPLOADS_DIR);
+  if (!stored) {
+    res.status(404).json({ error: "File not found in storage" });
     return;
   }
 
-  const stat = fs.statSync(filePath);
   res.setHeader("Content-Type", doc.mimeType);
-  res.setHeader("Content-Length", stat.size);
   res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(doc.originalName)}"`);
   res.setHeader("Cache-Control", "private, max-age=3600");
+  if (stored.size != null) {
+    res.setHeader("Content-Length", stored.size);
+  }
 
-  const stream = fs.createReadStream(filePath);
-  stream.pipe(res);
+  if (stored.kind === "disk") {
+    fs.createReadStream(stored.path).pipe(res);
+  } else {
+    stored.file.createReadStream()
+      .on("error", (err) => {
+        console.error("Storage stream error:", err);
+        if (!res.headersSent) res.status(500).json({ error: "Failed to read file" });
+        else res.end();
+      })
+      .pipe(res);
+  }
 });
 
 export default router;

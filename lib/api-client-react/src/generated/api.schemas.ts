@@ -129,6 +129,14 @@ export interface Client {
   withholdsEwt: boolean;
   /** Subject to Documentary Stamp Tax — requires 2000 (monthly) */
   subjectToDst: boolean;
+  /** Withholds final taxes — requires 0619F (monthly) and 1604F (annual) */
+  withholdsFinal?: boolean;
+  /** Maintains inventory — requires Annual Inventory List (Jan 30) */
+  hasInventory?: boolean;
+  /** Is a lessor — requires Lessee Information Statement (Jan 31) */
+  isLessor?: boolean;
+  /** Required to submit eSales Report (monthly) */
+  isEsalesRequired?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -171,6 +179,10 @@ export interface CreateClientBody {
   withholdsCompensation?: boolean;
   withholdsEwt?: boolean;
   subjectToDst?: boolean;
+  withholdsFinal?: boolean;
+  hasInventory?: boolean;
+  isLessor?: boolean;
+  isEsalesRequired?: boolean;
 }
 
 /**
@@ -225,6 +237,14 @@ export interface UpdateClientBody {
   withholdsEwt?: boolean | null;
   /** @nullable */
   subjectToDst?: boolean | null;
+  /** @nullable */
+  withholdsFinal?: boolean | null;
+  /** @nullable */
+  hasInventory?: boolean | null;
+  /** @nullable */
+  isLessor?: boolean | null;
+  /** @nullable */
+  isEsalesRequired?: boolean | null;
 }
 
 export interface GenerateDeadlinesBody {

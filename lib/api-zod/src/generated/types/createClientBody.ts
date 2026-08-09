@@ -37,4 +37,8 @@ export interface CreateClientBody {
   withholdsCompensation?: boolean;
   withholdsEwt?: boolean;
   subjectToDst?: boolean;
+  withholdsFinal?: boolean;
+  hasInventory?: boolean;
+  isLessor?: boolean;
+  isEsalesRequired?: boolean;
 }

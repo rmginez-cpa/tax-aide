@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.21.0",
     "@types/multer": "^2.1.0",
     "@types/pdfkit": "^0.17.5",
     "@workspace/api-zod": "workspace:*",
@@ -22,6 +23,7 @@
     "drizzle-orm": "catalog:",
     "express": "^5",
     "express-session": "^1.19.0",
+    "google-auth-library": "^11.0.0",
     "multer": "^2.1.1",
     "pdfkit": "^0.18.0",
     "pino": "^9",
