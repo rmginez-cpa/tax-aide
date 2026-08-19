@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, boolean, numeric } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -22,6 +22,9 @@ export const engagementsTable = pgTable("engagements", {
   draftReturnStatus: text("draft_return_status").notNull().default("not_started"),
   confirmationStatus: text("confirmation_status").notNull().default("not_started"),
   paymentStatus: text("payment_status").notNull().default("not_started"),
+  // Tax payable amount entered at Stage 2 (draft return). null = not yet entered (treat as unknown, Stage 4 required).
+  // 0 = no tax due (Stage 4 becomes "not_applicable"). > 0 = Stage 4 required.
+  taxPayable: numeric("tax_payable", { precision: 15, scale: 2 }),
   isAmendment: boolean("is_amendment").notNull().default(false),
   amendedEngagementId: integer("amended_engagement_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

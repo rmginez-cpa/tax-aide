@@ -16,6 +16,11 @@ export interface UpdateEngagementBody {
   period?: string | null;
   /** @nullable */
   fiscalYear?: string | null;
+  /**
+   * Tax payable amount (null = not entered; 0 = none; >0 = payment required)
+   * @nullable
+   */
+  taxPayable?: number | null;
   /** @nullable */
   status?: UpdateEngagementBodyStatus;
   /** @nullable */

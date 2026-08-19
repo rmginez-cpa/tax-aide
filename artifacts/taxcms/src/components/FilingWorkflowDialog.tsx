@@ -48,6 +48,7 @@ interface Engagement {
   amendedEngagementId?: number | null;
   stageStatuses: Record<StageKey, string>;
   stagesForReview: number;
+  taxPayable: number | null;
 }
 
 interface Comment {
@@ -152,6 +153,7 @@ const STAGE_STATUS_STYLES: Record<string, { label: string; className: string }> 
   in_progress: { label: "In Progress", className: "bg-blue-100 text-blue-700 border-blue-200" },
   for_review: { label: "Pending Approval", className: "bg-amber-100 text-amber-700 border-amber-200" },
   approved: { label: "Approved", className: "bg-green-100 text-green-700 border-green-200" },
+  not_applicable: { label: "Not Applicable", className: "bg-slate-100 text-slate-500 border-slate-200" },
 };
 
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -186,6 +188,9 @@ export function FilingWorkflowDialog({
   const [stageDescs, setStageDescs] = useState<Partial<Record<StageKey, string>>>({});
   const [uploadingStage, setUploadingStage] = useState<StageKey | null>(null);
   const fileInputRefs = useRef<Partial<Record<StageKey, HTMLInputElement>>>({});
+  // Tax payable input (Stage 2)
+  const [taxPayableInput, setTaxPayableInput] = useState<string>("");
+  const [savingTaxPayable, setSavingTaxPayable] = useState(false);
 
   // Per-stage manager action state
   const [stageApprovalNotes, setStageApprovalNotes] = useState<Partial<Record<StageKey, string>>>({});
@@ -345,6 +350,27 @@ export function FilingWorkflowDialog({
     }
   };
 
+  // ── Save tax payable amount (Stage 2) ─────────────────────────────────────
+  const handleSaveTaxPayable = async () => {
+    if (!engagementId) return;
+    const val = taxPayableInput.trim();
+    const parsed = val === "" ? null : parseFloat(val);
+    if (val !== "" && (isNaN(parsed!) || parsed! < 0)) {
+      toast({ title: "Enter a valid non-negative amount", variant: "destructive" });
+      return;
+    }
+    setSavingTaxPayable(true);
+    try {
+      await apiCall("PATCH", `/engagements/${engagementId}`, { taxPayable: parsed });
+      await refreshAll();
+      toast({ title: parsed === 0 ? "No tax payable — Stage 4 marked Not Applicable" : "Tax payable saved" });
+    } catch (e: any) {
+      toast({ title: e.message || "Failed to save", variant: "destructive" });
+    } finally {
+      setSavingTaxPayable(false);
+    }
+  };
+
   // ── Submit a stage for manager review ─────────────────────────────────────
   const handleSubmitStage = async (stageId: StageKey) => {
     if (!engagementId) return;
@@ -442,6 +468,17 @@ export function FilingWorkflowDialog({
     payment: "not_started",
   };
 
+  const taxPayable = engagement?.taxPayable ?? null;
+  const isPaymentNA = taxPayable !== null && taxPayable === 0;
+
+  // Sync tax payable input when engagement loads/changes
+  const taxPayableRef = useRef<number | null>(null);
+  if (taxPayableRef.current !== taxPayable) {
+    taxPayableRef.current = taxPayable;
+    setTaxPayableInput(taxPayable !== null ? String(taxPayable) : "");
+  }
+  // For the progress bar: not_applicable counts as "done" (same as approved)
+  const totalStages = isPaymentNA ? 3 : 4;
   const approvedCount = Object.values(stageStatuses).filter(s => s === "approved").length;
 
   const stageDocs = (stageId: StageKey) =>
@@ -543,14 +580,14 @@ export function FilingWorkflowDialog({
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-medium text-muted-foreground">
-                    {isCompleted ? "Filing Complete" : `${approvedCount} / 4 stages approved`}
+                    {isCompleted ? "Filing Complete" : `${approvedCount} / ${totalStages} stages approved`}
                   </span>
                   {isCompleted && <Badge className="bg-green-600 text-white border-green-600">Completed</Badge>}
                   {!isCompleted && approvedCount > 0 && (
-                    <span className="text-xs text-muted-foreground">{4 - approvedCount} remaining</span>
+                    <span className="text-xs text-muted-foreground">{totalStages - approvedCount} remaining</span>
                   )}
                 </div>
-                <Progress value={(approvedCount / 4) * 100} className="h-2" />
+                <Progress value={(approvedCount / totalStages) * 100} className="h-2" />
               </div>
 
               {/* Completed banner */}
@@ -558,7 +595,7 @@ export function FilingWorkflowDialog({
                 <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-green-800">
                   <Check className="h-5 w-5 flex-shrink-0" />
                   <div className="flex-1">
-                    <span className="font-medium">All 4 stages approved — Filing Complete!</span>
+                    <span className="font-medium">{isPaymentNA ? "All required stages approved — Filing Complete!" : "All 4 stages approved — Filing Complete!"}</span>
                     <span className="text-sm ml-1">The deadline has been marked as filed.</span>
                   </div>
                   {!isViewer && (
@@ -584,6 +621,7 @@ export function FilingWorkflowDialog({
                   const Icon = stage.icon;
                   const docs = stageDocs(stage.id);
 
+                  const isStageNotApplicable = stageStatus === "not_applicable";
                   const isStageApproved = stageStatus === "approved";
                   const isStageForReview = stageStatus === "for_review";
                   const isStageEditable = stageStatus === "not_started" || stageStatus === "in_progress";
@@ -592,6 +630,24 @@ export function FilingWorkflowDialog({
 
                   const selectedFile = stageFiles[stage.id];
                   const descValue = stageDescs[stage.id] ?? "";
+
+                  // Stage 4: if not applicable, show a locked card
+                  if (isStageNotApplicable) {
+                    return (
+                      <div key={stage.id} className="border rounded-lg p-4 border-slate-200 bg-slate-50/50 opacity-75">
+                        <div className="flex items-center gap-2">
+                          <div className="rounded-full p-1.5 bg-slate-100">
+                            <Icon className="h-3.5 w-3.5 text-slate-400" />
+                          </div>
+                          <span className="font-medium text-sm text-slate-500">Stage {idx + 1}: {stage.label}</span>
+                          <Badge variant="outline" className={cn("ml-auto text-xs", statusStyle.className)}>
+                            {statusStyle.label}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-2">No tax payable — payment stage is not required for this filing.</p>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div
@@ -627,6 +683,37 @@ export function FilingWorkflowDialog({
                       </div>
 
                       <p className="text-xs text-muted-foreground">{stage.hint}</p>
+
+                      {/* Stage 2: Tax Payable input */}
+                      {stage.id === "draft_return" && !isViewer && (
+                        <div className="pt-1 border-t space-y-2">
+                          <Label className="text-xs font-medium text-muted-foreground">Tax Payable Amount (₱)</Label>
+                          <div className="flex gap-2 items-center">
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="e.g. 12500.00 — enter 0 if no tax due"
+                              value={taxPayableInput}
+                              onChange={e => setTaxPayableInput(e.target.value)}
+                              className="text-sm flex-1"
+                              disabled={isCompleted}
+                            />
+                            {!isCompleted && (
+                              <Button size="sm" variant="outline" onClick={handleSaveTaxPayable} disabled={savingTaxPayable}>
+                                {savingTaxPayable ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
+                              </Button>
+                            )}
+                          </div>
+                          {taxPayable !== null && (
+                            <p className="text-xs text-muted-foreground">
+                              {taxPayable === 0
+                                ? "✓ No tax payable — Stage 4 (Payment) is Not Applicable."
+                                : `✓ Tax payable: ₱${taxPayable.toLocaleString("en-PH", { minimumFractionDigits: 2 })} — Stage 4 required.`}
+                            </p>
+                          )}
+                        </div>
+                      )}
 
                       {/* Documents */}
                       {docs.length > 0 && (

@@ -49,12 +49,20 @@ function getStageStatuses(e: typeof engagementsTable.$inferSelect): Record<Stage
   };
 }
 
+/** Payment stage is not applicable when taxPayable is explicitly set to 0. */
+function isPaymentNotApplicable(e: typeof engagementsTable.$inferSelect): boolean {
+  return e.taxPayable !== null && Number(e.taxPayable) === 0;
+}
+
 function allStagesApproved(e: typeof engagementsTable.$inferSelect): boolean {
+  const paymentDone = isPaymentNotApplicable(e)
+    ? true // no payment required
+    : e.paymentStatus === "approved";
   return (
     e.sourceCollectionStatus === "approved" &&
     e.draftReturnStatus === "approved" &&
     e.confirmationStatus === "approved" &&
-    e.paymentStatus === "approved"
+    paymentDone
   );
 }
 
@@ -88,6 +96,14 @@ async function serializeEngagement(e: typeof engagementsTable.$inferSelect) {
   const statuses = getStageStatuses(e);
   const forReviewCount = stagesForReviewCount(e);
 
+  // Override payment status to not_applicable when taxPayable === 0 (unconditional —
+  // any in-flight payment-stage work is irrelevant once tax is zero).
+  const paymentNotApplicable = isPaymentNotApplicable(e);
+  const effectiveStatuses = { ...statuses };
+  if (paymentNotApplicable) {
+    effectiveStatuses.payment = "not_applicable";
+  }
+
   return {
     id: e.id,
     clientId: e.clientId,
@@ -105,8 +121,9 @@ async function serializeEngagement(e: typeof engagementsTable.$inferSelect) {
     approvalNotes: e.approvalNotes ?? null,
     dueDate: e.dueDate ?? null,
     notes: e.notes ?? null,
+    taxPayable: e.taxPayable !== null ? Number(e.taxPayable) : null,
     workflowStage: e.workflowStage ?? null,
-    stageStatuses: statuses,
+    stageStatuses: effectiveStatuses,
     stagesForReview: forReviewCount,
     isAmendment: e.isAmendment ?? false,
     amendedEngagementId: e.amendedEngagementId ?? null,
@@ -205,6 +222,13 @@ router.patch("/engagements/:id", requireAuth, async (req, res): Promise<void> =>
     return;
   }
 
+  // Fetch existing engagement so we can enforce business rules before mutating.
+  const [existing] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, params.data.id));
+  if (!existing) {
+    res.status(404).json({ error: "Engagement not found" });
+    return;
+  }
+
   const updates: Partial<typeof engagementsTable.$inferInsert> = {};
   if (parsed.data.title != null) updates.title = parsed.data.title;
   if (parsed.data.taxType != null) updates.taxType = parsed.data.taxType;
@@ -215,15 +239,116 @@ router.patch("/engagements/:id", requireAuth, async (req, res): Promise<void> =>
   if ("dueDate" in parsed.data) updates.dueDate = parsed.data.dueDate ?? null;
   if ("notes" in parsed.data) updates.notes = parsed.data.notes ?? null;
 
-  const [engagement] = await db
-    .update(engagementsTable)
-    .set(updates)
-    .where(eq(engagementsTable.id, params.data.id))
-    .returning();
+  // ── taxPayable pre-flight checks (on `existing`, fetched above) ──────────
+  let taxPayableInRequest = false;
+  let incomingTaxPayableNorm: number | null = undefined as unknown as number | null;
+  if ("taxPayable" in parsed.data) {
+    taxPayableInRequest = true;
+    const userRole = req.session.userRole ?? "";
+    if (userRole === "client" || userRole === "viewer") {
+      res.status(403).json({ error: "Only staff members may set the tax payable amount" });
+      return;
+    }
+    if (existing.status === "completed") {
+      res.status(400).json({ error: "Tax payable cannot be changed after the filing is completed" });
+      return;
+    }
+    if (parsed.data.taxPayable != null && parsed.data.taxPayable < 0) {
+      res.status(400).json({ error: "Tax payable amount must be zero or positive" });
+      return;
+    }
+    incomingTaxPayableNorm = parsed.data.taxPayable != null ? Number(parsed.data.taxPayable) : null;
+  }
 
-  if (!engagement) {
-    res.status(404).json({ error: "Engagement not found" });
+  // ── Single transaction: apply all updates, evaluate completion ────────────
+  let autoCompleted = false;
+  let engagement: typeof engagementsTable.$inferSelect;
+
+  try {
+    engagement = await db.transaction(async (tx) => {
+      const txUpdates = { ...updates } as Record<string, unknown>;
+
+      if (taxPayableInRequest) {
+        txUpdates.taxPayable = incomingTaxPayableNorm != null ? String(incomingTaxPayableNorm) : null;
+
+        // Re-read inside the transaction so comparison is against the committed state.
+        const [locked] = await tx.select().from(engagementsTable).where(eq(engagementsTable.id, params.data.id));
+        if (!locked) throw Object.assign(new Error("Engagement not found"), { status: 404 });
+
+        const persistedNorm = locked.taxPayable != null ? Number(locked.taxPayable) : null;
+        const actuallyChanged = incomingTaxPayableNorm !== persistedNorm;
+
+        // Reset payment stage only when the amount truly changes, so a no-op Save
+        // does not invalidate an already-approved payment.
+        if (actuallyChanged) {
+          txUpdates.paymentStatus = "not_started";
+        }
+
+        const [updated] = await tx.update(engagementsTable)
+          .set(txUpdates as Partial<typeof engagementsTable.$inferInsert>)
+          .where(eq(engagementsTable.id, params.data.id))
+          .returning();
+        if (!updated) throw Object.assign(new Error("Engagement not found"), { status: 404 });
+
+        // Auto-complete when zeroing tax payable satisfies the remaining required stages —
+        // evaluated against the just-written row so no concurrent edit can slip through.
+        if (actuallyChanged && isPaymentNotApplicable(updated) && updated.status !== "completed") {
+          const stages = getStageStatuses(updated);
+          const nowComplete =
+            stages.source_collection === "approved" &&
+            stages.draft_return === "approved" &&
+            stages.confirmation === "approved";
+          if (nowComplete) {
+            const [completed] = await tx
+              .update(engagementsTable)
+              .set({ status: "completed", approvedBy: req.session.userId!, approvedAt: new Date() })
+              .where(eq(engagementsTable.id, updated.id))
+              .returning();
+            if (!completed) throw new Error("Auto-completion update failed");
+            await tx.update(deadlinesTable)
+              .set({ status: "completed" })
+              .where(eq(deadlinesTable.engagementId, updated.id));
+            if (completed.assignedTo) {
+              await tx.insert(notificationsTable).values({
+                userId: completed.assignedTo,
+                title: "Filing Complete",
+                message: `Tax payable set to zero — payment stage waived. Filing for "${completed.title}" is now complete.`,
+                type: "engagement_approved",
+                relatedId: completed.id,
+                relatedType: "engagement",
+              });
+            }
+            autoCompleted = true;
+            return completed;
+          }
+        }
+        return updated;
+      }
+
+      // No taxPayable in request — straightforward update, no transaction overhead needed
+      // but we're already inside one for consistency.
+      const [updated] = await tx.update(engagementsTable)
+        .set(txUpdates as Partial<typeof engagementsTable.$inferInsert>)
+        .where(eq(engagementsTable.id, params.data.id))
+        .returning();
+      if (!updated) throw Object.assign(new Error("Engagement not found"), { status: 404 });
+      return updated;
+    });
+  } catch (err: unknown) {
+    const status = (err as { status?: number }).status ?? 500;
+    const message = err instanceof Error ? err.message : "Internal error";
+    res.status(status).json({ error: message });
     return;
+  }
+
+  if (autoCompleted) {
+    await logAudit({
+      userId: req.session.userId,
+      action: "approve",
+      entityType: "engagement",
+      entityId: engagement.id,
+      description: `Filing "${engagement.title}" auto-completed: taxPayable set to zero with all prior stages approved`,
+    });
   }
 
   await logAudit({
@@ -314,6 +439,11 @@ router.post("/engagements/:id/submit-stage", requireAuth, async (req, res): Prom
   if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
   if (engagement.status === "completed") { res.status(400).json({ error: "Filing is already complete" }); return; }
 
+  // Reject payment-stage actions when tax payable is zero — payment is not required.
+  if (stage === "payment" && isPaymentNotApplicable(engagement)) {
+    res.status(400).json({ error: "Payment stage is not applicable when tax payable is zero" }); return;
+  }
+
   const col = STAGE_STATUS_COLS[stage];
   const currentStageStatus = engagement[col] as string;
 
@@ -375,6 +505,11 @@ router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req
   const [engagement] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, id));
   if (!engagement) { res.status(404).json({ error: "Engagement not found" }); return; }
 
+  // Reject payment-stage approval when tax payable is zero — payment is not required.
+  if (stage === "payment" && isPaymentNotApplicable(engagement)) {
+    res.status(400).json({ error: "Payment stage is not applicable when tax payable is zero" }); return;
+  }
+
   const col = STAGE_STATUS_COLS[stage];
   const currentStageStatus = engagement[col] as string;
 
@@ -387,10 +522,16 @@ router.post("/engagements/:id/approve-stage", requireRole("manager"), async (req
   // Build update: set this stage to approved
   const updatePayload: Record<string, any> = { [col]: "approved" };
 
-  // Check if all OTHER stages are also approved — if so, complete the filing
+  // Check if filing is now complete (all required stages approved).
+  // Payment stage is skipped when taxPayable === 0.
   const tempStatuses = getStageStatuses(engagement);
   tempStatuses[stage] = "approved";
-  const willComplete = Object.values(tempStatuses).every(s => s === "approved");
+  const paymentNA = isPaymentNotApplicable(engagement);
+  const willComplete = paymentNA
+    ? (tempStatuses.source_collection === "approved" &&
+       tempStatuses.draft_return === "approved" &&
+       tempStatuses.confirmation === "approved")
+    : Object.values(tempStatuses).every(s => s === "approved");
 
   if (willComplete) {
     updatePayload.status = "completed";

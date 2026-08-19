@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ComplianceItemFrequency } from "./complianceItemFrequency";
+import type { ComplianceItemStageStatuses } from "./complianceItemStageStatuses";
 import type { ComplianceItemStatus } from "./complianceItemStatus";
 
 export interface ComplianceItem {
@@ -23,4 +24,17 @@ export interface ComplianceItem {
    * @nullable
    */
   deadlineId?: number | null;
+  /** @nullable */
+  engagementId?: number | null;
+  /** @nullable */
+  workflowStage?: string | null;
+  /** @nullable */
+  workflowStatus?: string | null;
+  /** Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable */
+  stageStatuses?: ComplianceItemStageStatuses;
+  /**
+   * Tax amount payable (null = not entered, 0 = none due, >0 = payment required)
+   * @nullable
+   */
+  taxPayable?: number | null;
 }

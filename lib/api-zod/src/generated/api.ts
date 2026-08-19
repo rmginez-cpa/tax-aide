@@ -443,6 +443,26 @@ export const GetClientComplianceResponse = zod.object({
         .number()
         .nullish()
         .describe("ID of the linked deadline record, if it exists"),
+      engagementId: zod.number().nullish(),
+      workflowStage: zod.string().nullish(),
+      workflowStatus: zod.string().nullish(),
+      stageStatuses: zod
+        .object({
+          source_collection: zod.string().optional(),
+          draft_return: zod.string().optional(),
+          confirmation: zod.string().optional(),
+          payment: zod.string().optional(),
+        })
+        .optional()
+        .describe(
+          "Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable",
+        ),
+      taxPayable: zod
+        .number()
+        .nullish()
+        .describe(
+          "Tax amount payable (null = not entered, 0 = none due, >0 = payment required)",
+        ),
     }),
   ),
   summary: zod.object({
@@ -485,6 +505,12 @@ export const ListEngagementsResponseItem = zod.object({
   approvalNotes: zod.string().nullish(),
   dueDate: zod.string().nullish(),
   notes: zod.string().nullish(),
+  taxPayable: zod
+    .number()
+    .nullish()
+    .describe(
+      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+    ),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -535,6 +561,12 @@ export const GetEngagementResponse = zod.object({
   approvalNotes: zod.string().nullish(),
   dueDate: zod.string().nullish(),
   notes: zod.string().nullish(),
+  taxPayable: zod
+    .number()
+    .nullish()
+    .describe(
+      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+    ),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -551,6 +583,12 @@ export const UpdateEngagementBody = zod.object({
   taxType: zod.string().nullish(),
   period: zod.string().nullish(),
   fiscalYear: zod.string().nullish(),
+  taxPayable: zod
+    .number()
+    .nullish()
+    .describe(
+      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+    ),
   status: zod
     .enum([
       "pending",
@@ -591,6 +629,12 @@ export const UpdateEngagementResponse = zod.object({
   approvalNotes: zod.string().nullish(),
   dueDate: zod.string().nullish(),
   notes: zod.string().nullish(),
+  taxPayable: zod
+    .number()
+    .nullish()
+    .describe(
+      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+    ),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -638,6 +682,12 @@ export const ApproveEngagementResponse = zod.object({
   approvalNotes: zod.string().nullish(),
   dueDate: zod.string().nullish(),
   notes: zod.string().nullish(),
+  taxPayable: zod
+    .number()
+    .nullish()
+    .describe(
+      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+    ),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -1119,6 +1169,12 @@ export const GetOverdueItemsResponse = zod.object({
       approvalNotes: zod.string().nullish(),
       dueDate: zod.string().nullish(),
       notes: zod.string().nullish(),
+      taxPayable: zod
+        .number()
+        .nullish()
+        .describe(
+          "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+        ),
       createdAt: zod.string(),
       updatedAt: zod.string(),
     }),

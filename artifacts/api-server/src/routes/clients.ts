@@ -471,6 +471,13 @@ interface ComplianceItem {
   engagementId: number | null;
   workflowStage: string | null;
   workflowStatus: string | null;
+  stageStatuses: {
+    source_collection: string;
+    draft_return: string;
+    confirmation: string;
+    payment: string;
+  } | null;
+  taxPayable: number | null;
 }
 
 const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
@@ -602,6 +609,18 @@ async function buildComplianceItems(
     const engagementId = matched?.engagementId ?? null;
     const eng = engagementId ? engagementsMap.get(engagementId) : null;
 
+    // Compute effective stage statuses (payment → not_applicable when taxPayable === 0)
+    let stageStatuses: ComplianceItem["stageStatuses"] = null;
+    if (eng) {
+      const paymentNA = eng.taxPayable !== null && Number(eng.taxPayable) === 0;
+      stageStatuses = {
+        source_collection: eng.sourceCollectionStatus,
+        draft_return: eng.draftReturnStatus,
+        confirmation: eng.confirmationStatus,
+        payment: paymentNA ? "not_applicable" : eng.paymentStatus,
+      };
+    }
+
     return {
       formNumber,
       description: req.description,
@@ -613,6 +632,8 @@ async function buildComplianceItems(
       engagementId: engagementId ?? null,
       workflowStage: eng?.workflowStage ?? null,
       workflowStatus: eng?.status ?? null,
+      stageStatuses,
+      taxPayable: eng?.taxPayable !== null && eng?.taxPayable !== undefined ? Number(eng.taxPayable) : null,
     };
   });
 }

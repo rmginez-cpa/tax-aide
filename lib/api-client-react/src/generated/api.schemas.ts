@@ -277,6 +277,16 @@ export const ComplianceItemStatus = {
   overdue: "overdue",
 } as const;
 
+/**
+ * Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable
+ */
+export type ComplianceItemStageStatuses = {
+  source_collection?: string;
+  draft_return?: string;
+  confirmation?: string;
+  payment?: string;
+};
+
 export interface ComplianceItem {
   /** BIR form number (e.g. 2550M, 1702) */
   formNumber: string;
@@ -292,6 +302,19 @@ export interface ComplianceItem {
    * @nullable
    */
   deadlineId?: number | null;
+  /** @nullable */
+  engagementId?: number | null;
+  /** @nullable */
+  workflowStage?: string | null;
+  /** @nullable */
+  workflowStatus?: string | null;
+  /** Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable */
+  stageStatuses?: ComplianceItemStageStatuses;
+  /**
+   * Tax amount payable (null = not entered, 0 = none due, >0 = payment required)
+   * @nullable
+   */
+  taxPayable?: number | null;
 }
 
 export type ClientComplianceSummary = {
@@ -348,6 +371,11 @@ export interface Engagement {
   dueDate?: string | null;
   /** @nullable */
   notes?: string | null;
+  /**
+   * Tax payable amount (null = not entered; 0 = none; >0 = payment required)
+   * @nullable
+   */
+  taxPayable?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -393,6 +421,11 @@ export interface UpdateEngagementBody {
   period?: string | null;
   /** @nullable */
   fiscalYear?: string | null;
+  /**
+   * Tax payable amount (null = not entered; 0 = none; >0 = payment required)
+   * @nullable
+   */
+  taxPayable?: number | null;
   /** @nullable */
   status?: UpdateEngagementBodyStatus;
   /** @nullable */

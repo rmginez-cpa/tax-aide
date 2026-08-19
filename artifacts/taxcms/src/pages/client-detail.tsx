@@ -22,7 +22,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ArrowLeft, Building2, Mail, Phone, MapPin, FileText, Briefcase,
   Calendar, ExternalLink, Edit2, Wand2, CheckCircle2, AlertCircle, Clock,
-  FileCheck, ChevronDown, ChevronUp, PlayCircle
+  FileCheck, ChevronDown, ChevronUp, PlayCircle, Search, X,
+  Inbox, PenLine, Receipt, CreditCard, MinusCircle
 } from "lucide-react";
 import { format, parseISO, isPast } from "date-fns";
 import { FilingWorkflowDialog } from "@/components/FilingWorkflowDialog";
@@ -77,6 +78,21 @@ const FREQUENCY_COLORS = {
   annual: "bg-amber-50 border-amber-200",
 };
 
+const STAGE_ICON_COLORS: Record<string, string> = {
+  not_started: "text-muted-foreground/25",
+  in_progress: "text-blue-500",
+  for_review: "text-amber-500",
+  approved: "text-emerald-500",
+  not_applicable: "text-slate-300",
+};
+
+const STAGE_ICONS = [
+  { key: "source_collection", Icon: Inbox,      label: "Source Collection" },
+  { key: "draft_return",      Icon: PenLine,    label: "Draft Return" },
+  { key: "confirmation",      Icon: Receipt,    label: "Confirmation" },
+  { key: "payment",           Icon: CreditCard, label: "Payment" },
+] as const;
+
 export default function ClientDetail() {
   const params = useParams<{ id: string }>();
   const id = parseInt(params.id, 10);
@@ -90,6 +106,9 @@ export default function ClientDetail() {
 
   const [complianceYear, setComplianceYear] = useState(new Date().getFullYear());
   const [complianceFilter, setComplianceFilter] = useState<"all" | "monthly" | "quarterly" | "annual">("all");
+  const [complianceSearch, setComplianceSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const { data: compliance, isLoading: loadingCompliance } = useGetClientCompliance(id, { year: complianceYear }, {
     query: { enabled: !!id, queryKey: getGetClientComplianceQueryKey(id, { year: complianceYear }) }
   });
@@ -217,9 +236,16 @@ export default function ClientDetail() {
   if (client.isLessor) registeredTypes.push({ label: "Lessee Info Statement", color: "bg-pink-100 text-pink-700" });
   if (client.isEsalesRequired) registeredTypes.push({ label: "eSales Report", color: "bg-indigo-100 text-indigo-700" });
 
-  const filteredCompliance = compliance?.items.filter(item =>
-    complianceFilter === "all" || item.frequency === complianceFilter
-  ) ?? [];
+  const filteredCompliance = compliance?.items.filter(item => {
+    if (complianceFilter !== "all" && item.frequency !== complianceFilter) return false;
+    if (complianceSearch.trim()) {
+      const q = complianceSearch.toLowerCase();
+      if (!item.formNumber.toLowerCase().includes(q) && !item.description.toLowerCase().includes(q) && !(item.period ?? "").toLowerCase().includes(q)) return false;
+    }
+    if (dateFrom && item.dueDate < dateFrom) return false;
+    if (dateTo && item.dueDate > dateTo) return false;
+    return true;
+  }) ?? [];
 
   const currentYear = new Date().getFullYear();
   const yearOptions = [currentYear - 1, currentYear, currentYear + 1];
@@ -411,12 +437,49 @@ export default function ClientDetail() {
 
         <CardContent>
           {/* Filter tabs */}
-          <div className="flex gap-1 mb-4">
+          <div className="flex gap-1 mb-3">
             {(["all", "monthly", "quarterly", "annual"] as const).map(f => (
               <button key={f} onClick={() => setComplianceFilter(f)} className={`text-xs px-3 py-1 rounded-full font-medium transition-colors ${complianceFilter === f ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>
                 {f.charAt(0).toUpperCase() + f.slice(1)}
               </button>
             ))}
+          </div>
+
+          {/* Search + date-range filters */}
+          <div className="flex flex-wrap gap-2 mb-4">
+            <div className="relative flex-1 min-w-[180px]">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+              <Input
+                value={complianceSearch}
+                onChange={e => setComplianceSearch(e.target.value)}
+                placeholder="Search form, description, period…"
+                className="pl-8 h-8 text-xs"
+              />
+            </div>
+            <Input
+              type="date"
+              value={dateFrom}
+              onChange={e => setDateFrom(e.target.value)}
+              className="w-36 h-8 text-xs"
+              title="Due date from"
+            />
+            <Input
+              type="date"
+              value={dateTo}
+              onChange={e => setDateTo(e.target.value)}
+              className="w-36 h-8 text-xs"
+              title="Due date to"
+            />
+            {(complianceSearch || dateFrom || dateTo) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 text-xs text-muted-foreground"
+                onClick={() => { setComplianceSearch(""); setDateFrom(""); setDateTo(""); }}
+              >
+                <X className="h-3.5 w-3.5 mr-1" />Clear
+              </Button>
+            )}
           </div>
 
           {!hasBir2303 ? (
@@ -487,6 +550,19 @@ export default function ClientDetail() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
+                      {hasWorkflow && item.stageStatuses && (
+                        <div className="flex items-center gap-0.5">
+                          {STAGE_ICONS.map(({ key, Icon, label }) => {
+                            const status = (item.stageStatuses as Record<string, string>)[key] ?? "not_started";
+                            const IconComp = status === "not_applicable" ? MinusCircle : Icon;
+                            return (
+                              <span key={key} title={`${label}: ${status.replace(/_/g, " ")}`}>
+                                <IconComp className={`h-3.5 w-3.5 ${STAGE_ICON_COLORS[status] ?? "text-muted-foreground/25"}`} />
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
                       <span className={`text-xs font-semibold ${statusInfo.className}`}>{statusInfo.label}</span>
                       {!hasWorkflow && !isFiled && (
                         <PlayCircle className="h-4 w-4 text-muted-foreground/60" />

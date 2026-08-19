@@ -34,6 +34,11 @@ export interface Engagement {
   dueDate?: string | null;
   /** @nullable */
   notes?: string | null;
+  /**
+   * Tax payable amount (null = not entered; 0 = none; >0 = payment required)
+   * @nullable
+   */
+  taxPayable?: number | null;
   createdAt: string;
   updatedAt: string;
 }

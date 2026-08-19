@@ -1325,6 +1325,27 @@ components:
         deadlineId:
           type: ["integer", "null"]
           description: "ID of the linked deadline record, if it exists"
+        engagementId:
+          type: ["integer", "null"]
+        workflowStage:
+          type: ["string", "null"]
+        workflowStatus:
+          type: ["string", "null"]
+        stageStatuses:
+          type: object
+          description: "Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable"
+          properties:
+            source_collection:
+              type: string
+            draft_return:
+              type: string
+            confirmation:
+              type: string
+            payment:
+              type: string
+        taxPayable:
+          type: ["number", "null"]
+          description: "Tax amount payable (null = not entered, 0 = none due, >0 = payment required)"
       required:
         - formNumber
         - description
@@ -1401,6 +1422,9 @@ components:
           type: ["string", "null"]
         notes:
           type: ["string", "null"]
+        taxPayable:
+          type: ["number", "null"]
+          description: "Tax payable amount (null = not entered; 0 = none; >0 = payment required)"
         createdAt:
           type: string
         updatedAt:
@@ -1451,6 +1475,10 @@ components:
           type: ["string", "null"]
         fiscalYear:
           type: ["string", "null"]
+        taxPayable:
+          type: ["number", "null"]
+          minimum: 0
+          description: "Tax payable amount (null = not entered; 0 = none; >0 = payment required)"
         status:
           type: ["string", "null"]
           enum: [pending, in_progress, for_review, approved, filed, completed, "null"]
