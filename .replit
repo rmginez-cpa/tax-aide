@@ -81,3 +81,4 @@ externalPort = 8081
 
 [nix]
 channel = "stable-25_05"
+packages = ["glib", "nss", "atk", "at-spi2-atk", "at-spi2-core", "dbus", "libxkbcommon", "mesa", "alsa-lib", "xorg.libX11", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "xorg.libxcb"]
