@@ -201,6 +201,93 @@ async function assertFiledState(
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
+test.describe("Voiding an approved stage on a completed filing reverts deadline", () => {
+  /**
+   * Test C — void-stage on a completed filing (regression guard)
+   *
+   * After all stages are approved and the filing is "completed", a manager
+   * voids one of the previously approved stages.  The server must:
+   *   - revert engagement.status from "completed" → "in_progress"
+   *   - revert the linked deadline.status from "completed" → "pending"
+   *
+   * Without this guard a silent inconsistency would leave the deadline
+   * showing "Filed" in the compliance checklist while the engagement
+   * actually needs further work.
+   */
+  test("void-stage on completed filing reverts engagement and deadline to in-progress/pending", async ({
+    request,
+  }) => {
+    const suffix = `${RUN_ID}C`;
+    const { clientId, deadlineId, engagementId, formNumber, period } =
+      await setupClientAndWorkflow(request, suffix);
+
+    // Complete all three non-payment stages.
+    await submitAndApproveStage(request, engagementId, "source_collection");
+    await submitAndApproveStage(request, engagementId, "draft_return");
+    await submitAndApproveStage(request, engagementId, "confirmation");
+
+    // Set taxPayable = 0 so the server auto-completes the filing
+    // (waives payment, marks engagement "completed", deadline "completed").
+    const patchRes = await request.patch(`/api/engagements/${engagementId}`, {
+      data: { taxPayable: 0 },
+    });
+    expect(patchRes.ok(), `Set taxPayable=0 failed: ${await patchRes.text()}`).toBeTruthy();
+    const completedEng = await patchRes.json();
+    expect(completedEng.status, "Engagement should be completed before void").toBe("completed");
+
+    // Confirm the deadline is "completed" before the void.
+    const dlBeforeRes = await request.get(`/api/deadlines/${deadlineId}`);
+    expect(dlBeforeRes.ok()).toBeTruthy();
+    const dlBefore = await dlBeforeRes.json();
+    expect(dlBefore.status, "Deadline should be completed before void").toBe("completed");
+
+    // Now void the "confirmation" stage approval — this triggers the
+    // un-complete path on both the engagement and the linked deadline.
+    const voidRes = await request.post(`/api/engagements/${engagementId}/void-stage`, {
+      data: { stage: "confirmation", notes: "Regression test void" },
+    });
+    expect(voidRes.ok(), `Void stage failed: ${await voidRes.text()}`).toBeTruthy();
+    const voidedEng = await voidRes.json();
+
+    // Engagement must revert to in_progress.
+    expect(
+      voidedEng.status,
+      "Engagement status must revert to 'in_progress' after voiding a stage on a completed filing",
+    ).toBe("in_progress");
+
+    // The voided stage must be back to in_progress (not approved).
+    expect(
+      voidedEng.stageStatuses.confirmation,
+      "Confirmation stage must revert to 'in_progress' after void",
+    ).toBe("in_progress");
+
+    // The linked deadline must revert to pending.
+    const dlAfterRes = await request.get(`/api/deadlines/${deadlineId}`);
+    expect(dlAfterRes.ok()).toBeTruthy();
+    const dlAfter = await dlAfterRes.json();
+    expect(
+      dlAfter.status,
+      "Deadline status must revert to 'pending' after voiding a stage on a completed filing",
+    ).toBe("pending");
+
+    // The compliance checklist must no longer show "filed".
+    const compRes = await request.get(`/api/clients/${clientId}/compliance?year=${YEAR}`);
+    expect(compRes.ok()).toBeTruthy();
+    const compliance = await compRes.json();
+    const item = (compliance.items as Array<{
+      deadlineId: number | null;
+      formNumber: string;
+      period: string;
+      status: string;
+    }>).find((i) => i.deadlineId === deadlineId);
+    expect(item, `Compliance item for deadline ${deadlineId} not found`).toBeTruthy();
+    expect(
+      item!.status,
+      "Compliance row must NOT show 'filed' after voiding a completed filing's stage",
+    ).not.toBe("filed");
+  });
+});
+
 test.describe("Filing workflow completion marks linked deadline as Filed", () => {
   /**
    * Test A — taxPayable = 0 (payment N/A, auto-complete path)

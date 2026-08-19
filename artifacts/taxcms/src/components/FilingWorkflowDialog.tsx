@@ -980,6 +980,15 @@ export function FilingWorkflowDialog({
                           ) : (
                             <div className="space-y-2 rounded-md bg-rose-50 border border-rose-200 p-3">
                               <p className="text-xs font-medium text-rose-800">Undo approval for {stage.label}?</p>
+                              {isCompleted && (
+                                <div className="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-300 px-3 py-2">
+                                  <span className="text-amber-600 mt-0.5 shrink-0">⚠</span>
+                                  <p className="text-xs text-amber-800 font-medium">
+                                    This filing is already marked <strong>Complete</strong> and the deadline shows as <strong>Filed</strong>.
+                                    Undoing this approval will revert the filing to <em>In Progress</em> and reset the deadline back to <em>Pending</em>.
+                                  </p>
+                                </div>
+                              )}
                               <Input
                                 placeholder="Reason (optional)"
                                 value={voidReasons[stage.id] ?? ""}
