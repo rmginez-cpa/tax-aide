@@ -1159,6 +1159,23 @@ components:
           type: string
         updatedAt:
           type: string
+        workflowCounts:
+          type: object
+          description: "Aggregate filing workflow counts across all engagements for this client (present on list responses)."
+          properties:
+            inProgress:
+              type: integer
+              description: "Number of engagements currently in progress"
+            forReview:
+              type: integer
+              description: "Number of engagements awaiting manager review"
+            overdue:
+              type: integer
+              description: "Number of overdue deadline entries not yet filed"
+          required:
+            - inProgress
+            - forReview
+            - overdue
       required:
         - id
         - name

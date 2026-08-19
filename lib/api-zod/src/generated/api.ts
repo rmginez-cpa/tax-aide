@@ -185,6 +185,22 @@ export const ListClientsResponseItem = zod.object({
     .describe("Required to submit eSales Report (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
+  workflowCounts: zod
+    .object({
+      inProgress: zod
+        .number()
+        .describe("Number of engagements currently in progress"),
+      forReview: zod
+        .number()
+        .describe("Number of engagements awaiting manager review"),
+      overdue: zod
+        .number()
+        .describe("Number of overdue deadline entries not yet filed"),
+    })
+    .optional()
+    .describe(
+      "Aggregate filing workflow counts across all engagements for this client (present on list responses).",
+    ),
 });
 export const ListClientsResponse = zod.array(ListClientsResponseItem);
 
@@ -284,6 +300,22 @@ export const GetClientResponse = zod.object({
     .describe("Required to submit eSales Report (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
+  workflowCounts: zod
+    .object({
+      inProgress: zod
+        .number()
+        .describe("Number of engagements currently in progress"),
+      forReview: zod
+        .number()
+        .describe("Number of engagements awaiting manager review"),
+      overdue: zod
+        .number()
+        .describe("Number of overdue deadline entries not yet filed"),
+    })
+    .optional()
+    .describe(
+      "Aggregate filing workflow counts across all engagements for this client (present on list responses).",
+    ),
 });
 
 /**
@@ -379,6 +411,22 @@ export const UpdateClientResponse = zod.object({
     .describe("Required to submit eSales Report (monthly)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
+  workflowCounts: zod
+    .object({
+      inProgress: zod
+        .number()
+        .describe("Number of engagements currently in progress"),
+      forReview: zod
+        .number()
+        .describe("Number of engagements awaiting manager review"),
+      overdue: zod
+        .number()
+        .describe("Number of overdue deadline entries not yet filed"),
+    })
+    .optional()
+    .describe(
+      "Aggregate filing workflow counts across all engagements for this client (present on list responses).",
+    ),
 });
 
 /**
@@ -578,6 +626,8 @@ export const UpdateEngagementParams = zod.object({
   id: zod.coerce.number(),
 });
 
+export const updateEngagementBodyTaxPayableMin = 0;
+
 export const UpdateEngagementBody = zod.object({
   title: zod.string().nullish(),
   taxType: zod.string().nullish(),
@@ -585,6 +635,7 @@ export const UpdateEngagementBody = zod.object({
   fiscalYear: zod.string().nullish(),
   taxPayable: zod
     .number()
+    .min(updateEngagementBodyTaxPayableMin)
     .nullish()
     .describe(
       "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",

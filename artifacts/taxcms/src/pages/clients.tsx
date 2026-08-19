@@ -15,7 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/lib/auth";
-import { Plus, Search, Building2, Phone, Mail, Trash2, ExternalLink, FileCheck, AlertCircle } from "lucide-react";
+import { Plus, Search, Building2, Phone, Mail, Trash2, ExternalLink, Clock, Eye, AlertTriangle } from "lucide-react";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -30,6 +30,34 @@ const initialForm = {
   withholdsCompensation: false, withholdsEwt: false, subjectToDst: false,
   withholdsFinal: false, hasInventory: false, isLessor: false, isEsalesRequired: false,
 };
+
+function WorkflowStatusBadges({ client }: { client: any }) {
+  const counts: { inProgress: number; forReview: number; overdue: number } | undefined = client.workflowCounts;
+  if (!counts) return null;
+  const badges = [
+    { key: "in_progress",  count: counts.inProgress, label: "in progress", icon: Clock,         cls: "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100" },
+    { key: "for_review",   count: counts.forReview,  label: "for review",  icon: Eye,            cls: "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100" },
+    { key: "overdue",      count: counts.overdue,    label: "overdue",     icon: AlertTriangle,  cls: "bg-red-50 text-red-700 border-red-200 hover:bg-red-100" },
+  ].filter(b => b.count > 0);
+
+  if (badges.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1.5 pt-1.5">
+      {badges.map(({ key, count, label, icon: Icon, cls }) => (
+        <a
+          key={key}
+          href={`/clients/${client.id}?wf=${key}`}
+          onClick={e => e.stopPropagation()}
+          className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border font-medium transition-colors ${cls}`}
+        >
+          <Icon className="h-3 w-3 shrink-0" />
+          {count} {label}
+        </a>
+      ))}
+    </div>
+  );
+}
 
 function TaxTypeBadges({ client }: { client: any }) {
   const badges: { label: string; color: string }[] = [];
@@ -417,6 +445,7 @@ export default function Clients() {
                   </div>
                 )}
                 <TaxTypeBadges client={client} />
+                <WorkflowStatusBadges client={client} />
                 <div className="flex items-center justify-between pt-2 border-t">
                   <Link href={`/clients/${client.id}`}>
                     <Button variant="outline" size="sm" className="gap-1.5 text-xs">

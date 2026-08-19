@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ClientStatus } from "./clientStatus";
+import type { ClientWorkflowCounts } from "./clientWorkflowCounts";
 
 export interface Client {
   id: number;
@@ -56,4 +57,6 @@ export interface Client {
   isEsalesRequired?: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Aggregate filing workflow counts across all engagements for this client (present on list responses). */
+  workflowCounts?: ClientWorkflowCounts;
 }

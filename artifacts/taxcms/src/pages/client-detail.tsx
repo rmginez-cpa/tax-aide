@@ -1,5 +1,5 @@
-import { useState, useCallback } from "react";
-import { useParams, Link } from "wouter";
+import { useState, useCallback, useEffect } from "react";
+import { useParams, Link, useSearch } from "wouter";
 import {
   useGetClient, useUpdateClient, useListEngagements, useListDocuments,
   useGetClientCompliance, useGenerateClientDeadlines,
@@ -104,11 +104,15 @@ export default function ClientDetail() {
   const { data: engagements } = useListEngagements({ clientId: id }, { query: { enabled: !!id, queryKey: getListEngagementsQueryKey({ clientId: id }) } });
   const { data: documents } = useListDocuments({ clientId: id }, { query: { enabled: !!id, queryKey: getListDocumentsQueryKey({ clientId: id }) } });
 
+  const search = useSearch();
+  const initialWf = new URLSearchParams(search).get("wf") ?? "";
+
   const [complianceYear, setComplianceYear] = useState(new Date().getFullYear());
   const [complianceFilter, setComplianceFilter] = useState<"all" | "monthly" | "quarterly" | "annual">("all");
   const [complianceSearch, setComplianceSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [wfFilter, setWfFilter] = useState<string>(initialWf);
   const { data: compliance, isLoading: loadingCompliance } = useGetClientCompliance(id, { year: complianceYear }, {
     query: { enabled: !!id, queryKey: getGetClientComplianceQueryKey(id, { year: complianceYear }) }
   });
@@ -244,6 +248,9 @@ export default function ClientDetail() {
     }
     if (dateFrom && item.dueDate < dateFrom) return false;
     if (dateTo && item.dueDate > dateTo) return false;
+    if (wfFilter === "overdue" && item.status !== "overdue") return false;
+    if (wfFilter === "in_progress" && (item as any).workflowStatus !== "in_progress") return false;
+    if (wfFilter === "for_review" && (item as any).workflowStatus !== "for_review") return false;
     return true;
   }) ?? [];
 
@@ -437,12 +444,24 @@ export default function ClientDetail() {
 
         <CardContent>
           {/* Filter tabs */}
-          <div className="flex gap-1 mb-3">
+          <div className="flex flex-wrap items-center gap-1 mb-3">
             {(["all", "monthly", "quarterly", "annual"] as const).map(f => (
               <button key={f} onClick={() => setComplianceFilter(f)} className={`text-xs px-3 py-1 rounded-full font-medium transition-colors ${complianceFilter === f ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>
                 {f.charAt(0).toUpperCase() + f.slice(1)}
               </button>
             ))}
+            {wfFilter && (
+              <span className={`ml-1 inline-flex items-center gap-1 text-xs px-2.5 py-0.5 rounded-full border font-medium ${
+                wfFilter === "overdue" ? "bg-red-50 text-red-700 border-red-200" :
+                wfFilter === "for_review" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                "bg-blue-50 text-blue-700 border-blue-200"
+              }`}>
+                {wfFilter === "in_progress" ? "In progress" : wfFilter === "for_review" ? "For review" : "Overdue"}
+                <button onClick={() => setWfFilter("")} className="ml-0.5 opacity-60 hover:opacity-100" title="Clear filter">
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
           </div>
 
           {/* Search + date-range filters */}

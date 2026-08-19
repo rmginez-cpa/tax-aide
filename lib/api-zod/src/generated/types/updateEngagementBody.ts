@@ -18,6 +18,7 @@ export interface UpdateEngagementBody {
   fiscalYear?: string | null;
   /**
    * Tax payable amount (null = not entered; 0 = none; >0 = payment required)
+   * @minimum 0
    * @nullable
    */
   taxPayable?: number | null;

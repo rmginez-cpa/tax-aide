@@ -644,7 +644,53 @@ async function buildComplianceItems(
 
 router.get("/clients", requireAuth, async (req, res): Promise<void> => {
   const clients = await db.select().from(clientsTable).orderBy(clientsTable.name);
-  res.json(clients.map(serializeClient));
+
+  // Count workflow statuses using the same scope as the default compliance view:
+  // - Only deadline records in the current calendar year
+  // - In-progress / for-review derived from the engagement linked to each deadline
+  //   (matches how workflowStatus is computed in buildComplianceItems)
+  // - Overdue: dueDate < today AND deadline.status !== "completed"
+  const currentYear = new Date().getFullYear();
+  const yearStart = isoDate(currentYear, 1, 1);
+  const yearEnd = isoDate(currentYear + 1, 1, 1);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const deadlineRows = await db
+    .select({
+      clientId: deadlinesTable.clientId,
+      deadlineStatus: deadlinesTable.status,
+      dueDate: deadlinesTable.dueDate,
+      engagementStatus: engagementsTable.status,
+    })
+    .from(deadlinesTable)
+    .leftJoin(engagementsTable, eq(deadlinesTable.engagementId, engagementsTable.id))
+    .where(and(gte(deadlinesTable.dueDate, yearStart), lt(deadlinesTable.dueDate, yearEnd)));
+
+  const inProgressMap = new Map<number, number>();
+  const forReviewMap = new Map<number, number>();
+  const overdueMap = new Map<number, number>();
+
+  for (const row of deadlineRows) {
+    if (row.clientId == null) continue;
+    if (row.engagementStatus === "in_progress") {
+      inProgressMap.set(row.clientId, (inProgressMap.get(row.clientId) ?? 0) + 1);
+    }
+    if (row.engagementStatus === "for_review") {
+      forReviewMap.set(row.clientId, (forReviewMap.get(row.clientId) ?? 0) + 1);
+    }
+    if (row.dueDate < today && row.deadlineStatus !== "completed") {
+      overdueMap.set(row.clientId, (overdueMap.get(row.clientId) ?? 0) + 1);
+    }
+  }
+
+  res.json(clients.map(c => ({
+    ...serializeClient(c),
+    workflowCounts: {
+      inProgress: inProgressMap.get(c.id) ?? 0,
+      forReview: forReviewMap.get(c.id) ?? 0,
+      overdue: overdueMap.get(c.id) ?? 0,
+    },
+  })));
 });
 
 router.post("/clients", requireAuth, async (req, res): Promise<void> => {

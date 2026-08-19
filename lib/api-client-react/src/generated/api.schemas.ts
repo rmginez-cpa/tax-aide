@@ -90,6 +90,18 @@ export const ClientStatus = {
   inactive: "inactive",
 } as const;
 
+/**
+ * Aggregate filing workflow counts across all engagements for this client (present on list responses).
+ */
+export type ClientWorkflowCounts = {
+  /** Number of engagements currently in progress */
+  inProgress: number;
+  /** Number of engagements awaiting manager review */
+  forReview: number;
+  /** Number of overdue deadline entries not yet filed */
+  overdue: number;
+};
+
 export interface Client {
   id: number;
   name: string;
@@ -139,6 +151,8 @@ export interface Client {
   isEsalesRequired?: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Aggregate filing workflow counts across all engagements for this client (present on list responses). */
+  workflowCounts?: ClientWorkflowCounts;
 }
 
 export type CreateClientBodyStatus =
@@ -423,6 +437,7 @@ export interface UpdateEngagementBody {
   fiscalYear?: string | null;
   /**
    * Tax payable amount (null = not entered; 0 = none; >0 = payment required)
+   * @minimum 0
    * @nullable
    */
   taxPayable?: number | null;
