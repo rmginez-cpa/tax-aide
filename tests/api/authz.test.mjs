@@ -789,9 +789,10 @@ group("9 deadline tax year", async () => {
       if (it.deadlineId !== Number(itrId)) return `deadlineId=${it.deadlineId} want ${itrId}`;
       return true;
     }));
-  await check("compliance 2025: Dec 1601C (due 2026-01-10) linked", G, "GET", "/clients/1/compliance?year=2025", null,
-    pred("1601C 2026-01-10 deadlineId non-null", (j) => {
-      const it = (j?.items ?? []).find((i) => i.formNumber === "1601C" && i.dueDate === "2026-01-10");
+  // December 1601C is due January 15 (RR 11-2018); Jan 15, 2026 is a Thursday.
+  await check("compliance 2025: Dec 1601C (due 2026-01-15) linked", G, "GET", "/clients/1/compliance?year=2025", null,
+    pred("1601C 2026-01-15 deadlineId non-null", (j) => {
+      const it = (j?.items ?? []).find((i) => i.formNumber === "1601C" && i.dueDate === "2026-01-15");
       if (!it) return "no Dec 2025 1601C item";
       return it.deadlineId != null ? true : "deadlineId null";
     }));
@@ -1109,8 +1110,9 @@ group("12e fiscal-year tax year", async () => {
   assert("1702 FY 2025 (Jul 2025-Jun 2026) due 2026-10-15", () => due(1, itr) === "2026-10-15", "2026-10-15", () => due(1, itr));
   assert("AFS FY 2025 due 2026-10-15", () => due(1, "Audited Financial Statements — FY 2025") === "2026-10-15",
     "2026-10-15", () => due(1, "Audited Financial Statements — FY 2025"));
-  assert("1702Q Q1 2025 (Jul-Sep 2025) due 2025-11-29", () => due(1, "BIR Form 1702Q — Q1 2025") === "2025-11-29",
-    "2025-11-29", () => due(1, "BIR Form 1702Q — Q1 2025"));
+  // Statutory date Sat Nov 29, 2025; Nov 30 is a Sunday and Bonifacio Day, so it rolls to Mon Dec 1 (RMC 65-2016).
+  assert("1702Q Q1 2025 (Jul-Sep 2025) due 2025-12-01", () => due(1, "BIR Form 1702Q — Q1 2025") === "2025-12-01",
+    "2025-12-01", () => due(1, "BIR Form 1702Q — Q1 2025"));
   assert("1601EQ Q1 2025 follows the calendar quarter (due 2025-04-30)", () => due(1, "BIR Form 1601EQ — Q1 2025") === "2025-04-30",
     "2025-04-30", () => due(1, "BIR Form 1601EQ — Q1 2025"));
   assert("0619E January 2025 generated for tax year 2025", () => due(1, "BIR Form 0619E — January 2025") === "2025-02-10",

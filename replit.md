@@ -56,10 +56,41 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 - pdfkit externalized in esbuild (added to external[] in build.mjs) so Node.js can access font files at runtime
 
 ### BIR 2303 Features
-- Client schema has BIR 2303 fields: tradeName, rdoCode, registrationDate, lineOfBusiness, incomeTaxType (individual/corporate), vatRegistered, percentageTaxRegistered, withholdsCompensation, withholdsEwt, subjectToDst, fiscalYearStart, fiscalYearEnd, hasInventory, isLessor, isEsalesRequired
-- `POST /api/clients/:id/generate-deadlines` — auto-generates all required BIR deadlines for a tax year. Tax year Y = the client's taxable year starting in Y for income tax, VAT, percentage tax and the inventory list (annual ITR/AFS due the 15th of the 4th month after that fiscal year ends); withholding, DST, eSales and lessee forms always follow calendar year Y
+- Client schema has BIR 2303 fields: tradeName, rdoCode, registrationDate, lineOfBusiness, incomeTaxType (individual/corporate), vatRegistered, percentageTaxRegistered, withholdsCompensation, withholdsEwt, subjectToDst, withholdsFinal, fiscalYearStart, fiscalYearEnd, hasInventory, isLessor, isEsalesRequired
+- `POST /api/clients/:id/generate-deadlines` — auto-generates all required BIR deadlines for a tax year (`overwrite: true` refreshes the due date/description of existing rows, matched by title; status and engagement links are never touched). Tax year Y = the client's taxable year starting in Y for corporate income tax, VAT, percentage tax and the inventory list (annual 1702/AFS due the 15th of the 4th month after that fiscal year ends); individual income tax (1701Q/1701) is always calendar year Y (individuals cannot use a fiscal year); withholding, DST, eSales and lessee forms always follow calendar year Y with calendar quarters
 - `GET /api/clients/:id/compliance?year=YYYY` — computed compliance checklist with filed/pending/overdue status; each item includes `engagementId`, `workflowStage`, `workflowStatus` for filing workflow integration
-- BIR forms/submissions covered: 2550M, 2550Q, 2551Q, 1601C, 1601EQ, 1604CF, 1604E, 1702, 1702Q, 1701, 1701Q, 2000, AFS, Alphalist (employees), 2316 (substituted filing), Annex C, Annex F, QAP (quarterly alphalist of payees), SLS, SLP, eSales, Annual Inventory List, Lessee Information Statement
+- BIR forms/submissions covered: 1601C, 0619E, 1601EQ, 0619F, 1601FQ, QAP (EWT and final), 1604C + Alphalist of Employees, 1604E + Annual Alphalist of Payees, 1604F, 2316 (issue to employees; substituted-filing duplicates), Annex C, Annex F, 2550Q, SLS, SLP, 2551Q, 1702Q, 1702 + AFS, 1701Q, 1701, 2000, eSales, Annual Inventory List, Lessee Information Statement. 2550M is not generated (not required from 2023: TRAIN Sec. 114(A), RR 13-2018, RMC 5-2023); 0605 is voluntary and not generated.
+
+#### BIR due-date rules (generator: `generateBIRDeadlines` in `artifacts/api-server/src/routes/clients.ts`)
+Dates are the manual/eBIRForms statutory dates. Titles are stable (existing rows are matched by title); only due dates and descriptions change when rules are corrected.
+
+| Form | Due date | Issuance |
+|---|---|---|
+| 1601C | 10th of the following month; December return January 15 of Y+1. eFPS filers are staggered up to 5 days later by industry group (not modelled) | RR 2-98 Sec. 2.58(A) as amended by RR 11-2018; RR 26-2002 |
+| 0619E / 0619F | 10th of the following month, first two months of each calendar quarter only | RR 11-2018 |
+| 1601EQ / 1601FQ | Last day of the month after the calendar quarter (Apr 30, Jul 31, Oct 31, Jan 31) | RR 11-2018 |
+| QAP (EWT, and a separate QAP for final withholding) | Same as 1601EQ / 1601FQ (attachment, by eSubmission). SAWT is a payee-side attachment with no own deadline, so it is not generated | RR 11-2018 |
+| 1604C + Alphalist of Employees | January 31 of Y+1 | RR 2-98 Sec. 2.83.2 as amended by RR 11-2018; RR 1-2014 |
+| 1604E + Annual Alphalist of Payees | March 1 of Y+1 | RR 11-2018 |
+| 1604F | January 31 of Y+1 | RR 11-2018 |
+| 2316 (Issue to Employees) | January 31 of Y+1 (leavers: day of last pay) | RR 2-98 Sec. 2.83.1 as amended by RR 11-2018 |
+| 2316 (Substituted Filing) duplicates + Annex F | February 28 of Y+1, also in leap years. Annex F = certified list of employees qualified for substituted filing | RR 11-2018; RMC 29-2024 (employee signature) |
+| Annex C (payor's sworn declaration) | January 31 of Y+1 (and 15 days after the month a new payee's declaration arrives); generated for EWT withholders, only needed where payees gave Annex B sworn declarations. The historical title "Annex C (Substituted Filing Employees)" is kept for row matching | RR 11-2018 |
+| 2550Q, SLS, SLP | 25th of the month after each taxable (fiscal) quarter | NIRC Sec. 114(A) as amended by RA 10963 / RA 11976; RR 16-2005 / RR 1-2012 |
+| 2551Q | 25th of the month after each taxable (fiscal) quarter | NIRC Sec. 128(A) as amended by RA 10963 / RA 11976 |
+| 1702Q | 60 days after the close of each of the first three taxable quarters | NIRC Sec. 75, 77(B) |
+| 1702 + AFS | 15th of the 4th month after the taxable year (eAFS upload within 15 days after the deadline or e-filing date) | NIRC Sec. 77(B); RMC 14-2015, RMC 44-2022 |
+| 1701Q | May 15, August 15, November 15 of Y (calendar quarters) | NIRC Sec. 74 as amended by RA 10963; RR 8-2018; RMC 32-2018 |
+| 1701 | April 15 of Y+1 (second installment option by October 15) | NIRC Sec. 51(C)(1), 56(A)(2) |
+| 2000 (DST) | 5th of the following month | NIRC Sec. 200(B); RMC 67-2024 |
+| eSales | Last digit of the 9-digit TIN (branch code excluded): even → 8th, odd → 10th of the following month; no 9-digit TIN → 8th | RMO 12-2012; RMC 45-2014 |
+| Annual Inventory List | 30 days after the taxable year ends | RR 17-2013; RMC 57-2015 |
+| Lessee Information Statement | Semi-annual: July 31 of Y ("1st Semester") and January 31 of Y+1 | RR 12-2011 as amended by RR 15-2011 |
+
+- **Weekend / holiday roll-forward (RMC 65-2016; Sec. 31, Book I, Administrative Code of 1987)**: every generated date that falls on a Saturday, Sunday or holiday moves to the next working day (repeatedly), and the description says so ("Statutory due date Sat, Feb 28 2026 falls on a non-working day (Saturday); due the next working day, Mon, Mar 2 2026 (RMC 65-2016).").
+- Holidays come from `artifacts/api-server/src/lib/birCalendar.ts` (`isNonWorkingDay`, `nextWorkingDay`): the fixed regular holidays (Jan 1, Apr 9, May 1, Jun 12, Nov 30, Dec 25, Dec 30), Maundy Thursday and Good Friday (from Western Easter, anonymous Gregorian algorithm) and National Heroes Day (last Monday of August) — RA 9492. Eid'l Fitr / Eid'l Adha, special non-working days (e.g. Nov 1-2, Dec 8, Dec 24, Dec 31, Chinese New Year) and ad hoc suspensions are **not** computed: add them each year, once proclaimed, to `EXTRA_HOLIDAYS` in that file or the `BIR_EXTRA_HOLIDAYS` env var (comma-separated YYYY-MM-DD, read at startup), then regenerate with `overwrite: true`. Until then the generator shows the earlier date (safe side).
+- One-off BIR extensions (e.g. RMC 17-2021 for 1604C/F, RMC 29-2024 for 2316) are not modelled; edit the deadline's due date by hand.
+- Tests: `tests/api/deadline-rules.test.mjs` asserts these dates for tax years 2025-2027 (same env and guard as `authz.test.mjs`).
 - File uploads: PDF, Excel, Word, images, CSV, DAT (SLS/SLP data files)
 
 ### 4-Stage Filing Workflow (Parallel / Independent)

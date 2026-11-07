@@ -15,6 +15,7 @@ import {
 import { requireAuth, requireStaff, requireManager, clientScope, canAccessClient } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
 import { manilaToday, manilaYear, addDays } from "../lib/dates";
+import { adjustDueDate } from "../lib/birCalendar";
 import { openDeadlines } from "../lib/openDeadlines";
 
 const router = Router();
@@ -62,6 +63,16 @@ function isoDate(year: number, month: number, day: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * A day of the month after (year, month): `day` or "last" for its last day.
+ * month is 1-based; month 0 means December of the previous year.
+ */
+function monthAfter(year: number, month: number, day: number | "last"): string {
+  const y = month >= 12 ? year + 1 : year;
+  const m = month >= 12 ? 1 : month + 1;
+  return day === "last" ? isoDate(y, m + 1, 0) : isoDate(y, m, day);
+}
+
 function monthIndex(name: string): number {
   const idx = MONTHS.findIndex(m => m.toLowerCase() === name.toLowerCase());
   return idx >= 0 ? idx + 1 : 1;
@@ -105,15 +116,22 @@ function fiscalYearMonths(client: typeof clientsTable.$inferSelect): { fyStart: 
  * The BIR filings of tax year `year`.
  *
  * Tax year Y means:
- * - income tax (1702Q/1701Q, annual 1702/1701 + AFS), VAT (2550Q, SLS/SLP),
+ * - corporate income tax (1702Q, annual 1702 + AFS), VAT (2550Q, SLS/SLP),
  *   percentage tax (2551Q) and the inventory list: the client's taxable year
  *   that STARTS in Y (the calendar year Y for calendar-year clients). Its
  *   quarters are the fiscal quarters, and the annual return of that same
  *   fiscal year is due the 15th of the 4th month after it ends.
+ * - individual income tax (1701Q, 1701): always the calendar year Y.
+ *   Individuals cannot use a fiscal year (NIRC Sec. 43/74), so a fiscal-year
+ *   setting on an individual client is ignored for these two forms.
  * - withholding taxes (1601C, 0619E/1601EQ, 0619F/1601FQ, QAP, 1604C/E/F,
  *   2316, Annex C/F), DST (2000), eSales and the lessee statement: always the
  *   calendar year Y with calendar quarters, whatever the client's fiscal year.
  * Every title therefore carries Y in its period label.
+ *
+ * Every statutory date is then moved to the next working day when it falls on
+ * a Saturday, Sunday or holiday (RMC 65-2016; see lib/birCalendar.ts), and the
+ * description says so. The rules and their issuances are listed in replit.md.
  */
 export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: number): GeneratedDeadline[] {
   const deadlines: GeneratedDeadline[] = [];
@@ -132,32 +150,36 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
 
   // ── MONTHLY FORMS ──────────────────────────────────────────────────────
 
-  // 1601C: Monthly Withholding on Compensation — due 10th of following month
+  // 1601C: Monthly Withholding on Compensation (RR 2-98 Sec. 2.58(A) as amended
+  // by RR 11-2018) — 10th of the following month; the December return is due
+  // January 15 of the following year.
   if (client.withholdsCompensation) {
     for (let m = 1; m <= 12; m++) {
-      const dueMonth = m === 12 ? 1 : m + 1;
-      const dueYear = m === 12 ? year + 1 : year;
       const period = `${MONTHS[m - 1]} ${year}`;
+      const december = m === 12;
       deadlines.push({
         title: `BIR Form 1601C — ${period}`,
-        description: `Monthly Remittance Return of Income Taxes Withheld on Compensation for ${period}.`,
-        dueDate: isoDate(dueYear, dueMonth, 10),
+        description:
+          `Monthly Remittance Return of Income Taxes Withheld on Compensation for ${period}. ` +
+          (december
+            ? "The December return is due January 15 of the following year (RR 2-98 Sec. 2.58(A) as amended by RR 11-2018)."
+            : "Due the 10th of the following month (RR 2-98 Sec. 2.58(A) as amended by RR 11-2018).") +
+          " Manual/eBIRForms date; eFPS filers are staggered by industry group up to 5 days later (RR 26-2002).",
+        dueDate: december ? isoDate(year + 1, 1, 15) : isoDate(year, m + 1, 10),
         priority: "high",
         category: "Withholding Tax",
       });
     }
   }
 
-  // 2000: Documentary Stamp Tax — due 5th of following month
+  // 2000: Documentary Stamp Tax — within 5 days after the close of the month (NIRC Sec. 200(B))
   if (client.subjectToDst) {
     for (let m = 1; m <= 12; m++) {
-      const dueMonth = m === 12 ? 1 : m + 1;
-      const dueYear = m === 12 ? year + 1 : year;
       const period = `${MONTHS[m - 1]} ${year}`;
       deadlines.push({
         title: `BIR Form 2000 — ${period}`,
-        description: `Documentary Stamp Tax Declaration/Return for ${period}.`,
-        dueDate: isoDate(dueYear, dueMonth, 5),
+        description: `Documentary Stamp Tax Declaration/Return for ${period}. Due within 5 days after the close of the month (NIRC Sec. 200(B); RMC 67-2024).`,
+        dueDate: monthAfter(year, m, 5),
         priority: "medium",
         category: "DST",
       });
@@ -173,57 +195,51 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
   calendarQuarters.forEach(([endMonth, yOff], qIdx) => {
     const qYear = year + yOff;
     const qLabel = `Q${qIdx + 1} ${year}`;
+    // Last day of the month after the quarter (RR 11-2018): Apr 30, Jul 31, Oct 31, Jan 31.
+    const quarterlyWhtDue = monthAfter(qYear, endMonth, "last");
 
-    // 0619E: Monthly EWT for non-quarter-end months — due 10th of following month
+    // 0619E: Monthly EWT for the first two months of the quarter — 10th of the following month (RR 11-2018)
     if (client.withholdsEwt) {
-      const mqMonths = nonQuarterMonths(endMonth, qYear);
-      for (const { month, year: mYear, dueMonth: dueM, dueYear: dueY } of mqMonths) {
+      for (const { month, year: mYear } of nonQuarterMonths(endMonth, qYear)) {
         const period = `${MONTHS[month - 1]} ${mYear}`;
         deadlines.push({
           title: `BIR Form 0619E — ${period}`,
-          description: `Monthly Remittance Return of Creditable Income Taxes Withheld (Expanded) for ${period}. Due 10th of the following month. (Non-quarter month; quarter-end is covered by 1601EQ.)`,
-          dueDate: isoDate(dueY, dueM, 10),
+          description: `Monthly Remittance Form of Creditable Income Taxes Withheld (Expanded) for ${period}. Due the 10th of the following month (RR 11-2018). (Non-quarter month; quarter-end is covered by 1601EQ.) eFPS filers may be staggered up to the 15th.`,
+          dueDate: monthAfter(mYear, month, 10),
           priority: "high",
           category: "Withholding Tax",
         });
       }
     }
 
-    // 1601EQ: Quarterly EWT — due last day of month following quarter end
+    // 1601EQ: Quarterly EWT — last day of the month following quarter end (RR 11-2018)
     if (client.withholdsEwt) {
-      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
-      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
-      const lastDay = new Date(Date.UTC(dueYear, dueMonth, 0)).getUTCDate();
       deadlines.push({
         title: `BIR Form 1601EQ — ${qLabel}`,
-        description: `Quarterly Remittance Return of Creditable Income Taxes Withheld (EWT) for ${qLabel}. Covers the quarter-end month; prior months covered by 0619E.`,
-        dueDate: isoDate(dueYear, dueMonth, lastDay),
+        description: `Quarterly Remittance Return of Creditable Income Taxes Withheld (EWT) for ${qLabel}. Due the last day of the month after the quarter (RR 11-2018). Covers the quarter-end month; prior months covered by 0619E. Attach the QAP.`,
+        dueDate: quarterlyWhtDue,
         priority: "high",
         category: "Withholding Tax",
       });
     }
 
-    // 0619F: Monthly Final WT for non-quarter-end months — due 10th of following month
-    // 1601FQ: Quarterly Final WT — due last day of month following quarter end
+    // 0619F: Monthly Final WT for the first two months of the quarter — 10th of the following month
+    // 1601FQ: Quarterly Final WT — last day of month following quarter end (RR 11-2018)
     if (client.withholdsFinal) {
-      const mqMonths = nonQuarterMonths(endMonth, qYear);
-      for (const { month, year: mYear, dueMonth: dueM, dueYear: dueY } of mqMonths) {
+      for (const { month, year: mYear } of nonQuarterMonths(endMonth, qYear)) {
         const period = `${MONTHS[month - 1]} ${mYear}`;
         deadlines.push({
           title: `BIR Form 0619F — ${period}`,
-          description: `Monthly Remittance Return of Final Income Taxes Withheld for ${period}. Due 10th of the following month. (Non-quarter month; quarter-end is covered by 1601FQ.)`,
-          dueDate: isoDate(dueY, dueM, 10),
+          description: `Monthly Remittance Form of Final Income Taxes Withheld for ${period}. Due the 10th of the following month (RR 11-2018). (Non-quarter month; quarter-end is covered by 1601FQ.) eFPS filers may be staggered up to the 15th.`,
+          dueDate: monthAfter(mYear, month, 10),
           priority: "high",
           category: "Withholding Tax",
         });
       }
-      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
-      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
-      const lastDay = new Date(Date.UTC(dueYear, dueMonth, 0)).getUTCDate();
       deadlines.push({
         title: `BIR Form 1601FQ — ${qLabel}`,
-        description: `Quarterly Remittance Return of Final Income Taxes Withheld for ${qLabel}. Covers the quarter-end month; prior months covered by 0619F.`,
-        dueDate: isoDate(dueYear, dueMonth, lastDay),
+        description: `Quarterly Remittance Return of Final Income Taxes Withheld for ${qLabel}. Due the last day of the month after the quarter (RR 11-2018). Covers the quarter-end month; prior months covered by 0619F. Attach the QAP of final-withholding payees.`,
+        dueDate: quarterlyWhtDue,
         priority: "high",
         category: "Withholding Tax",
       });
@@ -234,78 +250,71 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     const qYear = year + yOff;
     const qLabel = `Q${qIdx + 1} ${year}`;
 
-    // 2550Q: Quarterly VAT — due 25th of following month after quarter end
+    // 2550Q: Quarterly VAT — within 25 days after the quarter (NIRC Sec. 114(A) as amended by TRAIN / RA 11976)
     if (client.vatRegistered) {
-      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
-      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
       deadlines.push({
         title: `BIR Form 2550Q — ${qLabel}`,
-        description: `Quarterly VAT Return for ${qLabel}. Due 25th of the month following quarter end.`,
-        dueDate: isoDate(dueYear, dueMonth, 25),
+        description: `Quarterly VAT Return for ${qLabel}. Due the 25th of the month following quarter end (NIRC Sec. 114(A) as amended by RA 10963 and RA 11976). Monthly 2550M is no longer required from 2023 (RR 13-2018; RMC 5-2023).`,
+        dueDate: monthAfter(qYear, endMonth, 25),
         priority: "high",
         category: "VAT",
       });
     }
 
-    // 2551Q: Quarterly Percentage Tax — due 25th of following month after quarter
+    // 2551Q: Quarterly Percentage Tax — within 25 days after the quarter (NIRC Sec. 128(A))
     if (client.percentageTaxRegistered) {
-      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
-      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
       deadlines.push({
         title: `BIR Form 2551Q — ${qLabel}`,
-        description: `Quarterly Percentage Tax Return for ${qLabel}.`,
-        dueDate: isoDate(dueYear, dueMonth, 25),
+        description: `Quarterly Percentage Tax Return for ${qLabel}. Due the 25th of the month following quarter end (NIRC Sec. 128(A) as amended by RA 10963 and RA 11976).`,
+        dueDate: monthAfter(qYear, endMonth, 25),
         priority: "medium",
         category: "Percentage Tax",
       });
     }
 
-    // 1702Q: Quarterly Corporate ITR — 60 days after quarter end
-    if (client.incomeTaxType === "corporate") {
-      const quarterEndDate = new Date(Date.UTC(qYear, endMonth - 1, 1));
-      quarterEndDate.setUTCMonth(quarterEndDate.getUTCMonth() + 1);
-      quarterEndDate.setUTCDate(0); // last day of quarter end month
-      const dueDate = new Date(quarterEndDate);
-      dueDate.setUTCDate(dueDate.getUTCDate() + 60);
-      // Skip Q4 as it's covered by the annual ITR
-      if (qIdx < 3) {
-        deadlines.push({
-          title: `BIR Form 1702Q — ${qLabel}`,
-          description: `Quarterly Income Tax Return for Corporations (${qLabel}).`,
-          dueDate: dueDate.toISOString().slice(0, 10),
-          priority: "high",
-          category: "Income Tax",
-        });
-      }
-    }
-
-    // 1701Q: Quarterly Individual ITR — 60 days after quarter end
-    if (client.incomeTaxType === "individual") {
-      const quarterEndDate = new Date(Date.UTC(qYear, endMonth - 1, 1));
-      quarterEndDate.setUTCMonth(quarterEndDate.getUTCMonth() + 1);
-      quarterEndDate.setUTCDate(0);
-      const dueDate = new Date(quarterEndDate);
-      dueDate.setUTCDate(dueDate.getUTCDate() + 60);
-      if (qIdx < 3) {
-        deadlines.push({
-          title: `BIR Form 1701Q — ${qLabel}`,
-          description: `Quarterly Income Tax Return for Individuals (${qLabel}).`,
-          dueDate: dueDate.toISOString().slice(0, 10),
-          priority: "high",
-          category: "Income Tax",
-        });
-      }
+    // 1702Q: Quarterly Corporate ITR — 60 days after the close of each of the
+    // first three quarters (NIRC Sec. 75 and 77(B)). Q4 is covered by the annual ITR.
+    if (client.incomeTaxType === "corporate" && qIdx < 3) {
+      deadlines.push({
+        title: `BIR Form 1702Q — ${qLabel}`,
+        description: `Quarterly Income Tax Return for Corporations (${qLabel}). Due within 60 days after the close of the quarter (NIRC Sec. 75 and 77(B)).`,
+        dueDate: addDays(monthAfter(qYear, endMonth - 1, "last"), 60),
+        priority: "high",
+        category: "Income Tax",
+      });
     }
   });
+
+  // 1701Q: Quarterly Individual ITR — fixed dates since TRAIN: May 15, August 15,
+  // November 15 (NIRC Sec. 74 as amended by RA 10963; RR 8-2018; RMC 32-2018).
+  // Individuals are on the calendar year, so calendar quarters apply.
+  if (client.incomeTaxType === "individual") {
+    const QUARTER_MONTHS = ["January–March", "April–June", "July–September"];
+    const DUE = [[5, "May 15"], [8, "August 15"], [11, "November 15"]] as const;
+    for (let qIdx = 0; qIdx < 3; qIdx++) {
+      const qLabel = `Q${qIdx + 1} ${year}`;
+      const [dueMonth, dueLabel] = DUE[qIdx];
+      deadlines.push({
+        title: `BIR Form 1701Q — ${qLabel}`,
+        description:
+          `Quarterly Income Tax Return for Individuals (${qLabel}, ${QUARTER_MONTHS[qIdx]} ${year}). ` +
+          `Due ${dueLabel} (NIRC Sec. 74 as amended by RA 10963; RR 8-2018).` +
+          (fyStartMonth !== 1 ? " Individuals use the calendar year, so the client's fiscal year setting does not apply." : ""),
+        dueDate: isoDate(year, dueMonth, 15),
+        priority: "high",
+        category: "Income Tax",
+      });
+    }
+  }
 
   // ── ANNUAL FORMS ───────────────────────────────────────────────────────
 
   // 1702: Annual Corporate ITR — 15th of 4th month after the end of the fiscal
-  // year that starts in `year` (April 15 of year + 1 for calendar-year clients).
+  // year that starts in `year` (April 15 of year + 1 for calendar-year clients). NIRC Sec. 77(B).
   if (client.incomeTaxType === "corporate") {
     deadlines.push({
       title: `BIR Form 1702 (Annual Corporate ITR) — FY ${year}`,
-      description: `Annual Income Tax Return for Corporations for ${fyLabel}. Due 15th of the 4th month after the fiscal year ends.`,
+      description: `Annual Income Tax Return for Corporations for ${fyLabel}. Due the 15th of the 4th month after the fiscal year ends (NIRC Sec. 77(B)).`,
       dueDate: isoDate(annualDueYear, annualDueMonth, 15),
       priority: "high",
       category: "Income Tax",
@@ -314,115 +323,132 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     // 1702RT/EX/MX attachment
     deadlines.push({
       title: `Audited Financial Statements — FY ${year}`,
-      description: `AFS for ${fyLabel}, submitted with the Annual ITR. Ensure statements are audited and signed by a CPA.`,
+      description: `AFS for ${fyLabel}, submitted with the Annual ITR (audited by a CPA if quarterly gross sales exceed P3M). Manual filers attach it at filing; eFPS/eBIRForms filers upload it through eAFS within 15 days from the ITR deadline or e-filing date, whichever is later (RMC 14-2015, RMC 44-2022).`,
       dueDate: isoDate(annualDueYear, annualDueMonth, 15),
       priority: "high",
       category: "Income Tax",
     });
   }
 
-  // 1701: Annual Individual ITR — April 15 of year + 1 for calendar-year
-  // taxpayers, otherwise 15th of the 4th month after the fiscal year ends.
+  // 1701: Annual Individual ITR — April 15 of year + 1 (NIRC Sec. 51(C)(1)).
+  // Individuals are on the calendar year whatever the client's fiscal-year setting.
   if (client.incomeTaxType === "individual") {
     deadlines.push({
       title: `BIR Form 1701 (Annual Individual ITR) — FY ${year}`,
-      description: `Annual Income Tax Return for Individuals for ${fyLabel}. Due 15th of the 4th month after the year ends (April 15 for calendar-year taxpayers).`,
-      dueDate: isoDate(annualDueYear, annualDueMonth, 15),
+      description:
+        `Annual Income Tax Return for Individuals for calendar year ${year}. Due April 15 of the following year (NIRC Sec. 51(C)(1)). ` +
+        `Tax due over P2,000 may be paid in two installments: with the return, and by October 15 (NIRC Sec. 56(A)(2)).` +
+        (fyStartMonth !== 1 ? " Individuals use the calendar year, so the client's fiscal year setting does not apply." : ""),
+      dueDate: isoDate(year + 1, 4, 15),
       priority: "high",
       category: "Income Tax",
     });
   }
 
-  // 1604C: Annual Information Return on Compensation — due March 1
+  // 1604C + Alphalist of Employees: January 31 (RR 2-98 Sec. 2.83.2 as amended by RR 11-2018)
   if (client.withholdsCompensation) {
     deadlines.push({
       title: `BIR Form 1604C — Annual ${year}`,
-      description: `Annual Information Return of Income Taxes Withheld on Compensation for ${year}. Due March 1 of the following year.`,
-      dueDate: isoDate(year + 1, 3, 1),
+      description: `Annual Information Return of Income Taxes Withheld on Compensation for ${year}. Due January 31 of the following year, with the Alphalist of Employees (RR 2-98 Sec. 2.83.2 as amended by RR 11-2018). BIR has extended this in some years (e.g. RMC 17-2021).`,
+      dueDate: isoDate(year + 1, 1, 31),
       priority: "medium",
       category: "Withholding Tax",
     });
-    // Alphalist of Employees
     deadlines.push({
       title: `Alphalist of Employees (1604C Attachment) — ${year}`,
-      description: `Alphabetical List of Employees from whom income taxes have been withheld. Due with Form 1604C by March 1.`,
-      dueDate: isoDate(year + 1, 3, 1),
+      description: `Alphabetical List of Employees from whom income taxes have been withheld. Submitted with Form 1604C by January 31 of the following year (RR 11-2018; RR 1-2014).`,
+      dueDate: isoDate(year + 1, 1, 31),
       priority: "medium",
       category: "Withholding Tax",
     });
   }
 
-  // 1604E: Annual Information Return on EWT — due March 1
+  // 1604E + Annual Alphalist of Payees: March 1 (RR 11-2018)
   if (client.withholdsEwt) {
     deadlines.push({
       title: `BIR Form 1604E — Annual ${year}`,
-      description: `Annual Information Return of Creditable Income Taxes Withheld (Expanded) for ${year}. Due March 1 of the following year.`,
+      description: `Annual Information Return of Creditable Income Taxes Withheld (Expanded) for ${year}. Due March 1 of the following year (RR 11-2018).`,
       dueDate: isoDate(year + 1, 3, 1),
       priority: "medium",
       category: "Withholding Tax",
     });
-    // Annual Alphalist of Payees (1604E attachment)
     deadlines.push({
       title: `Annual Alphalist of Payees (1604E Attachment) — ${year}`,
-      description: `Alphabetical list of payees from whom expanded withholding taxes have been withheld. Filed with Form 1604E by March 1 of the following year.`,
+      description: `Alphabetical list of payees from whom expanded withholding taxes have been withheld. Filed with Form 1604E by March 1 of the following year (RR 11-2018).`,
       dueDate: isoDate(year + 1, 3, 1),
       priority: "medium",
       category: "Withholding Tax",
     });
   }
 
-  // 1604F: Annual Information Return on Final Withholding Tax — due March 1
+  // 1604F: January 31 (RR 11-2018)
   if (client.withholdsFinal) {
     deadlines.push({
       title: `BIR Form 1604F — Annual ${year}`,
-      description: `Annual Information Return of Income Tax Withheld (Final) for ${year}. Due March 1 of the following year. Covers all final withholding taxes remitted during the year.`,
-      dueDate: isoDate(year + 1, 3, 1),
+      description: `Annual Information Return of Income Payments Subjected to Final Withholding Taxes for ${year}, with the alphalist of payees subject to final tax. Due January 31 of the following year (RR 11-2018). BIR has extended this in some years (e.g. RMC 17-2021).`,
+      dueDate: isoDate(year + 1, 1, 31),
       priority: "medium",
       category: "Withholding Tax",
     });
   }
 
-  // ── 2316 / Annex C / Annex F — Substituted Filing (Compensation) ─────────
+  // ── 2316 / Annex F — Substituted Filing (Compensation) ───────────────────
+  // RR 2-98 Sec. 2.83.1 as amended by RR 11-2018: furnish 2316 to employees by
+  // January 31; submit the duplicates of qualified employees with the Annex F
+  // certified list by February 28 (February 28 even in leap years).
   if (client.withholdsCompensation) {
-    // BIR Form 2316: Certificate of Compensation Payment/Tax Withheld
-    // Must be issued to each employee and submitted to BIR by February 28
+    deadlines.push({
+      title: `BIR Form 2316 (Issue to Employees) — ${year}`,
+      description: `Furnish each employee the Certificate of Compensation Payment/Tax Withheld for ${year} on or before January 31 of the following year (RR 2-98 Sec. 2.83.1 as amended by RR 11-2018). An employee who left during the year gets it on the day of the last payment of compensation.`,
+      dueDate: isoDate(year + 1, 1, 31),
+      priority: "medium",
+      category: "Withholding Tax",
+    });
     deadlines.push({
       title: `BIR Form 2316 (Substituted Filing) — ${year}`,
-      description: `Certificate of Compensation Payment/Tax Withheld. Must be issued to all employees and, for those qualifying for substituted filing, submitted to the BIR. Due February 28 of the following year.`,
+      description: `Submit to the BIR the duplicate copies of BIR Form 2316 of employees qualified for substituted filing, signed by both employer and employee, together with the Annex F certified list. Due not later than February 28 of the following year (RR 2-98 Sec. 2.83.1 as amended by RR 11-2018; RMC 29-2024). BIR has extended this in some years (e.g. to March 31, 2024).`,
       dueDate: isoDate(year + 1, 2, 28),
       priority: "medium",
       category: "Withholding Tax",
     });
-    // Annex C: List of employees qualified for substituted filing
-    deadlines.push({
-      title: `Annex C (Substituted Filing Employees) — ${year}`,
-      description: `List of employees who qualify for substituted filing under RR 2-98, attached to Form 1604C. Due March 1 of the following year.`,
-      dueDate: isoDate(year + 1, 3, 1),
-      priority: "low",
-      category: "Withholding Tax",
-    });
-    // Annex F: Alphabetical list of employees/payees (1604C attachment)
     deadlines.push({
       title: `Annex F (Annual Alphalist of Employees) — ${year}`,
-      description: `Alphabetical list of employees from whom compensation was paid and taxes withheld, attached to Form 1604C. Due March 1 of the following year.`,
-      dueDate: isoDate(year + 1, 3, 1),
+      description: `Annex F (RR 11-2018): Certified List of Employees Qualified for Substituted Filing of ITR, submitted to the RDO with the duplicate 2316 copies not later than February 28 of the following year. The BIR-stamped list is the substituted filing of those employees' ITRs. (Not the alphalist of employees, which goes with 1604C by January 31.)`,
+      dueDate: isoDate(year + 1, 2, 28),
       priority: "low",
       category: "Withholding Tax",
     });
   }
 
-  // ── Quarterly Alphalist of Payees (QAP) — for EWT filers (calendar quarters) ─
+  // ── Annex C — Income payor's sworn declaration (RR 11-2018) ──────────────
+  // Filed by income payors whose payees submitted sworn declarations of gross
+  // receipts (Annex B-1/B-2/B-3, an EWT matter): January 31, or within 15 days
+  // after the month a new payee's declaration is received. The title is kept
+  // as generated historically (existing rows are matched by title).
   if (client.withholdsEwt) {
+    deadlines.push({
+      title: `Annex C (Substituted Filing Employees) — ${year}`,
+      description: `Annex C (RR 11-2018): Income Payor/Withholding Agent's Sworn Declaration, with the list of payees who gave sworn declarations of gross receipts (Annex B-1/B-2/B-3), filed in two copies at the RDO/LTS on or before January 31 of the following year, and within 15 days after the month a new payee's declaration is received. Only required where payees submitted sworn declarations. (Not a substituted-filing list; that is Annex F.)`,
+      dueDate: isoDate(year + 1, 1, 31),
+      priority: "low",
+      category: "Withholding Tax",
+    });
+  }
+
+  // ── Quarterly Alphalist of Payees (QAP) — attachment to 1601EQ / 1601FQ ──
+  // Last day of the month after the calendar quarter (RR 11-2018), by eSubmission.
+  const qapKinds: Array<{ suffix: string; form: string; wht: string }> = [];
+  if (client.withholdsEwt) qapKinds.push({ suffix: "", form: "1601EQ", wht: "expanded withholding tax" });
+  if (client.withholdsFinal) qapKinds.push({ suffix: "Final Withholding", form: "1601FQ", wht: "final withholding tax" });
+  for (const { suffix, form, wht } of qapKinds) {
     calendarQuarters.forEach(([endMonth, yOff], qIdx) => {
-      const qYear = year + yOff;
       const qLabel = `Q${qIdx + 1} ${year}`;
-      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
-      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
-      const lastDay = new Date(Date.UTC(dueYear, dueMonth, 0)).getUTCDate();
       deadlines.push({
-        title: `Quarterly Alphalist of Payees (QAP) — ${qLabel}`,
-        description: `Alphabetical list of payees subjected to expanded withholding tax for ${qLabel}. Attached to Form 1601EQ. Due last day of month following quarter end.`,
-        dueDate: isoDate(dueYear, dueMonth, lastDay),
+        title: suffix
+          ? `Quarterly Alphalist of Payees (QAP, ${suffix}) — ${qLabel}`
+          : `Quarterly Alphalist of Payees (QAP) — ${qLabel}`,
+        description: `Alphabetical list of payees subjected to ${wht} for ${qLabel}. Attached to Form ${form} and submitted by eSubmission. Due the last day of the month following quarter end (RR 11-2018).`,
+        dueDate: monthAfter(year + yOff, endMonth, "last"),
         priority: "medium",
         category: "Withholding Tax",
       });
@@ -434,66 +460,77 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     quarters.forEach(([endMonth, yOff], qIdx) => {
       const qYear = year + yOff;
       const qLabel = `Q${qIdx + 1} ${year}`;
-      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
-      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
       deadlines.push({
         title: `Summary List of Sales (SLS) — ${qLabel}`,
-        description: `Quarterly Summary List of Sales for VAT-registered taxpayers for ${qLabel}. Due 25th of the month following quarter end (filed with 2550Q).`,
-        dueDate: isoDate(dueYear, dueMonth, 25),
+        description: `Quarterly Summary List of Sales for VAT-registered taxpayers for ${qLabel}. Due the 25th of the month following quarter end, with 2550Q (RR 16-2005 / RR 1-2012 as amended).`,
+        dueDate: monthAfter(qYear, endMonth, 25),
         priority: "medium",
         category: "VAT",
       });
       deadlines.push({
         title: `Summary List of Purchases (SLP) — ${qLabel}`,
-        description: `Quarterly Summary List of Purchases for VAT-registered taxpayers for ${qLabel}. Due 25th of the month following quarter end (filed with 2550Q).`,
-        dueDate: isoDate(dueYear, dueMonth, 25),
+        description: `Quarterly Summary List of Purchases for VAT-registered taxpayers for ${qLabel}. Due the 25th of the month following quarter end, with 2550Q (RR 16-2005 / RR 1-2012 as amended).`,
+        dueDate: monthAfter(qYear, endMonth, 25),
         priority: "medium",
         category: "VAT",
       });
     });
   }
 
-  // ── eSales Report — Monthly (if required) ────────────────────────────────
+  // ── eSales Report — Monthly (RMO 12-2012; RMC 45-2014) ───────────────────
   if (client.isEsalesRequired) {
-    const eDay = esalesDay(client.tin);
+    const { day: eDay, basis } = esalesDay(client.tin);
     const eDayLabel = eDay === 8 ? "8th" : "10th";
     for (let m = 1; m <= 12; m++) {
-      const dueMonth = m === 12 ? 1 : m + 1;
-      const dueYear = m === 12 ? year + 1 : year;
       const period = `${MONTHS[m - 1]} ${year}`;
       deadlines.push({
         title: `eSales Report — ${period}`,
-        description: `Monthly electronic sales report for ${period}. Due ${eDayLabel} of the following month (based on last digit of TIN: 1–4 → 8th; 5–0 → 10th).`,
-        dueDate: isoDate(dueYear, dueMonth, eDay),
+        description: `Monthly electronic sales report for ${period}. Due the ${eDayLabel} of the following month: ${basis} (RMO 12-2012; RMC 45-2014: even last digit of the 9-digit TIN → 8th, odd → 10th).`,
+        dueDate: monthAfter(year, m, eDay),
         priority: "medium",
         category: "eSales",
       });
     }
   }
 
-  // ── Annual Inventory List ─────────────────────────────────────────────────
+  // ── Annual Inventory List — 30 days after the taxable year (RR 17-2013; RMC 57-2015) ─
   if (client.hasInventory) {
     deadlines.push({
       title: `Annual Inventory List — FY ${year}`,
-      description: `Annual list of inventory at the end of ${fyLabel}, submitted to the RDO within 30 days after the year ends (January 30 for calendar-year clients).`,
+      description: `Annual list of inventory at the end of ${fyLabel}, submitted to the RDO within 30 days after the year ends (January 30 for calendar-year clients; RR 17-2013, RMC 57-2015).`,
       dueDate: addDays(isoDate(fyEndYear, fyEndMonth + 1, 0), 30),
       priority: "medium",
       category: "Other",
     });
   }
 
-  // ── Lessee Information Statement ──────────────────────────────────────────
+  // ── Lessee Information Statement — semi-annual (RR 12-2011 as amended by RR 15-2011) ─
+  // Due the 31st day after the close of each semester: July 31 (tenants as of
+  // June 30) and January 31 (tenants as of December 31). The second-semester
+  // item keeps its historical title.
   if (client.isLessor) {
+    const contents = "the lessee information statement (hard and soft copy), certified true copies of new or renewed lease contracts and the building/space layout, filed with the RDO where the property is";
+    deadlines.push({
+      title: `Lessee Information Statement — 1st Semester ${year}`,
+      description: `Semi-annual submission by lessors of commercial establishments, buildings or spaces for January–June ${year} (tenants as of June 30): ${contents}. Due July 31 (RR 12-2011 as amended by RR 15-2011).`,
+      dueDate: isoDate(year, 7, 31),
+      priority: "medium",
+      category: "Other",
+    });
     deadlines.push({
       title: `Lessee Information Statement — ${year}`,
-      description: `Annual statement of lessee information submitted by lessors of commercial properties to the RDO. Due January 31 of the following year.`,
+      description: `Semi-annual submission by lessors of commercial establishments, buildings or spaces for July–December ${year} (tenants as of December 31): ${contents}. Due January 31 of the following year (RR 12-2011 as amended by RR 15-2011).`,
       dueDate: isoDate(year + 1, 1, 31),
       priority: "medium",
       category: "Other",
     });
   }
 
-  return deadlines;
+  // ── Weekend / holiday roll-forward (RMC 65-2016) ─────────────────────────
+  return deadlines.map((d) => {
+    const { dueDate, note } = adjustDueDate(d.dueDate);
+    return note ? { ...d, dueDate, description: `${d.description} ${note}` } : d;
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -566,26 +603,34 @@ function extractFormNumber(title: string): string {
   return "OTHER";
 }
 
-// Helper: get the two non-quarter-end months within each fiscal quarter
-function nonQuarterMonths(endMonth: number, qYear: number): Array<{ month: number; year: number; dueMonth: number; dueYear: number }> {
+// Helper: the first two months of the calendar quarter ending in `endMonth`
+// (the 0619E/0619F months; the quarter-end month is covered by 1601EQ/1601FQ).
+function nonQuarterMonths(endMonth: number, qYear: number): Array<{ month: number; year: number }> {
   const result = [];
   for (const offset of [2, 1]) {
     let m = endMonth - offset;
     let mYear = qYear;
     if (m <= 0) { m += 12; mYear -= 1; }
-    const dueM = m === 12 ? 1 : m + 1;
-    const dueY = m === 12 ? mYear + 1 : mYear;
-    result.push({ month: m, year: mYear, dueMonth: dueM, dueYear: dueY });
+    result.push({ month: m, year: mYear });
   }
   return result;
 }
 
-// eSales deadline: 8th if last TIN digit is 1-4, 10th if 5-9 or 0
-function esalesDay(tin: string | null | undefined): number {
-  if (!tin) return 10;
-  const digits = tin.replace(/\D/g, "");
-  const last = parseInt(digits[digits.length - 1] ?? "0", 10);
-  return last >= 1 && last <= 4 ? 8 : 10;
+/**
+ * eSales due day (RMO 12-2012 implementing RR 5-2005; RMC 92-2010; RMC 45-2014):
+ * the last digit of the 9-digit TIN, branch code excluded. Even (0, 2, 4, 6, 8) →
+ * 8th of the following month; odd (1, 3, 5, 7, 9) → 10th. Without a usable TIN
+ * the earlier (8th) date is used.
+ */
+function esalesDay(tin: string | null | undefined): { day: 8 | 10; basis: string } {
+  const digits = (tin ?? "").replace(/\D/g, "");
+  if (digits.length < 9) {
+    return { day: 8, basis: "no 9-digit TIN on file, so the earlier (8th) deadline is used" };
+  }
+  const ninth = Number(digits[8]);
+  return ninth % 2 === 0
+    ? { day: 8, basis: `9th TIN digit ${ninth} is even` }
+    : { day: 10, basis: `9th TIN digit ${ninth} is odd` };
 }
 
 function extractPeriod(title: string): string {
