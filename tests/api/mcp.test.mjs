@@ -207,6 +207,19 @@ group("3 dynamic client registration", async () => {
   }
   const grant = await register({ grant_types: ["client_credentials"] });
   expect("client_credentials refused", grant, grant.status === 400, "400");
+  // Claude's published client metadata lists jwt-bearer too; the extra grant is dropped, not refused.
+  const jwt = await register({ grant_types: ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"], response_types: ["code", "token"] });
+  expect("unsupported extra grant / response types are dropped", jwt, jwt.status === 201 &&
+    jwt.json.grant_types?.join() === "authorization_code,refresh_token" && jwt.json.response_types?.join() === "code", "201 with the supported types");
+  const noCode = await register({ response_types: ["token"] });
+  expect("response_types without code refused", noCode, noCode.status === 400 && noCode.json?.error === "invalid_client_metadata", "400");
+  const huge = await register({ redirect_uris: [`http://localhost/${"a".repeat(72000)}`] });
+  expect("over-long redirect_uri refused", huge, huge.status === 400 && huge.json?.error === "invalid_client_metadata" && huge.text.length < 500, "400, short error");
+  const longest = await register({ redirect_uris: [`http://localhost/${"b".repeat(512 - 17)}`] });
+  expect("512-character loopback redirect_uri accepted", longest, longest.status === 201, "201");
+  const many = await register({ redirect_uris: Array.from({ length: 10 }, (_, i) => `http://localhost:${4000 + i}/${"c".repeat(480)}`) });
+  const bytes = many.status === 201 ? sqlNum(`select pg_column_size(redirect_uris) + pg_column_size(metadata) from oauth_clients where client_id = ${q(many.json.client_id)}`) : -1;
+  assert("largest registration stays small (redirect URIs stored once)", many.status === 201 && bytes > 0 && bytes < 8000, "< 8000 bytes", `${many.status} ${bytes}`);
   const conf = await register({ token_endpoint_auth_method: "client_secret_basic" });
   expect("confidential client gets client_secret_post + a non-expiring secret", conf, conf.status === 201 &&
     conf.json.token_endpoint_auth_method === "client_secret_post" && typeof conf.json.client_secret === "string" && conf.json.client_secret_expires_at === 0, "201 secret");
@@ -420,6 +433,31 @@ group("7 refresh rotation, reuse detection, revocation", async () => {
   const reason = sql("select revoked_reason from oauth_grants where revoked_at is not null limit 1");
   assert("grant revoked for reuse", reason === "refresh_token_reuse", "refresh_token_reuse", reason);
 
+  // A retry (lost response) or two refreshes at once must not end the connection.
+  const p = await connect("maker");
+  const [pa, pb] = await Promise.all([refresh(p.client, p.tokens.refresh_token), refresh(p.client, p.tokens.refresh_token)]);
+  expect("two parallel refreshes both succeed", pb, pa.status === 200 && pb.status === 200 && pa.json.refresh_token !== pb.json.refresh_token, "200 + 200");
+  assert("... and both new access tokens work", (await tools(pa.json.access_token)).length === 11 && (await tools(pb.json.access_token)).length === 11, "11 tools each", "dead");
+  const pGrant = sqlNum(`select grant_id from oauth_tokens where token_hash = ${q(crypto.createHash("sha256").update(pa.json.access_token).digest("hex"))}`);
+  assert("the grant is not revoked", sql(`select coalesce(revoked_reason, 'live') from oauth_grants where id = ${pGrant}`) === "live", "live", sql(`select revoked_reason from oauth_grants where id = ${pGrant}`));
+  const pa2 = await refresh(p.client, pa.json.refresh_token);
+  expect("one sibling refreshes on", pa2, pa2.status === 200, "200");
+  const pb2 = await refresh(p.client, pb.json.refresh_token);
+  expect("... which drops the other sibling (invalid_grant, no revocation)", pb2, pb2.status === 400 && pb2.json?.error === "invalid_grant" &&
+    (await tools(pa2.json.access_token)).length === 11, "invalid_grant, survivor still works");
+  const late = await refresh(p.client, p.tokens.refresh_token);
+  expect("the original token after its successor was used -> reuse, grant revoked", late, late.status === 400 &&
+    (await rpc(pa2.json.access_token, "tools/list")).status === 401, "revoked");
+  const lost = await connect("maker");
+  const first = await refresh(lost.client, lost.tokens.refresh_token);
+  const retry = await refresh(lost.client, lost.tokens.refresh_token);
+  expect("a retry right after a lost response gets a new pair", retry, first.status === 200 && retry.status === 200 && (await tools(retry.json.access_token)).length === 11, "200");
+  const old = await connect("maker");
+  const once = await refresh(old.client, old.tokens.refresh_token);
+  sql(`update oauth_tokens set used_at = now() - interval '2 minutes' where used_at is not null and token_hash = ${q(crypto.createHash("sha256").update(old.tokens.refresh_token).digest("hex"))}`);
+  const stale = await refresh(old.client, old.tokens.refresh_token);
+  expect("reuse after the grace window still revokes the grant", stale, once.status === 200 && stale.status === 400 && (await rpc(once.json.access_token, "tools/list")).status === 401, "revoked");
+
   // RFC 7009 revocation.
   const a = await connect("maker");
   const revA = await http("POST", "/api/oauth/revoke", { form: { client_id: a.client.client_id, token: a.tokens.access_token } });
@@ -488,6 +526,10 @@ group("8 grants API", async () => {
   const cinfo = await call("client", "GET", "/oauth/connector");
   assert("connector info: client role cannot use write", cinfo.json?.scopes?.find((s) => s.name === WRITE)?.available === false, "write unavailable", cinfo.text.slice(0, 200));
   assert("connector info needs a session", (await call(null, "GET", "/oauth/connector")).status === 401, 401, "status");
+  const plain = await http("GET", `${BASE}/oauth/connector`, { headers: { cookie: cookies.maker, "x-forwarded-host": "taxaide.lan.example", "x-forwarded-proto": "http" } });
+  expect("connector page never shows a non-loopback http:// URL", plain, plain.status === 200 && plain.json?.mcpUrl === null && /https/i.test(plain.json?.problem ?? ""), "mcpUrl null + problem");
+  const tls = await http("GET", `${BASE}/oauth/connector`, { headers: { cookie: cookies.maker, "x-forwarded-host": "taxaide.example.com", "x-forwarded-proto": "https" } });
+  expect("... and an https one behind a trusted proxy", tls, tls.status === 200 && tls.json?.mcpUrl === "https://taxaide.example.com/api/mcp" && tls.json.problem === null, "https URL");
 });
 
 group("9 account changes revoke grants", async () => {
@@ -533,6 +575,38 @@ group("9 account changes revoke grants", async () => {
   assert("deleted user's grants are gone", sqlNum("select count(*) from oauth_grants where user_id=6") === 0, 0, "rows");
   const rr = await refresh(del.client, del.tokens.refresh_token);
   expect("deleted user's refresh token -> invalid_grant", rr, rr.status === 400 && rr.json?.error === "invalid_grant", "invalid_grant");
+
+  // A code approved before the change but not yet exchanged must not mint a new grant afterwards.
+  const pending = async (role) => {
+    const client = await newClient();
+    const { verifier, challenge } = pkce();
+    return { client, verifier, code: await approvedCode(role, client, { challenge }) };
+  };
+  const reset1 = await pending("maker");
+  await call("admin", "PATCH", "/users/3", { password: "Another12345!" });
+  const late1 = await exchange(reset1.client, reset1.code, reset1.verifier);
+  expect("code approved before a password reset -> invalid_grant", late1, late1.status === 400 && late1.json?.error === "invalid_grant", "invalid_grant");
+  assert("... and no grant was created", sqlNum("select count(*) from oauth_grants where user_id=3 and revoked_at is null") === 0, 0, sqlNum("select count(*) from oauth_grants where user_id=3 and revoked_at is null"));
+  await call("admin", "PATCH", "/users/3", { password: "accountant123" });
+  await login("maker");
+  const role1 = await pending("maker");
+  await call("admin", "PATCH", "/users/3", { role: "manager" });
+  const late2 = await exchange(role1.client, role1.code, role1.verifier);
+  expect("code approved before a role change -> invalid_grant", late2, late2.status === 400 && late2.json?.error === "invalid_grant", "invalid_grant");
+  await call("admin", "PATCH", "/users/3", { role: "maker" });
+  const conn = await connect("maker");
+  const { verifier: v3, challenge: c3 } = pkce();
+  const code3 = await approvedCode("maker", conn.client, { challenge: c3 });
+  const gid = sqlNum(`select grant_id from oauth_tokens where token_hash = ${q(crypto.createHash("sha256").update(conn.tokens.access_token).digest("hex"))}`);
+  const disc = await http("DELETE", `${BASE}/oauth/grants/${gid}`, { headers: { cookie: cookies.maker, origin: ORIGIN } });
+  const late3 = await exchange(conn.client, code3, v3);
+  expect("disconnecting ends codes of the same app not yet exchanged", late3, disc.status === 204 && late3.status === 400 && late3.json?.error === "invalid_grant", "204 then invalid_grant");
+  const other = await pending("maker");
+  const otherGrant = (await connect("maker")).tokens.access_token;
+  const og = sqlNum(`select grant_id from oauth_tokens where token_hash = ${q(crypto.createHash("sha256").update(otherGrant).digest("hex"))}`);
+  await http("DELETE", `${BASE}/oauth/grants/${og}`, { headers: { cookie: cookies.maker, origin: ORIGIN } });
+  const otherEx = await exchange(other.client, other.code, other.verifier);
+  expect("... but not another app's pending code", otherEx, otherEx.status === 200, "200");
 
   const keep = await connect("manager");
   await call("admin", "PATCH", "/users/3", { role: "manager" });
@@ -607,6 +681,13 @@ group("10 MCP protocol + tools per role", async () => {
   assert("clientb list_filings: Bravo only", !fl.isError && fl.data.filings.length === 1 && fl.data.filings[0].client.id === 2, "1 filing", fl.text.slice(0, 200));
   const staffFiling = await callTool(tok.manager, "get_filing", { engagement_id: 2 });
   assert("staff get_filing", !staffFiling.isError && staffFiling.data.id === 2 && staffFiling.structured?.id === 2, "filing 2", staffFiling.text.slice(0, 120));
+  assert("get_filing checklist items carry their ids", staffFiling.data.checklist?.length === 1 && staffFiling.data.checklist[0].id === 2 &&
+    staffFiling.data.checklist[0].label === "Bravo sales book", "[{id:2,…}]", JSON.stringify(staffFiling.data.checklist));
+  sql("update deadlines set description = 'Client promised docs by Friday' where id = 3");
+  const dl = await callTool(tok.manager, "list_deadlines");
+  assert("list_deadlines returns each deadline's notes", dl.data?.deadlines?.find((x) => x.id === 3)?.notes === "Client promised docs by Friday" &&
+    dl.data.deadlines.every((x) => "notes" in x), "notes", JSON.stringify(dl.data?.deadlines?.find((x) => x.id === 3)));
+  sql("update deadlines set description = null where id = 3");
   const secrets = JSON.stringify(staffFiling.raw.json) + (await callTool(tok.admin, "list_documents")).text + (await callTool(tok.admin, "get_client", { client_id: 1 })).text;
   assert("no hashes / storage paths / tokens in results", !/password|hash|filename|file_url|fileUrl|storage|taxaide_(at|rt)_/i.test(secrets), "clean", secrets.match(/password|hash|filename|file_url|fileUrl|storage|taxaide_(at|rt)_/i)?.[0]);
   const wl = await callTool(tok.viewer, "workload_overview");
@@ -641,8 +722,9 @@ group("11 write tools", async () => {
   const missing = await callTool(maker, "add_filing_comment", { engagement_id: 99, content: "x" });
   assert("missing filing -> Engagement not found", missing.isError && missing.text === "Engagement not found", "Engagement not found", missing.text);
 
+  sql("update deadlines set description = 'Old staff note' where id = 3");
   const n = await callTool(maker, "set_deadline_notes", { deadline_id: 3, notes: "BIR extension requested" });
-  assert("set_deadline_notes", !n.isError && n.data.deadline?.notes === "BIR extension requested", "notes", n.text.slice(0, 200));
+  assert("set_deadline_notes", !n.isError && n.data.deadline?.notes === "BIR extension requested" && n.data.previousNotes === "Old staff note", "notes + previousNotes", n.text.slice(0, 200));
   assert("deadline description updated", sql("select description from deadlines where id=3") === "BIR extension requested", "updated", sql("select description from deadlines where id=3"));
   assert("deadline audit via connector", sql("select description from audit_logs where entity_type='deadline' order by id desc limit 1") === 'Updated deadline "Bravo manual deadline" (via Claude connector)', "audit", sql("select description from audit_logs where entity_type='deadline' order by id desc limit 1"));
   const cleared = await callTool(manager, "set_deadline_notes", { deadline_id: 3, notes: null });
@@ -650,12 +732,23 @@ group("11 write tools", async () => {
   const nd = await callTool(maker, "set_deadline_notes", { deadline_id: 99, notes: "x" });
   assert("missing deadline -> not found", nd.isError && nd.text === "Deadline not found", "Deadline not found", nd.text);
 
-  const i = await callTool(maker, "update_checklist_item", { item_id: 2, status: "received", notes: "Got it" });
-  assert("update_checklist_item", !i.isError && i.data.checklistItem?.status === "received" && i.data.checklistItem.notes === "Got it", "received", i.text.slice(0, 200));
+  // The model takes the ids from get_filing, as the tool description says.
+  const filing2 = await callTool(maker, "get_filing", { engagement_id: 2 });
+  const itemId = filing2.data?.checklist?.[0]?.id;
+  const i = await callTool(maker, "update_checklist_item", { engagement_id: 2, item_id: itemId, status: "received", notes: "Got it" });
+  assert("update_checklist_item with the ids from get_filing", !i.isError && i.data.checklistItem?.id === itemId && i.data.checklistItem.status === "received" &&
+    i.data.checklistItem.notes === "Got it", "received", i.text.slice(0, 200));
   assert("checklist completed_by = maker", sql("select status||'|'||completed_by from checklist_items where id=2") === "received|3", "received|3", sql("select status||'|'||completed_by from checklist_items where id=2"));
-  const noop = await callTool(maker, "update_checklist_item", { item_id: 2 });
+  const wrongFiling = await callTool(maker, "update_checklist_item", { engagement_id: 2, item_id: 1, status: "received" });
+  assert("an item of another filing is refused", wrongFiling.isError && /not found on this filing/i.test(wrongFiling.text) &&
+    sql("select status||'|'||coalesce(completed_by::text,'') from checklist_items where id=1") === "pending|", "refused, Alpha's item unchanged", wrongFiling.text);
+  const noFiling = await callTool(maker, "update_checklist_item", { item_id: 2, status: "filed" });
+  assert("update_checklist_item requires engagement_id", noFiling.isError && sql("select status from checklist_items where id=2") === "received", "validation error", noFiling.text);
+  const missingItem = await callTool(maker, "update_checklist_item", { engagement_id: 2, item_id: 999, status: "filed" });
+  assert("missing item -> not found on this filing", missingItem.isError && /not found on this filing/i.test(missingItem.text), "not found", missingItem.text);
+  const noop = await callTool(maker, "update_checklist_item", { engagement_id: 2, item_id: 2 });
   assert("update_checklist_item needs status or notes", noop.isError, "error", noop.text);
-  const badStatus = await callTool(maker, "update_checklist_item", { item_id: 2, status: "approved" });
+  const badStatus = await callTool(maker, "update_checklist_item", { engagement_id: 2, item_id: 2, status: "approved" });
   assert("invalid checklist status rejected", badStatus.isError, "error", badStatus.text);
 
   const stepUp = await rpc(makerRead, "tools/call", { name: "add_filing_comment", arguments: { engagement_id: 2, content: "x" } });

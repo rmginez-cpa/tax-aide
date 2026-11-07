@@ -54,6 +54,13 @@ export const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 export const CODE_TTL_MS = 5 * 60_000;
 export const ACCESS_TOKEN_TTL_S = 60 * 60;
 export const REFRESH_TOKEN_TTL_S = 30 * 24 * 60 * 60;
+/**
+ * A rotated refresh token presented again this soon, before its successor has been used, is
+ * taken as a retry (lost response, two refreshes at once) rather than as theft.
+ */
+export const REFRESH_REUSE_GRACE_MS = 60_000;
+/** Longest redirect URI a client may register (claude.ai's callback is 40 characters). */
+export const MAX_REDIRECT_URI_LENGTH = 512;
 
 /** The SPA page that shows the consent screen (built by the frontend). */
 export const CONSENT_PAGE_PATH = "/connect/authorize";
@@ -107,6 +114,25 @@ export function publicOrigin(req: Request): string {
     );
   }
   return origin;
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return LOOPBACK.has(hostname) || /^127\.\d+\.\d+\.\d+$/.test(hostname);
+}
+
+/**
+ * Why `origin` (from publicOrigin) cannot be given to claude.ai, or null. Production refuses
+ * plain http in publicOrigin already; elsewhere http is fine for local testing on loopback,
+ * but any other http:// URL would not work as a connector, so the settings page says so
+ * instead of showing it.
+ */
+export function connectorOriginProblem(req: Request, origin: string): string | null {
+  const url = new URL(origin);
+  if (url.protocol === "https:" || insecureHttpAllowed() || isLoopbackHost(url.hostname)) return null;
+  const forwardedHttps = /^\s*https\b/i.test(req.get("x-forwarded-proto") ?? "");
+  return forwardedHttps
+    ? "TaxAide is behind an HTTPS proxy but does not trust it, so it sees plain http. Set TRUST_PROXY=1 (or PUBLIC_BASE_URL) on the API server."
+    : "The connector needs HTTPS. Serve TaxAide over https (with TRUST_PROXY behind a TLS proxy) or set PUBLIC_BASE_URL.";
 }
 
 /**

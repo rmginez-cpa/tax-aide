@@ -272,6 +272,8 @@ const TOOLS = [
           status: d.status !== "completed" && d.dueDate < today ? "overdue" : d.status,
           priority: d.priority,
           engagementId: d.engagementId,
+          // set_deadline_notes replaces this text, so the model must be able to read it first.
+          notes: d.description ?? null,
         })),
         truncated: rows.length > max,
       };
@@ -382,7 +384,7 @@ const TOOLS = [
               .map((d) => ({ id: d.id, name: d.originalName, type: d.mimeType, uploadedBy: users.get(d.uploadedBy) ?? null, uploadedAt: d.createdAt.toISOString() })),
           ]),
         ),
-        checklist: checklist.map((i) => ({ label: i.label, status: i.status, notes: i.notes })),
+        checklist: checklist.map((i) => ({ id: i.id, label: i.label, status: i.status, notes: i.notes })),
         latestComments: comments.map((c) => ({
           author: users.get(c.authorId) ?? null,
           isApproval: c.isApproval,
@@ -508,15 +510,21 @@ const TOOLS = [
     idempotent: true,
     label: "Updating deadline notes",
     description:
-      "Replace the notes (description) of one saved deadline. The previous notes are overwritten, so read them first with list_deadlines " +
-      "or include them if the user wants to add to them. Pass null to clear the notes. Does not change the due date or status.",
+      "Replace the notes (description) of one saved deadline. The previous notes are overwritten: read them first (the notes field of " +
+      "list_deadlines) and include them if the user wants to add to them. Pass null to clear the notes. Does not change the due date or status. " +
+      "The result also returns previousNotes.",
     input: z.object({
       deadline_id: id(),
       notes: z.string().max(5000).nullable().describe("New notes (up to 5000 characters), or null to clear them."),
     }),
     run: async ({ deadline_id, notes }, user, via) => {
+      const [before] = await db.select({ description: deadlinesTable.description }).from(deadlinesTable).where(eq(deadlinesTable.id, deadline_id));
       const d = await updateDeadline(user, deadline_id, { description: notes }, via);
-      return { deadline: { id: d.id, title: d.title, dueDate: d.dueDate, status: d.status, notes: d.description ?? null } };
+      return {
+        deadline: { id: d.id, title: d.title, dueDate: d.dueDate, status: d.status, notes: d.description ?? null },
+        // What was replaced, so an unwanted overwrite can be put back.
+        previousNotes: before?.description ?? null,
+      };
     },
   }),
 
@@ -528,17 +536,24 @@ const TOOLS = [
     idempotent: true,
     label: "Updating the checklist",
     description:
-      "Set the status and/or the notes of one item on a filing's checklist (the ids come from get_filing's checklist). " +
+      "Set the status and/or the notes of one item on a filing's checklist. Take engagement_id and item_id from get_filing " +
+      "(its id and the id of the checklist entry); an item that is not on that filing is refused. " +
       "status: pending | received | filed | paid | not_applicable; any status other than pending records the connected user as completing it. " +
       "notes replaces the previous notes (null clears them).",
     input: z
       .object({
+        engagement_id: id(),
         item_id: id(),
         status: z.enum(["pending", "received", "filed", "paid", "not_applicable"]).optional(),
         notes: z.string().max(5000).nullable().optional(),
       })
       .refine((v) => v.status !== undefined || v.notes !== undefined, { message: "Give a status, notes, or both." }),
-    run: async ({ item_id, status, notes }, user, via) => {
+    run: async ({ engagement_id, item_id, status, notes }, user, via) => {
+      // A mistyped or guessed id must not quietly edit another filing's (or client's) checklist.
+      const [item] = await db.select({ engagementId: checklistItemsTable.engagementId }).from(checklistItemsTable).where(eq(checklistItemsTable.id, item_id));
+      if (!item || item.engagementId !== engagement_id) {
+        throw new ToolError("Checklist item not found on this filing. Use the ids from get_filing's checklist.");
+      }
       const patch: { status?: typeof status; notes?: string | null } = {};
       if (status !== undefined) patch.status = status;
       if (notes !== undefined) patch.notes = notes;

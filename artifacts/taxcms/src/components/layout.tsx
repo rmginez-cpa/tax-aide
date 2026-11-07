@@ -30,7 +30,7 @@ function UnreadBadge({ count, className = "" }: { count: number; className?: str
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout: clearAuth } = useAuth();
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const onPaletteOpenChange = useCallback((open: boolean) => setPaletteOpen(open), []);
@@ -43,6 +43,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
     logoutMutation.mutate(undefined, {
       onSuccess: () => {
         clearAuth();
+        // Plain /login: the protected-route redirect would add ?next=<this page>, and whoever
+        // signs in next on this browser would land on the previous user's page.
+        navigate("/login", { replace: true });
         toast({ title: "Logged out successfully" });
       }
     });

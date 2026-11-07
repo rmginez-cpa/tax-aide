@@ -76,17 +76,23 @@ export function cookieSecure(): boolean {
   return envBool("COOKIE_SECURE") ?? isProduction();
 }
 
+/** Set by Replit in the workspace (REPLIT_DEV_DOMAIN) and in deployments (REPLIT_DOMAINS). */
+export function onReplit(): boolean {
+  return !!(process.env.REPLIT_DEV_DOMAIN?.trim() || process.env.REPLIT_DOMAINS?.trim());
+}
+
 /**
- * Value for app.set("trust proxy"): 1 hop in production (Replit terminates TLS at
- * a proxy) or when TRUST_PROXY is set. TRUST_PROXY=false disables it; a number
- * sets the hop count.
+ * Value for app.set("trust proxy"): 1 hop in production and on Replit, whose workspace
+ * preview also terminates TLS at a proxy (without it the connector would advertise http://
+ * URLs there and refuse the consent page's https Origin), or when TRUST_PROXY is set.
+ * TRUST_PROXY=false disables it; a number sets the hop count.
  */
 export function trustProxySetting(): number | false {
   const raw = process.env.TRUST_PROXY?.trim().toLowerCase();
   if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
   if (raw && /^\d+$/.test(raw)) return Number(raw);
   if (raw) return 1;
-  return isProduction() ? 1 : false;
+  return isProduction() || onReplit() ? 1 : false;
 }
 
 /**

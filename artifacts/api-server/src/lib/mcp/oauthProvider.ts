@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, eq, gt, isNull, lt, or, sql, inArray, type SQL } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, ne, or, sql, inArray, type SQL } from "drizzle-orm";
 import {
   db,
   usersTable,
@@ -29,6 +29,8 @@ import {
   AUTH_REQUEST_TTL_MS,
   CODE_TTL_MS,
   CONSENT_PAGE_PATH,
+  MAX_REDIRECT_URI_LENGTH,
+  REFRESH_REUSE_GRACE_MS,
   REFRESH_TOKEN_TTL_S,
   SCOPE_READ,
   SUPPORTED_SCOPES,
@@ -104,23 +106,30 @@ export const clientsStore: OAuthRegisteredClientsStore = {
     if (redirectUris.length === 0 || redirectUris.length > 10) {
       throw new InvalidClientMetadataError("Register between 1 and 10 redirect_uris");
     }
+    // Registration is anonymous and kept for days, so nothing in it may be large.
+    if (redirectUris.some((u) => u.length > MAX_REDIRECT_URI_LENGTH)) {
+      throw new InvalidClientMetadataError(`Each redirect_uri must be at most ${MAX_REDIRECT_URI_LENGTH} characters`);
+    }
     const refused = redirectUris.filter((u) => !redirectUriAllowed(u));
     if (refused.length) {
       throw new InvalidClientMetadataError(
         `redirect_uri not allowed by this server: ${refused.join(", ")} (ask the TaxAide administrator to add it to MCP_ALLOWED_REDIRECT_URIS)`,
       );
     }
-    for (const g of full.grant_types ?? []) {
-      if (g !== "authorization_code" && g !== "refresh_token") throw new InvalidClientMetadataError(`Unsupported grant_type "${g}"`);
+    // RFC 7591 §3.2.1 lets the server replace requested values, so extra grant or response
+    // types (Claude's own client metadata lists jwt-bearer) are dropped, not refused. Only a
+    // client that cannot do the authorization-code flow at all is turned away.
+    if (full.grant_types?.length && !full.grant_types.includes("authorization_code")) {
+      throw new InvalidClientMetadataError("This server only supports the authorization_code grant (with refresh_token)");
     }
-    for (const r of full.response_types ?? []) {
-      if (r !== "code") throw new InvalidClientMetadataError(`Unsupported response_type "${r}"`);
+    if (full.response_types?.length && !full.response_types.includes("code")) {
+      throw new InvalidClientMetadataError('This server only supports response_type "code"');
     }
-    // RFC 7591 lets the server replace requested values: anything but a public client
-    // authenticates with client_secret_post, the one secret method this server supports.
+    // Anything but a public client authenticates with client_secret_post, the one secret
+    // method this server supports.
     const authMethod = full.token_endpoint_auth_method === "none" ? "none" : "client_secret_post";
+    // redirect_uris live in their own column (toClientInfo puts them back), not twice.
     const metadata: Record<string, unknown> = {
-      redirect_uris: redirectUris,
       token_endpoint_auth_method: authMethod,
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
@@ -181,9 +190,14 @@ async function issueTokens(tx: Executor, grantId: number, scopes: string[]): Pro
 
 /**
  * Revokes the grants matching `where` (only those not yet revoked) and deletes their tokens.
+ * `codes` selects the unredeemed authorization codes to delete with them: a code approved
+ * before the revocation must not be exchangeable for a fresh grant afterwards.
  * Returns the revoked grants.
  */
-async function revokeGrantsWhere(ex: Executor, where: SQL, reason: string) {
+async function revokeGrantsWhere(ex: Executor, where: SQL, codes: SQL, reason: string) {
+  // Codes first: this waits for a code exchange that holds the code's row lock, so a grant it
+  // creates is committed before the UPDATE below runs and is revoked with the others.
+  await ex.delete(oauthCodesTable).where(and(codes, isNull(oauthCodesTable.usedAt)));
   const revoked = await ex
     .update(oauthGrantsTable)
     .set({ revokedAt: new Date(), revokedReason: reason })
@@ -195,13 +209,22 @@ async function revokeGrantsWhere(ex: Executor, where: SQL, reason: string) {
   return revoked;
 }
 
+/** Ends one grant, and any code the same user approved for the same client that is not yet redeemed. */
 export function revokeGrant(ex: Executor, grantId: number, reason: string) {
-  return revokeGrantsWhere(ex, eq(oauthGrantsTable.id, grantId), reason);
+  return revokeGrantsWhere(
+    ex,
+    eq(oauthGrantsTable.id, grantId),
+    sql`(${oauthCodesTable.userId}, ${oauthCodesTable.clientId}) IN (SELECT ${oauthGrantsTable.userId}, ${oauthGrantsTable.clientId} FROM ${oauthGrantsTable} WHERE ${oauthGrantsTable.id} = ${grantId})`,
+    reason,
+  );
 }
 
-/** Ends every connector grant of a user (password, role or client change). Safe inside a transaction. */
+/**
+ * Ends every connector grant of a user (password, role or client change), including codes
+ * approved but not yet exchanged. Safe inside a transaction.
+ */
 export function revokeUserGrants(ex: Executor, userId: number, reason: string) {
-  return revokeGrantsWhere(ex, eq(oauthGrantsTable.userId, userId), reason);
+  return revokeGrantsWhere(ex, eq(oauthGrantsTable.userId, userId), eq(oauthCodesTable.userId, userId), reason);
 }
 
 async function reportReuse(kind: "authorization code" | "refresh token", grantId: number | null | undefined) {
@@ -293,14 +316,38 @@ export const oauthProvider: OAuthServerProvider = {
 
   async exchangeRefreshToken(client, refreshToken, scopes, resource) {
     const outcome = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .select({ token: oauthTokensTable, grant: oauthGrantsTable })
-        .from(oauthTokensTable)
-        .innerJoin(oauthGrantsTable, eq(oauthGrantsTable.id, oauthTokensTable.grantId))
-        .where(and(eq(oauthTokensTable.tokenHash, sha256(refreshToken)), eq(oauthTokensTable.kind, "refresh")))
-        .for("update");
-      if (!row || row.grant.clientId !== client.client_id) throw new InvalidGrantError("Invalid refresh token");
-      if (row.token.usedAt) return { reuse: row.grant.id } as const;
+      const tokenWhere = and(eq(oauthTokensTable.tokenHash, sha256(refreshToken)), eq(oauthTokensTable.kind, "refresh"));
+      const [found] = await tx.select({ grantId: oauthTokensTable.grantId }).from(oauthTokensTable).where(tokenWhere);
+      if (!found) throw new InvalidGrantError("Invalid refresh token");
+      // Every refresh of a grant takes the grant's row lock first (revocation locks it too), so
+      // concurrent refreshes of one connection run one after another and never deadlock.
+      const [grant] = await tx.select().from(oauthGrantsTable).where(eq(oauthGrantsTable.id, found.grantId)).for("update");
+      const [token] = await tx.select().from(oauthTokensTable).where(tokenWhere).for("update");
+      if (!grant || !token || grant.clientId !== client.client_id) throw new InvalidGrantError("Invalid refresh token");
+      const row = { grant, token };
+      let retry = false;
+      if (row.token.usedAt) {
+        // Rotation means a used token coming back has normally leaked. But a client that lost
+        // the response, or sent two refreshes at once, presents it again within moments while
+        // its successor is still unused: that gets a new pair instead of losing the connection.
+        const recent = Date.now() - row.token.usedAt.getTime() < REFRESH_REUSE_GRACE_MS;
+        const [rotatedSince] = recent && !row.grant.revokedAt
+          ? await tx
+              .select({ id: oauthTokensTable.id })
+              .from(oauthTokensTable)
+              .where(
+                and(
+                  eq(oauthTokensTable.grantId, row.grant.id),
+                  eq(oauthTokensTable.kind, "refresh"),
+                  ne(oauthTokensTable.id, row.token.id),
+                  gt(oauthTokensTable.usedAt, row.token.usedAt),
+                ),
+              )
+              .limit(1)
+          : [];
+        if (!recent || row.grant.revokedAt || rotatedSince) return { reuse: row.grant.id } as const;
+        retry = true;
+      }
       if (row.grant.revokedAt || row.token.expiresAt.getTime() <= Date.now()) throw new InvalidGrantError("Refresh token has expired or was revoked");
       if (resource !== undefined && !sameResource(resource, row.grant.resource)) throw new InvalidTargetError("resource does not match the grant");
       let granted = row.token.scopes;
@@ -310,7 +357,21 @@ export const oauthProvider: OAuthServerProvider = {
         if (extra.length) throw new InvalidScopeError(`Scope not granted: ${extra.join(" ")}`);
         granted = normalizeScopes(asked);
       }
-      await tx.update(oauthTokensTable).set({ usedAt: new Date() }).where(eq(oauthTokensTable.id, row.token.id));
+      if (!retry) {
+        await tx.update(oauthTokensTable).set({ usedAt: new Date() }).where(eq(oauthTokensTable.id, row.token.id));
+        // Pairs handed out for a retried refresh are siblings of the one this token came from:
+        // once one of them is used, the others are dropped, so a grant keeps a single line.
+        await tx
+          .delete(oauthTokensTable)
+          .where(
+            and(
+              eq(oauthTokensTable.grantId, row.grant.id),
+              eq(oauthTokensTable.kind, "refresh"),
+              isNull(oauthTokensTable.usedAt),
+              ne(oauthTokensTable.id, row.token.id),
+            ),
+          );
+      }
       return { tokens: await issueTokens(tx, row.grant.id, granted) } as const;
     });
     if ("reuse" in outcome) {

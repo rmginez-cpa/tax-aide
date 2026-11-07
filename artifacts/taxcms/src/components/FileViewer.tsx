@@ -35,21 +35,37 @@ const MAX_TEXT_CHARS = 1_000_000;
  */
 const MAX_SHEET_PREVIEW_BYTES = 10 * 1024 * 1024;
 
+// The stored MIME type is whatever the uploader's browser reported, and Chrome/Edge on Windows
+// with Excel installed report .csv as application/vnd.ms-excel. So the file extension decides
+// first and the MIME type only when the extension says nothing.
+const TEXT_EXTENSIONS = ["csv", "dat", "txt"];
+
 function isPdf(mime: string) { return mime === "application/pdf"; }
-function fileExt(name?: string) { return (name?.split(".").pop() || "").toLowerCase(); }
-/** Excel 97-2003 (BIFF) workbook: exceljs can't read these, so they are download-only. */
-function isLegacyExcel(mime: string, name?: string) { return mime === "application/vnd.ms-excel" || fileExt(name) === "xls"; }
-/** .xlsx workbook, previewed with exceljs (also when the browser uploaded it as octet-stream). */
-function isXlsx(mime: string, name?: string) {
-  return !isLegacyExcel(mime, name) && (mime.includes("spreadsheetml") || fileExt(name) === "xlsx");
+function fileExt(name?: string) {
+  const base = name?.split(/[\\/]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
 }
-function isExcel(mime: string, name?: string) { return isXlsx(mime, name) || isLegacyExcel(mime, name) || mime.includes("ms-excel"); }
+/** Excel 97-2003 (BIFF) workbook: exceljs can't read these, so they are download-only. */
+function isLegacyExcel(mime: string, name?: string) {
+  const ext = fileExt(name);
+  return ext === "xls" || (ext === "" && mime === "application/vnd.ms-excel");
+}
+/**
+ * .xlsx workbook, previewed with exceljs (also when the browser uploaded it as octet-stream or
+ * as ms-excel). A real BIFF file behind an .xlsx name is recognised by the worker.
+ */
+function isXlsx(mime: string, name?: string) {
+  const ext = fileExt(name);
+  if (ext === "xlsx") return true;
+  return mime.includes("spreadsheetml") && ext !== "xls" && !TEXT_EXTENSIONS.includes(ext);
+}
+function isExcel(mime: string, name?: string) { return isXlsx(mime, name) || isLegacyExcel(mime, name); }
 function isWord(mime: string) { return mime.includes("wordprocessingml") || mime === "application/msword"; }
 function isImage(mime: string) { return mime.startsWith("image/"); }
 function isText(mime: string, name?: string) {
-  if (mime.startsWith("text/")) return true;
-  const ext = fileExt(name);
-  return ext === "dat" || ext === "csv";
+  if (TEXT_EXTENSIONS.includes(fileExt(name))) return true;
+  return mime.startsWith("text/") && !isExcel(mime, name);
 }
 
 function getFileIcon(mimeType: string, name?: string): string {
@@ -169,7 +185,12 @@ export function FileViewer({ doc, onClose }: FileViewerProps) {
         if (signal.aborted) return;
 
         let next: Preview;
-        if (isXlsx(doc.mimeType, doc.originalName)) {
+        if (isText(doc.mimeType, doc.originalName)) {
+          const text = await blob.text();
+          next = text.length > MAX_TEXT_CHARS
+            ? { kind: "text", text: text.slice(0, MAX_TEXT_CHARS), truncated: true }
+            : { kind: "text", text, truncated: false };
+        } else if (isXlsx(doc.mimeType, doc.originalName)) {
           try {
             next = { kind: "sheets", sheets: await parseWorkbook(await blob.arrayBuffer(), signal) };
           } catch (e) {
@@ -178,11 +199,6 @@ export function FileViewer({ doc, onClose }: FileViewerProps) {
           }
         } else if (isWord(doc.mimeType)) {
           next = { kind: "html", html: await docxToSafeHtml(await blob.arrayBuffer()) };
-        } else if (isText(doc.mimeType, doc.originalName)) {
-          const text = await blob.text();
-          next = text.length > MAX_TEXT_CHARS
-            ? { kind: "text", text: text.slice(0, MAX_TEXT_CHARS), truncated: true }
-            : { kind: "text", text, truncated: false };
         } else if (isPdf(doc.mimeType) || isImage(doc.mimeType)) {
           objectUrl = URL.createObjectURL(blob);
           next = { kind: "blob", url: objectUrl };

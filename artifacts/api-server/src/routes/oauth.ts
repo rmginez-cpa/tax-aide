@@ -11,6 +11,7 @@ import {
   SCOPE_WRITE,
   SUPPORTED_SCOPES,
   configuredBaseUrl,
+  connectorOriginProblem,
   mcpEnabled,
   mcpUrl,
   publicOrigin,
@@ -43,7 +44,9 @@ function hostOf(uri: string): string {
 
 function originOrNull(req: Request): { origin: string | null; problem: string | null } {
   try {
-    return { origin: publicOrigin(req), problem: null };
+    const origin = publicOrigin(req);
+    const problem = connectorOriginProblem(req, origin);
+    return problem ? { origin: null, problem } : { origin, problem: null };
   } catch (err) {
     if (err instanceof BaseUrlError) return { origin: null, problem: err.message };
     throw err;
@@ -58,8 +61,13 @@ function originOrNull(req: Request): { origin: string | null; problem: string | 
  */
 function requireSameOrigin(req: Request, res: Response, next: NextFunction): void {
   const origin = req.get("origin")?.trim().replace(/\/+$/, "").toLowerCase();
-  const own = `${req.protocol}://${req.host}`.toLowerCase();
-  const allowed = new Set([own, ...allowedOrigins()]);
+  // The same origin the connector advertises, so the guard and the consent URLs never disagree.
+  const allowed = new Set([`${req.protocol}://${req.host}`.toLowerCase(), ...allowedOrigins()]);
+  try {
+    allowed.add(publicOrigin(req));
+  } catch (err) {
+    if (!(err instanceof BaseUrlError)) throw err;
+  }
   const configured = configuredBaseUrl();
   if (configured) allowed.add(configured.origin);
   if (!origin || !allowed.has(origin)) {
