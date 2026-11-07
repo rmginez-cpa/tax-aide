@@ -1,11 +1,11 @@
-// Client-side mirror of the server's authorization policy.
-// The generated User type's role union is stale (no 'client' / 'maker' /
-// 'super_admin'), so roles are compared as plain strings.
+// Client-side mirror of the server's authorization policy (api-server
+// middlewares/auth.ts). Accepts the generated User (role: UserRole) or anything
+// with a role string, so callers never need casts.
 
 type RoleHolder = { role?: string | null } | null | undefined;
 
 function roleOf(user: RoleHolder): string {
-  return String(user?.role ?? "");
+  return user?.role ?? "";
 }
 
 /** Route-level role check. super_admin always passes; maker == accountant, client == viewer. */
