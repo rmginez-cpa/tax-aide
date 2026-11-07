@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { Layout } from "@/components/layout";
+import { AssistantProvider } from "@/lib/assistant";
 
 // Pages
 import Login from "@/pages/login";
@@ -130,7 +131,9 @@ function App() {
       <TooltipProvider>
         <AuthProvider>
           <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-            <AppRoutes />
+            <AssistantProvider>
+              <AppRoutes />
+            </AssistantProvider>
           </WouterRouter>
         </AuthProvider>
         <Toaster />

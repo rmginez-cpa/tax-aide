@@ -21,6 +21,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
+import { AssistantPanel } from "@/components/assistant/AssistantPanel";
 
 const ROLE_LABELS: Record<string, string> = {
   super_admin: "Super Admin",
@@ -169,6 +170,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+
+      <AssistantPanel />
     </div>
   );
 }

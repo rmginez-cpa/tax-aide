@@ -17,7 +17,7 @@ import { logAudit } from "../lib/audit";
 
 const router = Router();
 
-function serializeClient(c: typeof clientsTable.$inferSelect) {
+export function serializeClient(c: typeof clientsTable.$inferSelect) {
   return {
     id: c.id,
     name: c.name,
@@ -85,7 +85,7 @@ interface GeneratedDeadline {
   category: string;
 }
 
-function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: number): GeneratedDeadline[] {
+export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: number): GeneratedDeadline[] {
   const deadlines: GeneratedDeadline[] = [];
   const fyStartMonth = client.fiscalYearStart ? monthIndex(client.fiscalYearStart) : 1;
   const calYear = fyStartMonth === 1; // calendar year taxpayer
@@ -554,7 +554,7 @@ function extractPeriod(title: string): string {
   return title;
 }
 
-async function buildComplianceItems(
+export async function buildComplianceItems(
   client: typeof clientsTable.$inferSelect,
   year: number
 ): Promise<ComplianceItem[]> {

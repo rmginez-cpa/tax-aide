@@ -12,6 +12,7 @@ import commentsRouter from "./comments";
 import notificationsRouter from "./notifications";
 import auditRouter from "./audit";
 import dashboardRouter from "./dashboard";
+import assistantRouter from "./assistant";
 
 const router: IRouter = Router();
 
@@ -28,5 +29,6 @@ router.use(commentsRouter);
 router.use(notificationsRouter);
 router.use(auditRouter);
 router.use(dashboardRouter);
+router.use(assistantRouter);
 
 export default router;
