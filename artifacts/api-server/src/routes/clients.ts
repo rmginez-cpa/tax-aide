@@ -557,7 +557,12 @@ interface ComplianceItem {
   taxPayable: number | null;
 }
 
-const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
+/**
+ * Frequency of every formNumber extractFormNumber() can return. The Lessee
+ * Information Statement is semi-annual; the checklist has no such bucket, so it
+ * is listed with the annual items (its period says "1st/2nd Semester").
+ */
+export const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
   "2550Q": "quarterly",
   "2551Q": "quarterly",
   "1601C": "monthly",
@@ -575,10 +580,14 @@ const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
   "0619F": "monthly",
   "AFS": "annual",
   "Alphalist": "annual",
+  "Alphalist-1604C": "annual",
+  "Alphalist-1604E": "annual",
   "2316": "annual",
+  "2316-Issue": "annual",
   "AnnexC": "annual",
   "AnnexF": "annual",
   "QAP": "quarterly",
+  "QAP-Final": "quarterly",
   "SLS": "quarterly",
   "SLP": "quarterly",
   "eSales": "monthly",
@@ -586,15 +595,26 @@ const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> = {
   "LesseeInfo": "annual",
 };
 
-function extractFormNumber(title: string): string {
-  const match = title.match(/BIR Form ([\w]+)/);
+/**
+ * Short form code of a generated deadline title. Codes are distinct per filing
+ * kind, so (formNumber, period) identifies one checklist item: the 2316 issue to
+ * employees ("2316-Issue") vs. the substituted-filing duplicates ("2316"), the
+ * 1604C vs. 1604E alphalists, and the EWT vs. final-withholding QAP.
+ */
+export function extractFormNumber(title: string): string {
+  // Annexes first: "Annex F (Annual Alphalist of Employees)" is not an alphalist.
+  if (title.startsWith("Annex C")) return "AnnexC";
+  if (title.startsWith("Annex F")) return "AnnexF";
+  if (/^BIR Form 2316 \(Issue to Employees\)/.test(title)) return "2316-Issue";
+  const match = title.match(/BIR Form (\w+)/);
   if (match) return match[1];
-  if (title.includes("Audited Financial Statements") || title.includes("AFS")) return "AFS";
-  if (title.includes("Alphalist of Payees") && title.includes("Quarterly")) return "QAP";
-  if (title.includes("Alphalist of Payees") || title.includes("Annual Alphalist")) return "Alphalist";
-  if (title.includes("Alphalist of Employees")) return "Alphalist";
-  if (title.includes("Annex C")) return "AnnexC";
-  if (title.includes("Annex F")) return "AnnexF";
+  if (title.includes("Audited Financial Statements") || /\bAFS\b/.test(title)) return "AFS";
+  if (title.includes("Alphalist of Payees") && title.includes("Quarterly")) {
+    return title.includes("Final Withholding") ? "QAP-Final" : "QAP";
+  }
+  if (title.includes("1604C Attachment")) return "Alphalist-1604C";
+  if (title.includes("1604E Attachment")) return "Alphalist-1604E";
+  if (title.includes("Alphalist")) return "Alphalist";
   if (title.includes("Summary List of Sales")) return "SLS";
   if (title.includes("Summary List of Purchases")) return "SLP";
   if (title.includes("eSales")) return "eSales";
@@ -633,10 +653,24 @@ function esalesDay(tin: string | null | undefined): { day: 8 | 10; basis: string
     : { day: 10, basis: `9th TIN digit ${ninth} is odd` };
 }
 
-function extractPeriod(title: string): string {
-  const match = title.match(/(Q\d \d{4}|January|February|March|April|May|June|July|August|September|October|November|December) (\d{4})|FY (\d{4})|Annual (\d{4})/);
-  if (match) return match[0];
-  return title;
+const PERIOD_RE = /^(?:Q[1-4]|January|February|March|April|May|June|July|August|September|October|November|December|FY|Annual|1st Semester|2nd Semester) \d{4}$/;
+
+/**
+ * Period label of a generated deadline title, from the part after the last " — ":
+ * "Q2 2026", "March 2026", "FY 2026", "Annual 2026", "1st Semester 2026". A bare
+ * tax year ("Alphalist of Employees (1604C Attachment) — 2026", "BIR Form 2316
+ * (Issue to Employees) — 2026") is an annual filing, except the Lessee Information
+ * Statement, whose bare-year title is its second semester.
+ */
+export function extractPeriod(title: string): string {
+  const sep = title.lastIndexOf(" — ");
+  const tail = (sep >= 0 ? title.slice(sep + 3) : title).trim();
+  if (PERIOD_RE.test(tail)) return tail;
+  if (/^\d{4}$/.test(tail)) {
+    return title.startsWith("Lessee Information Statement") ? `2nd Semester ${tail}` : `Annual ${tail}`;
+  }
+  const inner = title.match(/\b(?:Q[1-4]|January|February|March|April|May|June|July|August|September|October|November|December|FY|Annual|1st Semester|2nd Semester) \d{4}\b/);
+  return inner ? inner[0] : title;
 }
 
 type DeadlineRow = typeof deadlinesTable.$inferSelect;
