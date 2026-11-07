@@ -6,7 +6,7 @@ import { Download, X, FileText, AlertCircle, Loader2, Info } from "lucide-react"
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch, downloadDocument, errorMessage } from "@/lib/api";
 import { formatBytes, formatDate } from "@/lib/format";
-import type { ParseRequest, ParseResponse } from "./xlsx.worker";
+import type { ParseRequest, ParseResponse } from "./spreadsheet.worker";
 
 interface Doc {
   id: number;
@@ -29,20 +29,32 @@ const MAX_SHEET_ROWS = 500;
 const MAX_SHEET_COLS = 100;
 /** Characters shown for text/CSV/DAT files. */
 const MAX_TEXT_CHARS = 1_000_000;
+/**
+ * Largest .xlsx previewed. exceljs inflates and loads the whole workbook, so beyond this
+ * (well under the 50 MB upload cap) it is offered as a download instead.
+ */
+const MAX_SHEET_PREVIEW_BYTES = 10 * 1024 * 1024;
 
 function isPdf(mime: string) { return mime === "application/pdf"; }
-function isExcel(mime: string) { return mime.includes("spreadsheetml") || mime.includes("ms-excel"); }
+function fileExt(name?: string) { return (name?.split(".").pop() || "").toLowerCase(); }
+/** Excel 97-2003 (BIFF) workbook: exceljs can't read these, so they are download-only. */
+function isLegacyExcel(mime: string, name?: string) { return mime === "application/vnd.ms-excel" || fileExt(name) === "xls"; }
+/** .xlsx workbook, previewed with exceljs (also when the browser uploaded it as octet-stream). */
+function isXlsx(mime: string, name?: string) {
+  return !isLegacyExcel(mime, name) && (mime.includes("spreadsheetml") || fileExt(name) === "xlsx");
+}
+function isExcel(mime: string, name?: string) { return isXlsx(mime, name) || isLegacyExcel(mime, name) || mime.includes("ms-excel"); }
 function isWord(mime: string) { return mime.includes("wordprocessingml") || mime === "application/msword"; }
 function isImage(mime: string) { return mime.startsWith("image/"); }
 function isText(mime: string, name?: string) {
   if (mime.startsWith("text/")) return true;
-  const ext = (name?.split(".").pop() || "").toLowerCase();
+  const ext = fileExt(name);
   return ext === "dat" || ext === "csv";
 }
 
 function getFileIcon(mimeType: string, name?: string): string {
   if (isPdf(mimeType)) return "📄";
-  if (isExcel(mimeType)) return "📊";
+  if (isExcel(mimeType, name)) return "📊";
   if (isWord(mimeType)) return "📝";
   if (isImage(mimeType)) return "🖼️";
   if (isText(mimeType, name)) return "📃";
@@ -63,7 +75,8 @@ type Preview =
   | { kind: "html"; html: string }
   | { kind: "sheets"; sheets: Sheet[] }
   | { kind: "text"; text: string; truncated: boolean }
-  | { kind: "none" };
+  /** No preview; `reason` says why when it is more than "this type isn't previewable". */
+  | { kind: "none"; reason?: string };
 
 let purifyHooked = false;
 
@@ -87,17 +100,20 @@ async function docxToSafeHtml(arrayBuffer: ArrayBuffer): Promise<string> {
   });
 }
 
-/** A workbook that takes longer than this to parse is abandoned (CVE-2024-22363 ReDoS). */
+/** A workbook that takes longer than this to parse (huge or pathological) is abandoned. */
 const SHEET_PARSE_TIMEOUT_MS = 20_000;
 
+/** The worker read the file but it can't be previewed (damaged, legacy, encrypted, too big). */
+class NoPreviewError extends Error {}
+
 /**
- * Parse a workbook, reading at most MAX_SHEET_ROWS data rows per sheet. SheetJS runs in a
- * dedicated worker (see xlsx.worker.ts), never on the page, because the installed release has
- * known prototype-pollution and ReDoS bugs; the worker is terminated afterwards, on abort and on timeout.
+ * Parse a workbook, keeping at most MAX_SHEET_ROWS data rows per sheet. exceljs runs in a
+ * dedicated worker (see spreadsheet.worker.ts), never on the page, because it loads the whole
+ * workbook into memory; the worker is terminated afterwards, on abort and on timeout.
  */
 function parseWorkbook(arrayBuffer: ArrayBuffer, signal: AbortSignal): Promise<Sheet[]> {
   return new Promise<Sheet[]>((resolve, reject) => {
-    const worker = new Worker(new URL("./xlsx.worker.ts", import.meta.url), { type: "module" });
+    const worker = new Worker(new URL("./spreadsheet.worker.ts", import.meta.url), { type: "module" });
     const done = () => {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
@@ -109,7 +125,7 @@ function parseWorkbook(arrayBuffer: ArrayBuffer, signal: AbortSignal): Promise<S
     worker.onmessage = (e: MessageEvent<ParseResponse>) => {
       done();
       if (e.data.ok) resolve(e.data.sheets);
-      else reject(new Error(e.data.error || "Could not read the spreadsheet"));
+      else reject(new NoPreviewError(e.data.error || "This workbook couldn't be read for preview."));
     };
     worker.onerror = (e) => { done(); reject(new Error(e.message || "Could not read the spreadsheet")); };
     const req: ParseRequest = { buffer: arrayBuffer, maxRows: MAX_SHEET_ROWS, maxCols: MAX_SHEET_COLS };
@@ -141,12 +157,25 @@ export function FileViewer({ doc, onClose }: FileViewerProps) {
 
     (async () => {
       try {
+        if (isLegacyExcel(doc.mimeType, doc.originalName)) {
+          setPreview({ kind: "none", reason: "Excel 97-2003 (.xls) workbooks can't be previewed in the browser. Download the file to open it in Excel." });
+          return;
+        }
+        if (isXlsx(doc.mimeType, doc.originalName) && doc.fileSize > MAX_SHEET_PREVIEW_BYTES) {
+          setPreview({ kind: "none", reason: `This workbook is too large to preview (over ${formatBytes(MAX_SHEET_PREVIEW_BYTES)}). Download it to open it in Excel.` });
+          return;
+        }
         const blob = await apiFetch<Blob>(`/documents/${doc.id}/content`, { responseType: "blob", signal });
         if (signal.aborted) return;
 
         let next: Preview;
-        if (isExcel(doc.mimeType)) {
-          next = { kind: "sheets", sheets: await parseWorkbook(await blob.arrayBuffer(), signal) };
+        if (isXlsx(doc.mimeType, doc.originalName)) {
+          try {
+            next = { kind: "sheets", sheets: await parseWorkbook(await blob.arrayBuffer(), signal) };
+          } catch (e) {
+            if (!(e instanceof NoPreviewError)) throw e;
+            next = { kind: "none", reason: `${e.message} Download it to open it in Excel.` };
+          }
         } else if (isWord(doc.mimeType)) {
           next = { kind: "html", html: await docxToSafeHtml(await blob.arrayBuffer()) };
         } else if (isText(doc.mimeType, doc.originalName)) {
@@ -363,7 +392,7 @@ export function FileViewer({ doc, onClose }: FileViewerProps) {
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6">
               <FileText className="h-12 w-12 text-muted-foreground opacity-40" />
               <p className="font-medium text-muted-foreground">Preview not available</p>
-              <p className="text-sm text-muted-foreground">This file type cannot be previewed in the browser.</p>
+              <p className="text-sm text-muted-foreground max-w-md">{preview.reason ?? "This file type cannot be previewed in the browser."}</p>
               <DownloadButton label="Download to view" />
             </div>
           )}
