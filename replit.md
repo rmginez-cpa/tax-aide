@@ -28,7 +28,7 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 - `engagements.tsx` — All engagements with status filter
 - `engagement-detail.tsx` — Checklist, documents, comments, approval workflow
 - `deadlines.tsx` — BIR filing deadlines with overdue/upcoming/completed
-- `documents.tsx` — Document repository with real file upload (multipart), file viewer (PDF/Excel/Word/image/text), download, delete; "Create Sample Files" for managers generates 3 realistic sample documents
+- `documents.tsx` — Document repository with real file upload (multipart), file viewer (PDF, .xlsx via exceljs in a Web Worker, Word, image, text; legacy .xls is download-only), download, delete; "Create Sample Files" for managers generates 3 realistic sample documents
 - `users.tsx` — User management (manager-only)
 - `notifications.tsx` — Notifications with mark-read
 - `audit-log.tsx` — Full audit trail (manager-only)

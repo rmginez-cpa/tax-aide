@@ -338,7 +338,7 @@ router.post("/documents/seed-samples", requireManager, async (req, res): Promise
     created.push(pdfDoc.originalName);
 
     // ── 2. Sample Excel ────────────────────────────────────────────────────
-    const { utils, write } = await import("xlsx");
+    const { Workbook } = await import("exceljs");
     const xlsxFilename = `sample-tax-calendar-${Date.now()}.xlsx`;
     const xlsxPath = path.join(UPLOADS_DIR, xlsxFilename);
 
@@ -356,10 +356,10 @@ router.post("/documents/seed-samples", requireManager, async (req, res): Promise
       ["BIR 2550M", "Monthly VAT Return", "April 2025", "May 20, 2025", "Pending"],
       ["BIR 1601C", "Withholding Tax - Compensation", "April 2025", "May 10, 2025", "Pending"],
     ];
-    const ws = utils.aoa_to_sheet(deadlinesData);
-    ws["!cols"] = [{ wch: 14 }, { wch: 36 }, { wch: 16 }, { wch: 22 }, { wch: 12 }];
-    const wb = utils.book_new();
-    utils.book_append_sheet(wb, ws, "BIR Tax Calendar");
+    const wb = new Workbook();
+    const ws = wb.addWorksheet("BIR Tax Calendar");
+    ws.addRows(deadlinesData);
+    [14, 36, 16, 22, 12].forEach((width, i) => { ws.getColumn(i + 1).width = width; });
 
     const summaryData = [
       ["Client", "TIN", "Total Filings", "Filed", "Pending", "Overdue"],
@@ -367,10 +367,10 @@ router.post("/documents/seed-samples", requireManager, async (req, res): Promise
       ["Santos Trading Co.", "987-654-321-000", 24, 18, 6, 0],
       ["Dela Cruz & Associates", "111-222-333-444", 12, 8, 4, 0],
     ];
-    const ws2 = utils.aoa_to_sheet(summaryData);
-    ws2["!cols"] = [{ wch: 28 }, { wch: 20 }, { wch: 14 }, { wch: 8 }, { wch: 10 }, { wch: 10 }];
-    utils.book_append_sheet(wb, ws2, "Client Summary");
-    const xlsxBuffer = write(wb, { type: "buffer", bookType: "xlsx" });
+    const ws2 = wb.addWorksheet("Client Summary");
+    ws2.addRows(summaryData);
+    [28, 20, 14, 8, 10, 10].forEach((width, i) => { ws2.getColumn(i + 1).width = width; });
+    const xlsxBuffer = Buffer.from(await wb.xlsx.writeBuffer());
     fs.writeFileSync(xlsxPath, xlsxBuffer);
     try { await saveFileToStorage(xlsxFilename, xlsxBuffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); } catch { /* local dev fallback */ }
 
