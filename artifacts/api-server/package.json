@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",
     "@google-cloud/storage": "^7.21.0",
+    "@opentelemetry/api": "^1.10.0",
     "@types/multer": "^2.1.0",
     "@types/pdfkit": "^0.17.5",
     "@workspace/api-zod": "workspace:*",

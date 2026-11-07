@@ -11,6 +11,9 @@ export const deadlinesTable = pgTable("deadlines", {
   dueDate: text("due_date").notNull(),
   status: text("status").notNull().default("pending"),
   priority: text("priority").notNull().default("medium"),
+  // Tax year a BIR deadline was generated for (from /clients/:id/generate-deadlines).
+  // Null for deadlines entered by hand and for rows created before this column existed.
+  taxYear: integer("tax_year"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

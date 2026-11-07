@@ -12,6 +12,7 @@ import {
   usersTable,
 } from "@workspace/db";
 import { buildComplianceItems, serializeClient } from "../../routes/clients";
+import { manilaToday } from "../dates";
 
 // ── Who is asking ─────────────────────────────────────────────────────────────
 // Every tool runs with the signed-in user's own access. Client (and legacy
@@ -28,10 +29,7 @@ export function isClientUser(u: AssistantUser): boolean {
   return u.role === "client" || u.role === "viewer";
 }
 
-/** Today's date in the Philippines (BIR deadlines are Manila dates). */
-export function manilaToday(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila" }).format(new Date());
-}
+export { manilaToday };
 
 class ToolError extends Error {}
 
