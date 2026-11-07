@@ -1,7 +1,8 @@
 import { useEffect } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useAuth, useAuthConfig } from "@/lib/auth";
 import { errorMessage } from "@/lib/api";
+import { RETURN_TO_PARAM, safeReturnTo } from "@/lib/return-to";
 import { roleBadgeClass, roleLabel } from "@/lib/status";
 import { useLogin } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
@@ -41,6 +42,8 @@ export default function Login() {
   const loginMutation = useLogin();
   const { user, signIn } = useAuth();
   const { config } = useAuthConfig();
+  const search = useSearch();
+  const returnTo = safeReturnTo(new URLSearchParams(search).get(RETURN_TO_PARAM)) ?? "/dashboard";
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -50,11 +53,12 @@ export default function Login() {
     },
   });
 
-  // Signed in (already, or just now): go to the dashboard. setLocation is relative to the
-  // router base, so this also works when the app is served under a sub-path.
+  // Signed in (already, or just now): go back to the page that sent us here (?next=, e.g. the
+  // Claude connector consent page) or to the dashboard. setLocation is relative to the router
+  // base, so this also works when the app is served under a sub-path.
   useEffect(() => {
-    if (user) setLocation("/dashboard", { replace: true });
-  }, [user, setLocation]);
+    if (user) setLocation(returnTo, { replace: true });
+  }, [user, returnTo, setLocation]);
 
   if (user) return null;
 
@@ -100,7 +104,11 @@ export default function Login() {
         <Card className="border-border shadow-xl shadow-slate-200/50 dark:shadow-none">
           <CardHeader>
             <CardTitle>Sign in to your account</CardTitle>
-            <CardDescription>Enter your credentials to access the system.</CardDescription>
+            <CardDescription>
+              {returnTo.startsWith("/connect/")
+                ? "Sign in to continue connecting Claude to your TaxAide account."
+                : "Enter your credentials to access the system."}
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <Form {...form}>
