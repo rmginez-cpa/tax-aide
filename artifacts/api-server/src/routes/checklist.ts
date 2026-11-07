@@ -8,7 +8,9 @@ import {
   DeleteChecklistItemParams,
   ListChecklistItemsQueryParams,
 } from "@workspace/api-zod";
-import { requireAuth, requireStaff, clientScope } from "../middlewares/auth";
+import { requireAuth, requireStaff, clientScope, sessionActor } from "../middlewares/auth";
+import { updateChecklistItem } from "../lib/services/checklist";
+import { sendServiceError } from "../lib/services/http";
 import { logAudit } from "../lib/audit";
 
 const router = Router();
@@ -122,54 +124,13 @@ router.patch("/checklist-items/:id", requireStaff, async (req, res): Promise<voi
     return;
   }
 
-  const updates: Partial<typeof checklistItemsTable.$inferInsert> = {};
-  if (parsed.data.label != null) updates.label = parsed.data.label;
-  if (parsed.data.status != null) {
-    updates.status = parsed.data.status;
-    if (parsed.data.status !== "pending") {
-      updates.completedAt = new Date();
-      updates.completedBy = req.session.userId;
-    } else {
-      updates.completedAt = null;
-      updates.completedBy = null;
-    }
+  try {
+    const item = await updateChecklistItem(sessionActor(req), params.data.id, parsed.data);
+    res.json(await serializeItem(item));
+  } catch (err) {
+    if (sendServiceError(res, err)) return;
+    throw err;
   }
-  if ("notes" in parsed.data) updates.notes = parsed.data.notes ?? null;
-  if (parsed.data.sortOrder != null) updates.sortOrder = parsed.data.sortOrder;
-
-  if (Object.keys(updates).length === 0) {
-    const [current] = await db
-      .select()
-      .from(checklistItemsTable)
-      .where(eq(checklistItemsTable.id, params.data.id));
-    if (!current) {
-      res.status(404).json({ error: "Checklist item not found" });
-      return;
-    }
-    res.json(await serializeItem(current));
-    return;
-  }
-
-  const [item] = await db
-    .update(checklistItemsTable)
-    .set(updates)
-    .where(eq(checklistItemsTable.id, params.data.id))
-    .returning();
-
-  if (!item) {
-    res.status(404).json({ error: "Checklist item not found" });
-    return;
-  }
-
-  await logAudit({
-    userId: req.session.userId,
-    action: "update",
-    entityType: "checklist_item",
-    entityId: item.id,
-    description: `Updated checklist item "${item.label}" to ${item.status}`,
-  });
-
-  res.json(await serializeItem(item));
 });
 
 router.delete("/checklist-items/:id", requireStaff, async (req, res): Promise<void> => {

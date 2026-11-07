@@ -9,7 +9,9 @@ import {
   ListCommentsQueryParams,
 } from "@workspace/api-zod";
 import type { Request, Response } from "express";
-import { requireAuth, requireStaff, clientScope } from "../middlewares/auth";
+import { requireAuth, requireStaff, clientScope, sessionActor } from "../middlewares/auth";
+import { createComment } from "../lib/services/comments";
+import { sendServiceError } from "../lib/services/http";
 import { logAudit } from "../lib/audit";
 
 const router = Router();
@@ -84,38 +86,13 @@ router.post("/comments", requireStaff, async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-
-  if (!parsed.data.content.trim()) {
-    res.status(400).json({ error: "Comment cannot be empty" });
-    return;
+  try {
+    const comment = await createComment(sessionActor(req), parsed.data);
+    res.status(201).json(await serializeComment(comment));
+  } catch (err) {
+    if (sendServiceError(res, err)) return;
+    throw err;
   }
-
-  const [engagement] = await db
-    .select({ id: engagementsTable.id })
-    .from(engagementsTable)
-    .where(eq(engagementsTable.id, parsed.data.engagementId));
-  if (!engagement) {
-    res.status(400).json({ error: "Engagement not found" });
-    return;
-  }
-
-  // Approval comments are written only by the approve-stage workflow, never from the body.
-  const [comment] = await db.insert(commentsTable).values({
-    engagementId: parsed.data.engagementId,
-    content: parsed.data.content,
-    isApproval: false,
-    authorId: req.session.userId!,
-  }).returning();
-
-  await logAudit({
-    userId: req.session.userId,
-    action: "comment",
-    entityType: "engagement",
-    entityId: comment.engagementId,
-    description: "Added comment on engagement",
-  });
-
-  res.status(201).json(await serializeComment(comment));
 });
 
 /**

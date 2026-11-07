@@ -21,16 +21,26 @@ import {
 } from "./lib/security";
 import { passwordPolicyError } from "./lib/passwordPolicy";
 import { pool, db, usersTable, clientsTable, engagementsTable } from "@workspace/db";
+import { createMcpProtocolRouter } from "./routes/mcp";
+import { configuredBaseUrl, mcpEnabled, redirectRules } from "./lib/mcp/config";
+import { startOAuthCleanup } from "./lib/mcp/oauthProvider";
 import { taxTypeFromDeadlineTitle } from "./lib/filingLabels";
 
 const PgSession = connectPgSimple(session);
 
 // ── Security configuration (fail fast on a bad production setup) ─────────────
 let sessionSecret: string;
+const MCP = mcpEnabled();
 try {
   const resolved = resolveSessionSecret();
   sessionSecret = resolved.secret;
   if (resolved.warning) logger.warn(resolved.warning);
+  if (MCP) {
+    // Validates PUBLIC_BASE_URL and MCP_ALLOWED_REDIRECT_URIS now rather than on the first connection.
+    const base = configuredBaseUrl();
+    redirectRules();
+    logger.info({ publicBaseUrl: base?.origin ?? "(derived from each request)" }, "MCP connector enabled at /api/mcp");
+  }
 } catch (err) {
   if (err instanceof ConfigError) {
     // console.error as well: the pretty-printing logger transport is asynchronous.
@@ -96,6 +106,14 @@ const origins = allowedOrigins();
 if (origins.length > 0) {
   app.use(cors(corsOptions(origins)));
   logger.info({ origins }, "CORS enabled for ALLOWED_ORIGINS");
+}
+
+// The MCP connector (OAuth endpoints, discovery documents, /api/mcp) authenticates with
+// bearer tokens: it goes before the body parsers (it has its own, smaller limits) and
+// before the cookie session, which it must neither read nor create.
+if (MCP) {
+  app.use(createMcpProtocolRouter());
+  startOAuthCleanup();
 }
 
 app.use(express.json({ limit: "1mb" }));

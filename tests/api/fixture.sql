@@ -1,5 +1,5 @@
 -- Test fixture for authz / deadline tests. Idempotent: wipes app data except users 1-4.
-TRUNCATE clients, engagements, deadlines, documents, comments, checklist_items, notifications, audit_logs, assistant_conversations RESTART IDENTITY CASCADE;
+TRUNCATE clients, engagements, deadlines, documents, comments, checklist_items, notifications, audit_logs, assistant_conversations, oauth_tokens, oauth_codes, oauth_grants, oauth_authorization_requests, oauth_clients RESTART IDENTITY CASCADE;
 DELETE FROM users WHERE id > 4;
 DELETE FROM user_sessions;
 INSERT INTO clients (id, name, tin, business_type, status, income_tax_type, vat_registered, withholds_compensation, withholds_ewt, fiscal_year_start, fiscal_year_end)

@@ -91,8 +91,20 @@ export const requireManager = requireRole("manager");
  *            gets 0, which matches no row (ids start at 1), so it sees nothing.
  */
 export function clientScope(req: Request): number | null {
-  if (!isClientRole(req.session.userRole)) return null;
-  return req.session.userClientId ?? 0;
+  return clientScopeFor({ role: req.session.userRole ?? "", clientId: req.session.userClientId ?? null });
+}
+
+/** Who is acting, independent of how they signed in (session cookie or connector token). */
+export interface Actor {
+  id: number;
+  role: string;
+  clientId: number | null;
+}
+
+/** clientScope() for an actor: the one rule shared by the HTTP routes and the assistant / MCP tools. */
+export function clientScopeFor(actor: Pick<Actor, "role" | "clientId">): number | null {
+  if (!isClientRole(actor.role)) return null;
+  return actor.clientId ?? 0;
 }
 
 /** Whether this session may see records belonging to `clientId`. */
@@ -113,4 +125,9 @@ export function requireClient(req: Request, res: Response, next: NextFunction): 
     return;
   }
   next();
+}
+
+/** The signed-in user as an Actor (after requireAuth / requireRole has refreshed role and client). */
+export function sessionActor(req: Request): Actor {
+  return { id: req.session.userId!, role: req.session.userRole ?? "", clientId: req.session.userClientId ?? null };
 }

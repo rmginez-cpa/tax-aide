@@ -13,6 +13,7 @@ import {
   Bell,
   Activity,
   ShieldCheck,
+  Plug,
   type LucideIcon,
 } from "lucide-react";
 
@@ -40,6 +41,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { name: "Account Management", href: "/account-management", icon: ShieldCheck, roles: ["super_admin"], keywords: "accounts roles passwords" },
   { name: "Notifications", href: "/notifications", icon: Bell, roles: EVERYONE, keywords: "alerts inbox" },
   { name: "Audit Log", href: "/audit-log", icon: Activity, roles: MANAGERS, keywords: "history trail" },
+  { name: "Claude Connector", href: "/settings/claude", icon: Plug, roles: EVERYONE, keywords: "mcp ai integration connected apps oauth" },
 ];
 
 /** The navigation pages a role may open. */

@@ -925,6 +925,101 @@ export interface MyWork {
   deadlines: MyWorkDeadline[];
 }
 
+export type ConnectorScopeName =
+  (typeof ConnectorScopeName)[keyof typeof ConnectorScopeName];
+
+export const ConnectorScopeName = {
+  taxaideread: "taxaide.read",
+  taxaidewrite: "taxaide.write",
+} as const;
+
+export interface ConnectorScope {
+  name: ConnectorScopeName;
+  /** Short label for the consent screen, e.g. "View your TaxAide data". */
+  title: string;
+  description: string;
+  /** Whether the signed-in user's role can use this scope (client accounts cannot use taxaide.write). */
+  available: boolean;
+}
+
+export interface ConnectorInfo {
+  enabled: boolean;
+  /**
+   * The connector URL to paste into claude.ai, e.g. https://taxaide.example.com/api/mcp.
+   * @nullable
+   */
+  mcpUrl: string | null;
+  /**
+   * The public origin (OAuth issuer).
+   * @nullable
+   */
+  issuer: string | null;
+  /**
+   * Why mcpUrl is null although enabled (e.g. not served over HTTPS in production).
+   * @nullable
+   */
+  problem: string | null;
+  scopes: ConnectorScope[];
+}
+
+export interface OAuthClientSummary {
+  id: string;
+  /**
+   * Chosen by whoever registered the client; untrusted. Show redirectHost prominently.
+   * @nullable
+   */
+  name: string | null;
+  /** @nullable */
+  uri: string | null;
+  /** @nullable */
+  logoUri: string | null;
+}
+
+export interface OAuthRequestUser {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+}
+
+export interface OAuthRequest {
+  id: string;
+  expiresAt: string;
+  client: OAuthClientSummary;
+  redirectUri: string;
+  /** Host the browser returns to after the decision (e.g. claude.ai). */
+  redirectHost: string;
+  /** The requested scopes (taxaide.read is always included). */
+  scopes: ConnectorScope[];
+  user: OAuthRequestUser;
+}
+
+export interface OAuthDecisionBody {
+  approve: boolean;
+  /** Scopes to grant when approving (a subset of the requested ones, must include taxaide.read). Default all requested. */
+  scopes?: string[];
+}
+
+export interface OAuthDecisionResult {
+  redirectTo: string;
+  scopes: string[];
+}
+
+export interface OAuthGrant {
+  id: number;
+  clientId: string;
+  /** @nullable */
+  clientName: string | null;
+  redirectHost: string;
+  scopes: string[];
+  createdAt: string;
+  /** @nullable */
+  lastUsedAt: string | null;
+  /** When the connection lapses unless the client refreshes it (30 days after the last refresh). */
+  expiresAt: string;
+  user: OAuthRequestUser;
+}
+
 export type GetClientComplianceParams = {
   /**
    * @nullable
@@ -1116,3 +1211,15 @@ export type ExportAuditLogsCsvParams = {
    */
   q?: string;
 };
+
+export type ListOAuthGrantsParams = {
+  all?: ListOAuthGrantsAll;
+};
+
+export type ListOAuthGrantsAll =
+  (typeof ListOAuthGrantsAll)[keyof typeof ListOAuthGrantsAll];
+
+export const ListOAuthGrantsAll = {
+  NUMBER_1: "1",
+  true: "true",
+} as const;

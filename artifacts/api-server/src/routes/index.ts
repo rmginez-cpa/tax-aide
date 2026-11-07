@@ -13,6 +13,7 @@ import notificationsRouter from "./notifications";
 import auditRouter from "./audit";
 import dashboardRouter from "./dashboard";
 import assistantRouter from "./assistant";
+import oauthRouter from "./oauth";
 
 const router: IRouter = Router();
 
@@ -30,5 +31,6 @@ router.use(notificationsRouter);
 router.use(auditRouter);
 router.use(dashboardRouter);
 router.use(assistantRouter);
+router.use(oauthRouter);
 
 export default router;

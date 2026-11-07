@@ -2038,3 +2038,155 @@ export const GetEngagementStatusBreakdownResponseItem = zod.object({
 export const GetEngagementStatusBreakdownResponse = zod.array(
   GetEngagementStatusBreakdownResponseItem,
 );
+
+/**
+ * Whether the connector is enabled, the URL to paste into claude.ai (Customize > Connectors > Add custom connector) and the scopes with whether this user's role can use them. mcpUrl is null when disabled or when the server cannot build a public HTTPS URL (problem says why).
+ * @summary MCP connector settings for the signed-in user
+ */
+export const GetConnectorInfoResponse = zod.object({
+  enabled: zod.boolean(),
+  mcpUrl: zod
+    .string()
+    .nullable()
+    .describe(
+      "The connector URL to paste into claude.ai, e.g. https:\/\/taxaide.example.com\/api\/mcp.",
+    ),
+  issuer: zod.string().nullable().describe("The public origin (OAuth issuer)."),
+  problem: zod
+    .string()
+    .nullable()
+    .describe(
+      "Why mcpUrl is null although enabled (e.g. not served over HTTPS in production).",
+    ),
+  scopes: zod.array(
+    zod.object({
+      name: zod.enum(["taxaide.read", "taxaide.write"]),
+      title: zod
+        .string()
+        .describe(
+          'Short label for the consent screen, e.g. \"View your TaxAide data\".',
+        ),
+      description: zod.string(),
+      available: zod
+        .boolean()
+        .describe(
+          "Whether the signed-in user's role can use this scope (client accounts cannot use taxaide.write).",
+        ),
+    }),
+  ),
+});
+
+/**
+ * The request id comes from the consent page URL (/connect/authorize?request=<id>). 404 when unknown, expired (10 minutes) or already decided. 401 when not signed in: sign in, then come back to the same URL.
+ * @summary A pending connector sign-in request (for the consent page)
+ */
+export const GetOAuthRequestParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const GetOAuthRequestResponse = zod.object({
+  id: zod.string(),
+  expiresAt: zod.string(),
+  client: zod.object({
+    id: zod.string(),
+    name: zod
+      .string()
+      .nullable()
+      .describe(
+        "Chosen by whoever registered the client; untrusted. Show redirectHost prominently.",
+      ),
+    uri: zod.string().nullable(),
+    logoUri: zod.string().nullable(),
+  }),
+  redirectUri: zod.string(),
+  redirectHost: zod
+    .string()
+    .describe(
+      "Host the browser returns to after the decision (e.g. claude.ai).",
+    ),
+  scopes: zod
+    .array(
+      zod.object({
+        name: zod.enum(["taxaide.read", "taxaide.write"]),
+        title: zod
+          .string()
+          .describe(
+            'Short label for the consent screen, e.g. \"View your TaxAide data\".',
+          ),
+        description: zod.string(),
+        available: zod
+          .boolean()
+          .describe(
+            "Whether the signed-in user's role can use this scope (client accounts cannot use taxaide.write).",
+          ),
+      }),
+    )
+    .describe("The requested scopes (taxaide.read is always included)."),
+  user: zod.object({
+    id: zod.number(),
+    name: zod.string(),
+    email: zod.string(),
+    role: zod.string(),
+  }),
+});
+
+/**
+ * Single use. Must be sent from the web app (Origin checked) as application/json. On success navigate the browser to redirectTo (window.location.assign): the client's redirect URI with ?code=… or ?error=access_denied. Scopes the user's role cannot use are dropped; scopes lists what was granted (empty when denied).
+ * @summary Approve or deny a pending connector sign-in request
+ */
+export const DecideOAuthRequestParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const DecideOAuthRequestBody = zod.object({
+  approve: zod.boolean(),
+  scopes: zod
+    .array(zod.string())
+    .optional()
+    .describe(
+      "Scopes to grant when approving (a subset of the requested ones, must include taxaide.read). Default all requested.",
+    ),
+});
+
+export const DecideOAuthRequestResponse = zod.object({
+  redirectTo: zod.string(),
+  scopes: zod.array(zod.string()),
+});
+
+/**
+ * The caller's own active connections, newest first. all=1 (super_admin only, else 403) lists everyone's.
+ * @summary Active connector connections
+ */
+export const ListOAuthGrantsQueryParams = zod.object({
+  all: zod.enum(["1", "true"]).optional(),
+});
+
+export const ListOAuthGrantsResponseItem = zod.object({
+  id: zod.number(),
+  clientId: zod.string(),
+  clientName: zod.string().nullable(),
+  redirectHost: zod.string(),
+  scopes: zod.array(zod.string()),
+  createdAt: zod.string(),
+  lastUsedAt: zod.string().nullable(),
+  expiresAt: zod
+    .string()
+    .describe(
+      "When the connection lapses unless the client refreshes it (30 days after the last refresh).",
+    ),
+  user: zod.object({
+    id: zod.number(),
+    name: zod.string(),
+    email: zod.string(),
+    role: zod.string(),
+  }),
+});
+export const ListOAuthGrantsResponse = zod.array(ListOAuthGrantsResponseItem);
+
+/**
+ * Revokes every token of the connection at once. Own grants, or anyone's for super_admin; any other id answers 404. Must be sent from the web app (Origin checked).
+ * @summary Disconnect a connector
+ */
+export const RevokeOAuthGrantParams = zod.object({
+  id: zod.coerce.number(),
+});

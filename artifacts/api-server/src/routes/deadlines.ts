@@ -9,7 +9,9 @@ import {
   DeleteDeadlineParams,
   ListDeadlinesQueryParams,
 } from "@workspace/api-zod";
-import { requireAuth, requireStaff, requireManager, clientScope, canAccessClient } from "../middlewares/auth";
+import { requireAuth, requireStaff, requireManager, clientScope, canAccessClient, sessionActor } from "../middlewares/auth";
+import { updateDeadline } from "../lib/services/deadlines";
+import { sendServiceError } from "../lib/services/http";
 import { logAudit } from "../lib/audit";
 import { extractFormNumber, extractPeriod, taxTypeFromDeadlineTitle } from "../lib/filingLabels";
 
@@ -179,68 +181,13 @@ router.patch("/deadlines/:id", requireStaff, async (req, res): Promise<void> => 
     return;
   }
 
-  const [current] = await db.select().from(deadlinesTable).where(eq(deadlinesTable.id, params.data.id));
-  if (!current) {
-    res.status(404).json({ error: "Deadline not found" });
-    return;
+  try {
+    const deadline = await updateDeadline(sessionActor(req), params.data.id, parsed.data);
+    res.json(await serializeDeadline(deadline));
+  } catch (err) {
+    if (sendServiceError(res, err)) return;
+    throw err;
   }
-
-  // The generated enums include a literal "null"; it is not a real status/priority.
-  const status = parsed.data.status != null && parsed.data.status !== "null" ? parsed.data.status : null;
-  const priority = parsed.data.priority != null && parsed.data.priority !== "null" ? parsed.data.priority : null;
-
-  // A deadline linked to an engagement takes its status from the filing workflow.
-  if (status != null && status !== current.status && current.engagementId != null) {
-    res.status(400).json({
-      error: "This deadline is linked to a filing; its status is set by the filing workflow",
-    });
-    return;
-  }
-
-  const updates: Partial<typeof deadlinesTable.$inferInsert> = {};
-  if (parsed.data.title != null) updates.title = parsed.data.title;
-  if ("description" in parsed.data) updates.description = parsed.data.description ?? null;
-  const dueDateChanged = parsed.data.dueDate != null && parsed.data.dueDate !== current.dueDate;
-  if (dueDateChanged) {
-    updates.dueDate = parsed.data.dueDate!;
-    // Edited by hand (e.g. a BIR extension): regenerating with overwrite keeps it.
-    updates.dueDateManual = true;
-  }
-  if (status != null) updates.status = status;
-  if (priority != null) updates.priority = priority;
-
-  if (Object.keys(updates).length === 0) {
-    res.json(await serializeDeadline(current));
-    return;
-  }
-
-  const deadline = await db.transaction(async (tx) => {
-    const [row] = await tx
-      .update(deadlinesTable)
-      .set(updates)
-      .where(eq(deadlinesTable.id, params.data.id))
-      .returning();
-    // The filing started from this deadline keeps the same due date.
-    if (row && dueDateChanged && row.engagementId != null) {
-      await tx.update(engagementsTable).set({ dueDate: row.dueDate }).where(eq(engagementsTable.id, row.engagementId));
-    }
-    return row;
-  });
-
-  if (!deadline) {
-    res.status(404).json({ error: "Deadline not found" });
-    return;
-  }
-
-  await logAudit({
-    userId: req.session.userId,
-    action: "update",
-    entityType: "deadline",
-    entityId: deadline.id,
-    description: `Updated deadline "${deadline.title}"`,
-  });
-
-  res.json(await serializeDeadline(deadline));
 });
 
 router.delete("/deadlines/:id", requireManager, async (req, res): Promise<void> => {

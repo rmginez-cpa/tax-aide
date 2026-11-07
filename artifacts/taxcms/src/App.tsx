@@ -1,4 +1,4 @@
-import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
+import { Switch, Route, Router as WouterRouter, Redirect, useLocation, useSearch } from "wouter";
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -10,6 +10,7 @@ import { AssistantProvider } from "@/lib/assistant";
 import { roleMatches } from "@/lib/permissions";
 import { BASE_PATH, errorStatus, setUnauthorizedHandler } from "@/lib/api";
 import { ConfirmProvider } from "@/components/ConfirmDialog";
+import { loginHref } from "@/lib/return-to";
 
 // Pages
 import Login from "@/pages/login";
@@ -25,6 +26,8 @@ import Notifications from "@/pages/notifications";
 import AuditLog from "@/pages/audit-log";
 import CalendarPage from "@/pages/calendar";
 import AccountManagement from "@/pages/account-management";
+import ConnectAuthorize from "@/pages/connect-authorize";
+import ClaudeConnector from "@/pages/claude-connector";
 
 /**
  * Any 401 from the API while we believe a user is signed in means the session expired:
@@ -60,11 +63,19 @@ function FullScreenMessage({ children }: { children: React.ReactNode }) {
   return <div className="flex h-screen items-center justify-center text-muted-foreground">{children}</div>;
 }
 
+/** /login?next=<the current page>, so signing in (or back in after the session expired) returns here. */
+function useLoginRedirect(): string {
+  const [location] = useLocation();
+  const search = useSearch();
+  return loginHref(search ? `${location}?${search}` : location);
+}
+
 function ProtectedRoute({ component: Component, roles }: { component: React.ComponentType; roles?: string[] }) {
   const { user, isLoading } = useAuth();
+  const loginTo = useLoginRedirect();
 
   if (isLoading) return <FullScreenMessage>Loading...</FullScreenMessage>;
-  if (!user) return <Redirect to="/login" />;
+  if (!user) return <Redirect to={loginTo} />;
   if (roles && !roleMatches(user.role, roles)) return <Redirect to="/dashboard" />;
 
   return <Component />;
@@ -90,6 +101,7 @@ function ProtectedRoutes() {
       <Route path="/account-management"><ProtectedRoute component={AccountManagement} roles={["super_admin"]} /></Route>
       <Route path="/notifications"><ProtectedRoute component={Notifications} /></Route>
       <Route path="/audit-log"><ProtectedRoute component={AuditLog} roles={MANAGERS} /></Route>
+      <Route path="/settings/claude"><ProtectedRoute component={ClaudeConnector} /></Route>
       {/* Unknown paths: in-app 404 for signed-in users, standalone 404 otherwise (Layout renders no shell without a user). */}
       <Route><NotFound signedIn={!!user} /></Route>
     </Switch>
@@ -109,6 +121,8 @@ function AppRoutes() {
         {user ? <Redirect to="/dashboard" /> : <Redirect to="/login" />}
       </Route>
       <Route path="/login" component={Login} />
+      {/* The Claude connector's OAuth consent screen: standalone (no app shell), handles signed-out itself. */}
+      <Route path="/connect/authorize" component={ConnectAuthorize} />
       <Route>
         <Layout>
           <ProtectedRoutes />

@@ -12,6 +12,7 @@ import {
 import { requireAuth, requireRole, isClientRole, isStaffRole } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
 import { passwordPolicyError } from "../lib/passwordPolicy";
+import { revokeUserGrants } from "../lib/mcp/oauthProvider";
 
 const router = Router();
 
@@ -249,6 +250,12 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
 
     // Data the account saw under its old scope must not follow it to the new one.
     const scopeChanged = before.role !== after.role || (before.clientId ?? null) !== (after.clientId ?? null);
+
+    // Connector (MCP) tokens were granted under the old password / role / client: end them too.
+    // Deleting the user removes them through the foreign keys.
+    if (updates.passwordHash || scopeChanged) {
+      await revokeUserGrants(tx, id, updates.passwordHash ? "password_changed" : "role_or_client_changed");
+    }
     if (scopeChanged) {
       // Stored assistant conversations replay earlier tool results to the model.
       await tx.delete(assistantConversationsTable).where(eq(assistantConversationsTable.userId, id));
