@@ -15,6 +15,11 @@ export interface UpdateUserBody {
   /** @nullable */
   password?: string | null;
   /**
+   * Required (and checked) when users change their own password; a super_admin resetting another account's password does not send it.
+   * @nullable
+   */
+  currentPassword?: string | null;
+  /**
    * Linked client for client/viewer accounts (super_admin only).
    * @nullable
    */

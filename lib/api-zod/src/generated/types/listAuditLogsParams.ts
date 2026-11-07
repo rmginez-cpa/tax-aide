@@ -8,15 +8,51 @@
 
 export type ListAuditLogsParams = {
   /**
+   * Entries about this engagement (entityType engagement).
    * @nullable
    */
   engagementId?: number | null;
   /**
+   * Entries about this client (entityType client).
    * @nullable
    */
   clientId?: number | null;
   /**
+   * Entries made by this user.
+   * @minimum 1
+   */
+  userId?: number;
+  /**
+   * Exact action (see GET /audit-logs/filters).
+   * @maxLength 64
+   */
+  action?: string;
+  /**
+   * Exact entity type (see GET /audit-logs/filters).
+   * @maxLength 64
+   */
+  entityType?: string;
+  /**
+   * First day, inclusive (YYYY-MM-DD, Asia/Manila).
+   */
+  from?: Date;
+  /**
+   * Last day, inclusive (YYYY-MM-DD, Asia/Manila).
+   */
+  to?: Date;
+  /**
+   * Description contains (case-insensitive, literal; at most 200 characters).
+   * @maxLength 200
+   */
+  q?: string;
+  /**
+   * Page size (default 50, at most 500; malformed values fall back to the default).
    * @nullable
    */
   limit?: number | null;
+  /**
+   * Entries to skip (default 0; malformed values fall back to 0).
+   * @nullable
+   */
+  offset?: number | null;
 };

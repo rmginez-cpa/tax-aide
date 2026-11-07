@@ -26,17 +26,23 @@ function lookup(map: Record<string, StatusStyle>, value: string | null | undefin
 
 // ── Engagement (filing) status ────────────────────────────────────────────────
 
-/** Engagement status badges: pending / in_progress / for_review / approved / filed / completed. */
+/**
+ * Engagement-level statuses the server returns: pending (no stage started), in_progress,
+ * completed (every required stage approved). Review / approval happen per stage (STAGE_STATUS).
+ */
+export const ENGAGEMENT_STATUS_KEYS = ["pending", "in_progress", "completed"] as const;
+
+/** Engagement status badges. */
 export const ENGAGEMENT_STATUS: Record<string, StatusStyle> = {
   pending: { label: "Pending", className: "bg-gray-100 text-gray-700 border-gray-200" },
   in_progress: { label: "In Progress", className: "bg-blue-100 text-blue-700 border-blue-200" },
-  for_review: { label: "For Review", className: "bg-amber-100 text-amber-700 border-amber-200" },
-  approved: { label: "Approved", className: "bg-green-100 text-green-700 border-green-200" },
-  filed: { label: "Filed", className: "bg-teal-100 text-teal-700 border-teal-200" },
   completed: { label: "Completed", className: "bg-emerald-100 text-emerald-700 border-emerald-200" },
 };
 
-/** Badge style for an engagement status (unknown values get a neutral badge). */
+/**
+ * Badge style for an engagement status. Anything else (e.g. the retired for_review / approved /
+ * filed on rows from before the stage workflow) gets a neutral badge with the humanized value.
+ */
 export function getEngagementStatus(status: string | null | undefined): StatusStyle {
   return lookup(ENGAGEMENT_STATUS, status);
 }
@@ -45,11 +51,13 @@ export function getEngagementStatus(status: string | null | undefined): StatusSt
 export const ENGAGEMENT_STATUS_CHART_COLORS: Record<string, string> = {
   pending: "hsl(215 16% 47%)", // gray
   in_progress: "hsl(214 100% 41%)", // blue
-  for_review: "hsl(35 92% 33%)", // amber
-  approved: "hsl(142 71% 45%)", // green
-  filed: "hsl(173 58% 39%)", // teal
   completed: "hsl(152 69% 31%)", // emerald
 };
+
+/** Pie-chart colour of an engagement status; unknown (retired) values get a neutral slate. */
+export function engagementStatusChartColor(status: string | null | undefined): string {
+  return (status && ENGAGEMENT_STATUS_CHART_COLORS[status]) || "hsl(215 20% 65%)";
+}
 
 // ── Workflow stages ───────────────────────────────────────────────────────────
 
@@ -212,11 +220,6 @@ export function roleLabel(role: string | null | undefined): string {
 /** Badge classes for a role (falls back to neutral grey). */
 export function roleBadgeClass(role: string | null | undefined): string {
   return (role && ROLE_BADGE_CLASS[role]) || NEUTRAL_BADGE;
-}
-
-/** { label, className } for a role badge. */
-export function getRoleStyle(role: string | null | undefined): StatusStyle {
-  return { label: roleLabel(role), className: roleBadgeClass(role) };
 }
 
 /** Roles offered when creating/editing accounts (accountant is the legacy spelling of maker, so it is not offered). */

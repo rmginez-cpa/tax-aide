@@ -17,8 +17,22 @@ import { logAudit } from "../lib/audit";
 import { manilaToday, manilaYear, addDays } from "../lib/dates";
 import { adjustDueDate } from "../lib/birCalendar";
 import { openDeadlines } from "../lib/openDeadlines";
+import { extractFormNumber, extractPeriod } from "../lib/filingLabels";
 
 const router = Router();
+
+/**
+ * BIR TIN: the 9-digit TIN plus a 3- or 5-digit branch code, e.g. 123-456-789-000 or
+ * 123-456-789-00000. Same rule as the client form (TIN_PATTERN in taxcms src/lib/policy.ts).
+ */
+export const TIN_PATTERN = /^\d{3}-\d{3}-\d{3}-(\d{3}|\d{5})$/;
+export const TIN_FORMAT_ERROR = "TIN must use the format 123-456-789-000 (or a 5-digit branch code: 123-456-789-00000)";
+
+/** The trimmed TIN, or null when it does not match TIN_PATTERN. */
+function normalizeTin(tin: string): string | null {
+  const t = tin.trim();
+  return TIN_PATTERN.test(t) ? t : null;
+}
 
 export function serializeClient(c: typeof clientsTable.$inferSelect) {
   return {
@@ -73,9 +87,50 @@ function monthAfter(year: number, month: number, day: number | "last"): string {
   return day === "last" ? isoDate(y, m + 1, 0) : isoDate(y, m, day);
 }
 
-function monthIndex(name: string): number {
-  const idx = MONTHS.findIndex(m => m.toLowerCase() === name.toLowerCase());
-  return idx >= 0 ? idx + 1 : 1;
+/**
+ * 1-12 for a month name ("July", "july"), its three-letter form ("Jul") or a number
+ * ("7", "07"); null for anything else (never a silent January).
+ */
+function monthIndex(name: string | null | undefined): number | null {
+  const v = (name ?? "").trim().toLowerCase().replace(/\.$/, "");
+  if (!v) return null;
+  if (/^\d{1,2}$/.test(v)) {
+    const n = Number(v);
+    return n >= 1 && n <= 12 ? n : null;
+  }
+  const idx = MONTHS.findIndex(m => m.toLowerCase() === v || (v.length === 3 && m.toLowerCase().startsWith(v)));
+  return idx >= 0 ? idx + 1 : null;
+}
+
+const FISCAL_MONTH_ERROR = "must be a month name (e.g. July)";
+
+/**
+ * The fiscal-year months to store for a create / update. Each given value must name a
+ * month (stored as the full English name). The end month is always the month before the
+ * start month: when only one is given the other is derived from it, and a pair that
+ * disagrees is refused. undefined = leave both as they are; null = calendar year (cleared).
+ */
+function resolveFiscalYear(
+  start: string | null | undefined,
+  end: string | null | undefined,
+): { fiscalYearStart: string | null; fiscalYearEnd: string | null } | { error: string } | undefined {
+  if (start === undefined && end === undefined) return undefined;
+  const blank = (v: string | null | undefined) => v == null || v.trim() === "";
+  const s = blank(start) ? null : monthIndex(start);
+  const e = blank(end) ? null : monthIndex(end);
+  if (!blank(start) && s == null) return { error: `fiscalYearStart ${FISCAL_MONTH_ERROR}` };
+  if (!blank(end) && e == null) return { error: `fiscalYearEnd ${FISCAL_MONTH_ERROR}` };
+  const before = (m: number) => (m === 1 ? 12 : m - 1);
+  const after = (m: number) => (m % 12) + 1;
+  if (s != null && e != null && e !== before(s)) {
+    return { error: `A fiscal year starting in ${MONTHS[s - 1]} ends in ${MONTHS[before(s) - 1]}, not ${MONTHS[e - 1]}` };
+  }
+  const startM = s ?? (e != null ? after(e) : null);
+  const endM = startM != null ? before(startM) : null;
+  return {
+    fiscalYearStart: startM != null ? MONTHS[startM - 1] : null,
+    fiscalYearEnd: endM != null ? MONTHS[endM - 1] : null,
+  };
 }
 
 // BIR quarter ending months relative to fiscal year start
@@ -90,6 +145,16 @@ function fiscalQuarterMonths(fyStart: number): number[][] {
   return quarters;
 }
 
+/** "July–September 2026" / "November 2026–January 2027": the months of the quarter ending in endMonth of qYear. */
+function quarterSpan(endMonth: number, qYear: number): string {
+  let start = endMonth - 2;
+  let startYear = qYear;
+  if (start <= 0) { start += 12; startYear -= 1; }
+  return startYear === qYear
+    ? `${MONTHS[start - 1]}–${MONTHS[endMonth - 1]} ${qYear}`
+    : `${MONTHS[start - 1]} ${startYear}–${MONTHS[endMonth - 1]} ${qYear}`;
+}
+
 interface GeneratedDeadline {
   title: string;
   description: string;
@@ -101,14 +166,14 @@ interface GeneratedDeadline {
 /**
  * The client's fiscal year as months (1-12). The end month is derived from the
  * start month so the two can never disagree; fiscalYearEnd is only used when
- * no start month is recorded.
+ * no start month is recorded. Individuals always use the calendar year (NIRC
+ * Sec. 43/74), so their fiscal-year setting is ignored for every form.
  */
 function fiscalYearMonths(client: typeof clientsTable.$inferSelect): { fyStart: number; fyEnd: number } {
-  const fyStart = client.fiscalYearStart
-    ? monthIndex(client.fiscalYearStart)
-    : client.fiscalYearEnd
-      ? (monthIndex(client.fiscalYearEnd) % 12) + 1
-      : 1;
+  if (client.incomeTaxType === "individual") return { fyStart: 1, fyEnd: 12 };
+  const start = monthIndex(client.fiscalYearStart);
+  const end = monthIndex(client.fiscalYearEnd);
+  const fyStart = start ?? (end != null ? (end % 12) + 1 : 1);
   return { fyStart, fyEnd: fyStart === 1 ? 12 : fyStart - 1 };
 }
 
@@ -123,7 +188,8 @@ function fiscalYearMonths(client: typeof clientsTable.$inferSelect): { fyStart: 
  *   fiscal year is due the 15th of the 4th month after it ends.
  * - individual income tax (1701Q, 1701): always the calendar year Y.
  *   Individuals cannot use a fiscal year (NIRC Sec. 43/74), so a fiscal-year
- *   setting on an individual client is ignored for these two forms.
+ *   setting on an individual client is ignored for every form (their VAT,
+ *   percentage-tax quarters and inventory list follow the calendar year too).
  * - withholding taxes (1601C, 0619E/1601EQ, 0619F/1601FQ, QAP, 1604C/E/F,
  *   2316, Annex C/F), DST (2000), eSales and the lessee statement: always the
  *   calendar year Y with calendar quarters, whatever the client's fiscal year.
@@ -246,15 +312,23 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     }
   });
 
+  // The months a taxable (fiscal) quarter covers, so "Q1 2026" of a fiscal-year client is
+  // not read as January–March like the calendar-quarter withholding returns.
+  const fiscalQuarterNote = (endMonth: number, qYear: number, qIdx: number) =>
+    fyStartMonth === 1
+      ? `(${quarterSpan(endMonth, qYear)})`
+      : `(${quarterSpan(endMonth, qYear)}: fiscal quarter ${qIdx + 1} of the ${fyLabel})`;
+
   quarters.forEach(([endMonth, yOff], qIdx) => {
     const qYear = year + yOff;
     const qLabel = `Q${qIdx + 1} ${year}`;
+    const qNote = fiscalQuarterNote(endMonth, qYear, qIdx);
 
     // 2550Q: Quarterly VAT — within 25 days after the quarter (NIRC Sec. 114(A) as amended by TRAIN / RA 11976)
     if (client.vatRegistered) {
       deadlines.push({
         title: `BIR Form 2550Q — ${qLabel}`,
-        description: `Quarterly VAT Return for ${qLabel}. Due the 25th of the month following quarter end (NIRC Sec. 114(A) as amended by RA 10963 and RA 11976). Monthly 2550M is no longer required from 2023 (RR 13-2018; RMC 5-2023).`,
+        description: `Quarterly VAT Return for ${qLabel} ${qNote}. Due the 25th of the month following quarter end (NIRC Sec. 114(A) as amended by RA 10963 and RA 11976). Monthly 2550M is no longer required from 2023 (RR 13-2018; RMC 5-2023).`,
         dueDate: monthAfter(qYear, endMonth, 25),
         priority: "high",
         category: "VAT",
@@ -265,7 +339,7 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     if (client.percentageTaxRegistered) {
       deadlines.push({
         title: `BIR Form 2551Q — ${qLabel}`,
-        description: `Quarterly Percentage Tax Return for ${qLabel}. Due the 25th of the month following quarter end (NIRC Sec. 128(A) as amended by RA 10963 and RA 11976).`,
+        description: `Quarterly Percentage Tax Return for ${qLabel} ${qNote}. Due the 25th of the month following quarter end (NIRC Sec. 128(A) as amended by RA 10963 and RA 11976).`,
         dueDate: monthAfter(qYear, endMonth, 25),
         priority: "medium",
         category: "Percentage Tax",
@@ -277,7 +351,7 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     if (client.incomeTaxType === "corporate" && qIdx < 3) {
       deadlines.push({
         title: `BIR Form 1702Q — ${qLabel}`,
-        description: `Quarterly Income Tax Return for Corporations (${qLabel}). Due within 60 days after the close of the quarter (NIRC Sec. 75 and 77(B)).`,
+        description: `Quarterly Income Tax Return for Corporations for ${qLabel} ${qNote}. Due within 60 days after the close of the quarter (NIRC Sec. 75 and 77(B)).`,
         dueDate: addDays(monthAfter(qYear, endMonth - 1, "last"), 60),
         priority: "high",
         category: "Income Tax",
@@ -460,16 +534,17 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     quarters.forEach(([endMonth, yOff], qIdx) => {
       const qYear = year + yOff;
       const qLabel = `Q${qIdx + 1} ${year}`;
+      const qNote = fiscalQuarterNote(endMonth, qYear, qIdx);
       deadlines.push({
         title: `Summary List of Sales (SLS) — ${qLabel}`,
-        description: `Quarterly Summary List of Sales for VAT-registered taxpayers for ${qLabel}. Due the 25th of the month following quarter end, with 2550Q (RR 16-2005 / RR 1-2012 as amended).`,
+        description: `Quarterly Summary List of Sales for VAT-registered taxpayers for ${qLabel} ${qNote}. Due the 25th of the month following quarter end, with 2550Q (RR 16-2005 / RR 1-2012 as amended).`,
         dueDate: monthAfter(qYear, endMonth, 25),
         priority: "medium",
         category: "VAT",
       });
       deadlines.push({
         title: `Summary List of Purchases (SLP) — ${qLabel}`,
-        description: `Quarterly Summary List of Purchases for VAT-registered taxpayers for ${qLabel}. Due the 25th of the month following quarter end, with 2550Q (RR 16-2005 / RR 1-2012 as amended).`,
+        description: `Quarterly Summary List of Purchases for VAT-registered taxpayers for ${qLabel} ${qNote}. Due the 25th of the month following quarter end, with 2550Q (RR 16-2005 / RR 1-2012 as amended).`,
         dueDate: monthAfter(qYear, endMonth, 25),
         priority: "medium",
         category: "VAT",
@@ -595,34 +670,6 @@ export const FREQUENCY_MAP: Record<string, "monthly" | "quarterly" | "annual"> =
   "LesseeInfo": "annual",
 };
 
-/**
- * Short form code of a generated deadline title. Codes are distinct per filing
- * kind, so (formNumber, period) identifies one checklist item: the 2316 issue to
- * employees ("2316-Issue") vs. the substituted-filing duplicates ("2316"), the
- * 1604C vs. 1604E alphalists, and the EWT vs. final-withholding QAP.
- */
-export function extractFormNumber(title: string): string {
-  // Annexes first: "Annex F (Annual Alphalist of Employees)" is not an alphalist.
-  if (title.startsWith("Annex C")) return "AnnexC";
-  if (title.startsWith("Annex F")) return "AnnexF";
-  if (/^BIR Form 2316 \(Issue to Employees\)/.test(title)) return "2316-Issue";
-  const match = title.match(/BIR Form (\w+)/);
-  if (match) return match[1];
-  if (title.includes("Audited Financial Statements") || /\bAFS\b/.test(title)) return "AFS";
-  if (title.includes("Alphalist of Payees") && title.includes("Quarterly")) {
-    return title.includes("Final Withholding") ? "QAP-Final" : "QAP";
-  }
-  if (title.includes("1604C Attachment")) return "Alphalist-1604C";
-  if (title.includes("1604E Attachment")) return "Alphalist-1604E";
-  if (title.includes("Alphalist")) return "Alphalist";
-  if (title.includes("Summary List of Sales")) return "SLS";
-  if (title.includes("Summary List of Purchases")) return "SLP";
-  if (title.includes("eSales")) return "eSales";
-  if (title.includes("Annual Inventory")) return "Inventory";
-  if (title.includes("Lessee Information")) return "LesseeInfo";
-  return "OTHER";
-}
-
 // Helper: the first two months of the calendar quarter ending in `endMonth`
 // (the 0619E/0619F months; the quarter-end month is covered by 1601EQ/1601FQ).
 function nonQuarterMonths(endMonth: number, qYear: number): Array<{ month: number; year: number }> {
@@ -651,26 +698,6 @@ function esalesDay(tin: string | null | undefined): { day: 8 | 10; basis: string
   return ninth % 2 === 0
     ? { day: 8, basis: `9th TIN digit ${ninth} is even` }
     : { day: 10, basis: `9th TIN digit ${ninth} is odd` };
-}
-
-const PERIOD_RE = /^(?:Q[1-4]|January|February|March|April|May|June|July|August|September|October|November|December|FY|Annual|1st Semester|2nd Semester) \d{4}$/;
-
-/**
- * Period label of a generated deadline title, from the part after the last " — ":
- * "Q2 2026", "March 2026", "FY 2026", "Annual 2026", "1st Semester 2026". A bare
- * tax year ("Alphalist of Employees (1604C Attachment) — 2026", "BIR Form 2316
- * (Issue to Employees) — 2026") is an annual filing, except the Lessee Information
- * Statement, whose bare-year title is its second semester.
- */
-export function extractPeriod(title: string): string {
-  const sep = title.lastIndexOf(" — ");
-  const tail = (sep >= 0 ? title.slice(sep + 3) : title).trim();
-  if (PERIOD_RE.test(tail)) return tail;
-  if (/^\d{4}$/.test(tail)) {
-    return title.startsWith("Lessee Information Statement") ? `2nd Semester ${tail}` : `Annual ${tail}`;
-  }
-  const inner = title.match(/\b(?:Q[1-4]|January|February|March|April|May|June|July|August|September|October|November|December|FY|Annual|1st Semester|2nd Semester) \d{4}\b/);
-  return inner ? inner[0] : title;
 }
 
 type DeadlineRow = typeof deadlinesTable.$inferSelect;
@@ -739,10 +766,14 @@ export async function buildComplianceItems(
     const frequency = FREQUENCY_MAP[formNumber] || "annual";
 
     const matched = byTitle.get(req.title);
+    // A saved deadline's date wins (it may have been extended by hand), so the checklist
+    // agrees with the deadlines page, calendar and dashboard; the generator's date is
+    // only used for filings with no saved row yet.
+    const dueDate = matched?.dueDate ?? req.dueDate;
     let status: "pending" | "filed" | "overdue" = "pending";
     if (matched?.status === "completed") {
       status = "filed";
-    } else if (req.dueDate < today) {
+    } else if (dueDate < today) {
       status = "overdue";
     }
 
@@ -765,7 +796,7 @@ export async function buildComplianceItems(
       formNumber,
       description: req.description,
       period,
-      dueDate: req.dueDate,
+      dueDate,
       frequency,
       status,
       deadlineId: matched?.id ?? null,
@@ -867,8 +898,18 @@ router.post("/clients", requireStaff, async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const tin = normalizeTin(parsed.data.tin);
+  if (tin === null) {
+    res.status(400).json({ error: TIN_FORMAT_ERROR });
+    return;
+  }
+  const fiscal = resolveFiscalYear(parsed.data.fiscalYearStart, parsed.data.fiscalYearEnd);
+  if (fiscal && "error" in fiscal) {
+    res.status(400).json({ error: fiscal.error });
+    return;
+  }
 
-  const [client] = await db.insert(clientsTable).values(parsed.data).returning();
+  const [client] = await db.insert(clientsTable).values({ ...parsed.data, tin, ...(fiscal ?? {}) }).returning();
 
   await logAudit({
     userId: req.session.userId,
@@ -918,13 +959,27 @@ router.patch("/clients/:id", requireStaff, async (req, res): Promise<void> => {
 
   const updates: Partial<typeof clientsTable.$inferInsert> = {};
   if (parsed.data.name != null) updates.name = parsed.data.name;
-  if (parsed.data.tin != null) updates.tin = parsed.data.tin;
+  if (parsed.data.tin != null) {
+    const tin = normalizeTin(parsed.data.tin);
+    if (tin === null) {
+      res.status(400).json({ error: TIN_FORMAT_ERROR });
+      return;
+    }
+    updates.tin = tin;
+  }
   if (parsed.data.businessType != null) updates.businessType = parsed.data.businessType;
   if ("contactEmail" in parsed.data) updates.contactEmail = parsed.data.contactEmail ?? null;
   if ("contactPhone" in parsed.data) updates.contactPhone = parsed.data.contactPhone ?? null;
   if ("address" in parsed.data) updates.address = parsed.data.address ?? null;
-  if ("fiscalYearEnd" in parsed.data) updates.fiscalYearEnd = parsed.data.fiscalYearEnd ?? null;
-  if ("fiscalYearStart" in parsed.data) updates.fiscalYearStart = parsed.data.fiscalYearStart ?? null;
+  const fiscal = resolveFiscalYear(
+    "fiscalYearStart" in parsed.data ? parsed.data.fiscalYearStart ?? null : undefined,
+    "fiscalYearEnd" in parsed.data ? parsed.data.fiscalYearEnd ?? null : undefined,
+  );
+  if (fiscal && "error" in fiscal) {
+    res.status(400).json({ error: fiscal.error });
+    return;
+  }
+  if (fiscal) Object.assign(updates, fiscal);
   if (parsed.data.status != null) updates.status = parsed.data.status;
   if ("tradeName" in parsed.data) updates.tradeName = parsed.data.tradeName ?? null;
   if ("rdoCode" in parsed.data) updates.rdoCode = parsed.data.rdoCode ?? null;
@@ -1137,14 +1192,18 @@ router.post("/clients/:id/generate-deadlines", requireStaff, async (req, res): P
           .returning({ id: deadlinesTable.id });
 
     let updated = 0;
+    let keptManual = 0;
     let removed = duplicateIds.length;
     if (overwrite) {
       // Refresh the schedule fields of existing rows. Never touch status or engagementId.
+      // A due date edited by hand (dueDateManual, e.g. a BIR extension) is kept.
       for (const row of existing) {
         const d = required.get(row.title);
         if (!d) continue;
+        const dueDate = row.dueDateManual ? row.dueDate : d.dueDate;
+        if (row.dueDateManual && row.dueDate !== d.dueDate) keptManual++;
         if (
-          row.dueDate === d.dueDate &&
+          row.dueDate === dueDate &&
           (row.description ?? null) === d.description &&
           row.priority === d.priority &&
           row.taxYear === year
@@ -1153,8 +1212,12 @@ router.post("/clients/:id/generate-deadlines", requireStaff, async (req, res): P
         }
         await tx
           .update(deadlinesTable)
-          .set({ dueDate: d.dueDate, description: d.description, priority: d.priority, taxYear: year })
+          .set({ dueDate, description: d.description, priority: d.priority, taxYear: year })
           .where(eq(deadlinesTable.id, row.id));
+        // The filing started from this deadline follows its new date.
+        if (row.engagementId != null && row.dueDate !== dueDate) {
+          await tx.update(engagementsTable).set({ dueDate }).where(eq(engagementsTable.id, row.engagementId));
+        }
         updated++;
       }
 
@@ -1183,10 +1246,10 @@ router.post("/clients/:id/generate-deadlines", requireStaff, async (req, res): P
       removed += deleted.length;
     }
 
-    return { created: inserted.length, updated, removed, alreadyExisted: existingTitles.size };
+    return { created: inserted.length, updated, keptManual, removed, alreadyExisted: existingTitles.size };
   });
 
-  const { created, updated, removed, alreadyExisted } = outcome;
+  const { created, updated, keptManual, removed, alreadyExisted } = outcome;
 
   if (created > 0 || updated > 0 || removed > 0) {
     await logAudit({
@@ -1212,6 +1275,7 @@ router.post("/clients/:id/generate-deadlines", requireStaff, async (req, res): P
 
   const parts = [`${created} created`];
   if (overwrite) parts.push(`${updated} updated`);
+  if (keptManual > 0) parts.push(`${keptManual} kept a due date edited by hand`);
   if (overwrite || removed > 0) parts.push(`${removed} removed`);
   parts.push(`${alreadyExisted} already existed`);
   res.json({

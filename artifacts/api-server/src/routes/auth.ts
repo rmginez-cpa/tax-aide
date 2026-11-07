@@ -112,6 +112,8 @@ router.post("/auth/logout", async (req, res): Promise<void> => {
       sameSite: "lax",
       secure: cookieSecure(),
     });
+    // Drop anything this user's session left in the browser's HTTP cache.
+    res.setHeader("Clear-Site-Data", '"cache"');
     res.json({ message: "Logged out successfully" });
   });
 });

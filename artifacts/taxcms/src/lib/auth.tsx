@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
-import { type User, useGetMe, getGetMeQueryKey } from "@workspace/api-client-react";
+import { type AuthConfig, type User, useGetMe, getGetMeQueryKey } from "@workspace/api-client-react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 
@@ -67,10 +67,7 @@ export function useAuth() {
 }
 
 /** Public auth settings from GET /api/auth/config. */
-export interface AuthConfig {
-  /** Whether the demo accounts are seeded (and the login page may show them). */
-  demoAccounts: boolean;
-}
+export type { AuthConfig };
 
 /** react-query key of GET /api/auth/config. */
 export const AUTH_CONFIG_QUERY_KEY = ["/api/auth/config"] as const;

@@ -11,6 +11,7 @@ import type { ClientWorkflowCounts } from "./clientWorkflowCounts";
 export interface Client {
   id: number;
   name: string;
+  /** ###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400 */
   tin: string;
   businessType: string;
   /** @nullable */
@@ -57,6 +58,6 @@ export interface Client {
   isEsalesRequired?: boolean;
   createdAt: string;
   updatedAt: string;
-  /** Aggregate filing workflow counts across all engagements for this client (present on list responses). */
+  /** Filing workflow badge counts (GET /clients only): the same items the client page lists for the current tax year, plus every overdue open deadline. */
   workflowCounts?: ClientWorkflowCounts;
 }

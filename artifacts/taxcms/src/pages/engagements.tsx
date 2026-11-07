@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation, useSearch } from "wouter";
+import { Link } from "wouter";
+import { useUrlFilterState } from "@/hooks/use-url-filter-state";
 import {
   useListEngagements, useCreateEngagement, useListClients, useListUsers, useListDocuments,
   useListDeadlines, getListEngagementsQueryKey, getListDocumentsQueryKey,
@@ -12,14 +13,14 @@ import { useAuth } from "@/lib/auth";
 import { can, isStaff } from "@/lib/permissions";
 import { errorMessage } from "@/lib/api";
 import { formatBytes, formatDate } from "@/lib/format";
-import { ENGAGEMENT_STATUS, FILING_STAGES, getEngagementStatus, type FilingStageKey } from "@/lib/status";
+import { ENGAGEMENT_STATUS, ENGAGEMENT_STATUS_KEYS, FILING_STAGES, getEngagementStatus, type FilingStageKey } from "@/lib/status";
 import { invalidateFilingData } from "@/lib/queries";
 import { ErrorState } from "@/components/ErrorState";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -30,6 +31,7 @@ import {
 import { cn } from "@/lib/utils";
 import { FileViewer } from "@/components/FileViewer";
 import { FilingWorkflowDialog } from "@/components/FilingWorkflowDialog";
+import { UnlinkedClientNotice } from "@/components/UnlinkedClientNotice";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function FileTypeIcon({ mimeType, name }: { mimeType: string; name?: string }) {
@@ -40,12 +42,6 @@ function FileTypeIcon({ mimeType, name }: { mimeType: string; name?: string }) {
     return <Sheet className="h-4 w-4 text-green-600 shrink-0" />;
   if (ext === "csv" || ext === "dat") return <FileCode className="h-4 w-4 text-blue-500 shrink-0" />;
   return <FileText className="h-4 w-4 text-muted-foreground shrink-0" />;
-}
-
-// Extract a short form number from a taxType string, e.g. "VAT (2550Q)" → "2550Q"
-function extractFormNumber(taxType: string): string {
-  const m = taxType.match(/\(([^)]+)\)/);
-  return m ? m[1] : taxType;
 }
 
 /** Stage group heading in the documents dialog (documents without a stage go under "Other Documents"). */
@@ -66,7 +62,7 @@ function EngagementDocsDialog({
 
   const byStage: Record<string, DocItem[]> = {};
   docs?.forEach(d => {
-    const s = (d as { stage?: string | null }).stage ?? "general";
+    const s = d.stage ?? "general";
     (byStage[s] ??= []).push(d);
   });
 
@@ -79,6 +75,7 @@ function EngagementDocsDialog({
               <Paperclip className="h-4 w-4 text-primary shrink-0" />
               <span className="min-w-0 break-words">Documents — {title}</span>
             </DialogTitle>
+            <DialogDescription>The documents uploaded to this filing, grouped by workflow stage.</DialogDescription>
           </DialogHeader>
 
           {isLoading ? (
@@ -136,10 +133,19 @@ function EngagementDocsDialog({
   );
 }
 
+/**
+ * Tax types for a manual engagement: the BIR forms generateBIRDeadlines (api-server
+ * routes/clients.ts) produces, the form number in parentheses (the server's engagementFormNumber
+ * in api-server/src/lib/filingLabels.ts reads it into the engagement's `formNumber`).
+ * 2550M is not offered (not required from 2023) and 1601E was replaced by 1601EQ / 0619E.
+ */
 const TAX_TYPES = [
-  "Income Tax (1701)", "Income Tax (1702)", "VAT (2550M)", "VAT (2550Q)",
-  "Withholding Tax (1601C)", "Withholding Tax (1601E)", "Withholding Tax (1604E)",
-  "Percentage Tax (2551Q)", "Documentary Stamp Tax (2000)",
+  "Income Tax (1701Q)", "Income Tax (1701)", "Income Tax (1702Q)", "Income Tax (1702)",
+  "VAT (2550Q)", "Percentage Tax (2551Q)",
+  "Withholding Tax (1601C)", "Withholding Tax (0619E)", "Withholding Tax (1601EQ)",
+  "Withholding Tax (0619F)", "Withholding Tax (1601FQ)",
+  "Annual Information Return (1604C)", "Annual Information Return (1604E)", "Annual Information Return (1604F)",
+  "Certificate of Compensation (2316)", "Documentary Stamp Tax (2000)",
 ];
 
 interface WorkflowTarget {
@@ -152,11 +158,8 @@ interface WorkflowTarget {
   dueDate: string;
 }
 
-/** The serialized engagement also carries per-stage data the generated type does not declare. */
-type EngagementRow = Engagement & { stagesForReview?: number; stageStatuses?: Record<string, string> };
-
-/** Engagement-level statuses (lib/status ENGAGEMENT_STATUS still lists retired values; filter on these only). */
-const STATUS_FILTERS = ["pending", "in_progress", "completed"] as const;
+/** Engagement-level statuses to filter on. */
+const STATUS_FILTERS = ENGAGEMENT_STATUS_KEYS;
 
 /** Filters kept in the URL query string: ?status=&review=1&mine=1&clientId=&q= */
 interface Filters {
@@ -167,28 +170,18 @@ interface Filters {
   q: string;
 }
 
-function parseFilters(search: string): Filters {
-  const p = new URLSearchParams(search);
-  const status = p.get("status") ?? "";
-  const clientId = Number(p.get("clientId"));
-  return {
-    status: (STATUS_FILTERS as readonly string[]).includes(status) ? status : "all",
-    review: p.get("review") === "1",
-    mine: p.get("mine") === "1",
-    clientId: Number.isInteger(clientId) && clientId > 0 ? clientId : null,
-    q: p.get("q") ?? "",
-  };
-}
+/** URL keys and their defaults (useUrlFilterState drops a value equal to its default). */
+const FILTER_DEFAULTS = { status: "all", review: "", mine: "", clientId: "", q: "" };
 
-function filtersToSearch(f: Filters): string {
-  const p = new URLSearchParams();
-  if (f.clientId) p.set("clientId", String(f.clientId));
-  if (f.status !== "all") p.set("status", f.status);
-  if (f.review) p.set("review", "1");
-  if (f.mine) p.set("mine", "1");
-  if (f.q) p.set("q", f.q);
-  const qs = p.toString();
-  return qs ? `?${qs}` : "";
+function parseFilters(raw: Record<keyof typeof FILTER_DEFAULTS, string>): Filters {
+  const clientId = Number(raw.clientId);
+  return {
+    status: (STATUS_FILTERS as readonly string[]).includes(raw.status) ? raw.status : "all",
+    review: raw.review === "1",
+    mine: raw.mine === "1",
+    clientId: Number.isInteger(clientId) && clientId > 0 ? clientId : null,
+    q: raw.q,
+  };
 }
 
 const EMPTY_FORM = { clientId: "", title: "", taxType: "", period: "", fiscalYear: "", assignedTo: "", dueDate: "", notes: "" };
@@ -196,9 +189,9 @@ const EMPTY_FORM = { clientId: "", title: "", taxType: "", period: "", fiscalYea
 export default function Engagements() {
   const { user } = useAuth();
   const staff = isStaff(user?.role);
-  const search = useSearch();
-  const [, setLocation] = useLocation();
-  const filters = parseFilters(search);
+  // Shared URL filter state: parameters this page does not manage (e.g. a shared link's extras) are kept.
+  const [rawFilters, setRawFilters] = useUrlFilterState(FILTER_DEFAULTS);
+  const filters = parseFilters(rawFilters);
 
   const listParams: ListEngagementsParams = {};
   if (filters.clientId) listParams.clientId = filters.clientId;
@@ -225,10 +218,16 @@ export default function Engagements() {
   useEffect(() => { setSearchText(filters.q); }, [filters.q]);
 
   const updateFilters = (patch: Partial<Filters>) => {
-    setLocation(`/engagements${filtersToSearch({ ...filters, ...patch })}`, { replace: true });
+    const out: Partial<Record<keyof typeof FILTER_DEFAULTS, string>> = {};
+    if ("status" in patch) out.status = patch.status ?? "all";
+    if ("review" in patch) out.review = patch.review ? "1" : "";
+    if ("mine" in patch) out.mine = patch.mine ? "1" : "";
+    if ("clientId" in patch) out.clientId = patch.clientId ? String(patch.clientId) : "";
+    if ("q" in patch) out.q = patch.q ?? "";
+    setRawFilters(out);
   };
 
-  const rows = (engagements ?? []) as EngagementRow[];
+  const rows = engagements ?? [];
   const needle = searchText.trim().toLowerCase();
   const filtered = rows.filter(e => {
     if (needle) {
@@ -254,13 +253,14 @@ export default function Engagements() {
     return deadlines?.find(d => d.engagementId === engagementId)?.id ?? null;
   };
 
-  const handleOpenWorkflow = (e: EngagementRow) => {
+  const handleOpenWorkflow = (e: Engagement) => {
     setWorkflowTarget({
       engagementId: e.id,
       deadlineId: findDeadlineId(e.id),
       clientId: e.clientId,
-      formNumber: extractFormNumber(e.taxType),
-      description: e.title,
+      // Server-derived code (same rules as the compliance checklist); the subtitle is the client.
+      formNumber: e.formNumber ?? e.taxType,
+      description: e.clientName ?? "",
       period: e.period,
       dueDate: e.dueDate ?? "",
     });
@@ -306,7 +306,10 @@ export default function Engagements() {
               <Button><Plus className="h-4 w-4 mr-2" />New Engagement</Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-lg">
-              <DialogHeader><DialogTitle>Create Engagement</DialogTitle></DialogHeader>
+              <DialogHeader>
+                <DialogTitle>Create Engagement</DialogTitle>
+                <DialogDescription>Start a filing by hand. Filings for generated BIR deadlines start from the deadline with Start Workflow.</DialogDescription>
+              </DialogHeader>
               <div className="grid gap-4 py-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="eng-client">Client *</Label>
@@ -370,6 +373,8 @@ export default function Engagements() {
           </Dialog>
         )}
       </div>
+
+      <UnlinkedClientNotice />
 
       <div className="space-y-3">
         <div className="flex flex-col sm:flex-row gap-3">
@@ -440,7 +445,7 @@ export default function Engagements() {
               size="sm"
               variant="ghost"
               className="h-8 text-muted-foreground"
-              onClick={() => { setSearchText(""); setLocation("/engagements", { replace: true }); }}
+              onClick={() => { setSearchText(""); setRawFilters({ ...FILTER_DEFAULTS }); }}
             >
               Clear filters
             </Button>

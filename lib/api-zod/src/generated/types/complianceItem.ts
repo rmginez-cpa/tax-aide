@@ -6,11 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ComplianceItemFrequency } from "./complianceItemFrequency";
-import type { ComplianceItemStageStatuses } from "./complianceItemStageStatuses";
 import type { ComplianceItemStatus } from "./complianceItemStatus";
+import type { StageStatuses } from "./stageStatuses";
 
 export interface ComplianceItem {
-  /** BIR form number (e.g. 2550M, 1702) */
+  /** BIR form number (e.g. 2550Q, 1702) */
   formNumber: string;
   description: string;
   /** Human-readable period (e.g. 'January 2025', 'Q1 2025') */
@@ -23,18 +23,24 @@ export interface ComplianceItem {
    * ID of the linked deadline record, if it exists
    * @nullable
    */
-  deadlineId?: number | null;
+  deadlineId: number | null;
+  /**
+   * Filing (engagement) linked to the deadline, if any
+   * @nullable
+   */
+  engagementId: number | null;
   /** @nullable */
-  engagementId?: number | null;
-  /** @nullable */
-  workflowStage?: string | null;
-  /** @nullable */
-  workflowStatus?: string | null;
-  /** Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable */
-  stageStatuses?: ComplianceItemStageStatuses;
+  workflowStage: string | null;
+  /**
+   * Status of the linked engagement (pending | in_progress | completed)
+   * @nullable
+   */
+  workflowStatus: string | null;
+  /** Per-stage statuses of the linked engagement (null without one); payment is not_applicable when taxPayable is 0 */
+  stageStatuses: StageStatuses | null;
   /**
    * Tax amount payable (null = not entered, 0 = none due, >0 = payment required)
    * @nullable
    */
-  taxPayable?: number | null;
+  taxPayable: number | null;
 }

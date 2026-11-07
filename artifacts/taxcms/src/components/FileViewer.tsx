@@ -6,6 +6,7 @@ import { Download, X, FileText, AlertCircle, Loader2, Info } from "lucide-react"
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch, downloadDocument, errorMessage } from "@/lib/api";
 import { formatBytes, formatDate } from "@/lib/format";
+import type { ParseRequest, ParseResponse } from "./xlsx.worker";
 
 interface Doc {
   id: number;
@@ -86,25 +87,33 @@ async function docxToSafeHtml(arrayBuffer: ArrayBuffer): Promise<string> {
   });
 }
 
-/** Parse a workbook, reading at most MAX_SHEET_ROWS data rows per sheet. */
-async function parseWorkbook(arrayBuffer: ArrayBuffer): Promise<Sheet[]> {
-  const { read, utils } = await import("xlsx");
-  const wb = read(new Uint8Array(arrayBuffer), { sheetRows: MAX_SHEET_ROWS + 1, cellDates: true });
-  return wb.SheetNames.map(name => {
-    const ws = wb.Sheets[name];
-    // With sheetRows, SheetJS keeps the real extent in "!fullref".
-    const fullRef = (ws["!fullref"] as string | undefined) ?? (ws["!ref"] as string | undefined);
-    const full = fullRef ? utils.decode_range(fullRef) : null;
-    const totalRows = full ? full.e.r - full.s.r + 1 : 0;
-    const totalColumns = full ? full.e.c - full.s.c + 1 : 0;
-    const raw = utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false, defval: "", blankrows: false });
-    const columns = Math.min(MAX_SHEET_COLS, raw.reduce<number>((m, r) => Math.max(m, r.length), 0));
-    const rows = raw.slice(0, MAX_SHEET_ROWS + 1).map(r => {
-      const out: string[] = new Array(columns);
-      for (let i = 0; i < columns; i++) out[i] = r[i] == null ? "" : String(r[i]);
-      return out;
-    });
-    return { name, rows, columns, totalRows: Math.max(totalRows, rows.length), totalColumns: Math.max(totalColumns, columns) };
+/** A workbook that takes longer than this to parse is abandoned (CVE-2024-22363 ReDoS). */
+const SHEET_PARSE_TIMEOUT_MS = 20_000;
+
+/**
+ * Parse a workbook, reading at most MAX_SHEET_ROWS data rows per sheet. SheetJS runs in a
+ * dedicated worker (see xlsx.worker.ts), never on the page, because the installed release has
+ * known prototype-pollution and ReDoS bugs; the worker is terminated afterwards, on abort and on timeout.
+ */
+function parseWorkbook(arrayBuffer: ArrayBuffer, signal: AbortSignal): Promise<Sheet[]> {
+  return new Promise<Sheet[]>((resolve, reject) => {
+    const worker = new Worker(new URL("./xlsx.worker.ts", import.meta.url), { type: "module" });
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      worker.terminate();
+    };
+    const onAbort = () => { done(); reject(new DOMException("Aborted", "AbortError")); };
+    const timer = setTimeout(() => { done(); reject(new Error("The spreadsheet took too long to read. Download it to view it.")); }, SHEET_PARSE_TIMEOUT_MS);
+    signal.addEventListener("abort", onAbort);
+    worker.onmessage = (e: MessageEvent<ParseResponse>) => {
+      done();
+      if (e.data.ok) resolve(e.data.sheets);
+      else reject(new Error(e.data.error || "Could not read the spreadsheet"));
+    };
+    worker.onerror = (e) => { done(); reject(new Error(e.message || "Could not read the spreadsheet")); };
+    const req: ParseRequest = { buffer: arrayBuffer, maxRows: MAX_SHEET_ROWS, maxCols: MAX_SHEET_COLS };
+    worker.postMessage(req, [arrayBuffer]);
   });
 }
 
@@ -137,7 +146,7 @@ export function FileViewer({ doc, onClose }: FileViewerProps) {
 
         let next: Preview;
         if (isExcel(doc.mimeType)) {
-          next = { kind: "sheets", sheets: await parseWorkbook(await blob.arrayBuffer()) };
+          next = { kind: "sheets", sheets: await parseWorkbook(await blob.arrayBuffer(), signal) };
         } else if (isWord(doc.mimeType)) {
           next = { kind: "html", html: await docxToSafeHtml(await blob.arrayBuffer()) };
         } else if (isText(doc.mimeType, doc.originalName)) {

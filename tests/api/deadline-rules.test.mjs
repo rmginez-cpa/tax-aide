@@ -2,7 +2,7 @@
 // writes, per form, for clients with different registrations (calendar/fiscal corporate,
 // individual with a fiscal-year setting, odd/even/missing TIN), including the RMC 65-2016
 // weekend/holiday roll-forward (Easter week, National Heroes Day, Bonifacio Day, weekends).
-// Dependency-free Node 22+ ES module, same harness and env vars as authz.test.mjs.
+// Dependency-free Node 22+ ES module, shared harness (_harness.mjs) and env vars.
 //
 // !! DESTRUCTIVE: fixture.sql TRUNCATEs every application table. Point it only at a
 // !! throwaway database. The script refuses to run unless TAXAIDE_TEST_RESET_DB=1.
@@ -10,97 +10,13 @@
 // Run:  see tests/api/README.md (swap the file name)
 // Env:  API_BASE, FIXTURE, UPLOADS_DIR, PGHOST/PGUSER/PGDATABASE/PGPASSWORD, ONLY=<group substring>
 
-import { execSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { guard, sql, q, reset as resetAll, call as request, record, group, main } from "./_harness.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+guard();
 
-if (process.env.TAXAIDE_TEST_RESET_DB !== "1") {
-  console.error("Refusing to run: this suite wipes the database. Set TAXAIDE_TEST_RESET_DB=1 and point PG*/API_BASE at a throwaway database.");
-  process.exit(2);
-}
-const BASE = process.env.API_BASE ?? "http://localhost:8080/api";
-const FIXTURE = process.env.FIXTURE ?? path.join(HERE, "fixture.sql");
-const PG_ENV = {
-  ...process.env,
-  PGPASSWORD: process.env.PGPASSWORD ?? "taxaide",
-  PGHOST: process.env.PGHOST ?? "localhost",
-  PGUSER: process.env.PGUSER ?? "taxaide",
-  PGDATABASE: process.env.PGDATABASE ?? "taxaide",
-};
-const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.join(HERE, "uploads");
-const ONLY = process.env.ONLY ?? "";
-
-// ── DB / HTTP helpers ────────────────────────────────────────────────────────
-function sql(query) {
-  return execSync("psql -q -tA -v ON_ERROR_STOP=1", { input: query, env: PG_ENV, stdio: ["pipe", "pipe", "pipe"] })
-    .toString()
-    .trim();
-}
-function q(s) {
-  return `'${String(s).replace(/'/g, "''")}'`;
-}
-
-let managerCookie = null;
-async function login() {
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: "manager@firm.ph", password: "manager123" }),
-  });
-  const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [res.headers.get("set-cookie") ?? ""];
-  const sid = setCookies.map((c) => c.split(";")[0]).find((c) => c.startsWith("connect.sid="));
-  if (res.status !== 200 || !sid) throw new Error(`manager login failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
-  managerCookie = sid;
-}
-
-async function reset() {
-  execSync(`psql -q -v ON_ERROR_STOP=1 -f ${JSON.stringify(FIXTURE)}`, { env: PG_ENV, stdio: ["ignore", "ignore", "pipe"] });
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  fs.writeFileSync(path.join(UPLOADS_DIR, "a.txt"), "alpha");
-  fs.writeFileSync(path.join(UPLOADS_DIR, "b.txt"), "bravo");
-  // Keep the demo users' roles as the fixture expects (the fixture keeps users 1-4).
-  sql(`
-    update users set role='super_admin', client_id=null where id=1;
-    update users set role='manager', client_id=null where id=2;
-    update users set role='maker', client_id=null where id=3;
-    update users set role='client', client_id=1 where id=4;
-  `);
-  await login(); // the fixture wipes user_sessions
-}
-
-async function call(method, urlPath, body) {
-  const headers = { Cookie: managerCookie };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(`${BASE}${urlPath}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-  const text = await res.text();
-  let json;
-  try {
-    json = text ? JSON.parse(text) : undefined;
-  } catch {
-    json = undefined;
-  }
-  return { status: res.status, json, text };
-}
-
-// ── Runner ───────────────────────────────────────────────────────────────────
-let passed = 0;
-const failures = [];
-function record(name, ok, expected, got) {
-  if (ok) {
-    passed++;
-    console.log(`PASS ${name}`);
-  } else {
-    failures.push(name);
-    console.log(`FAIL ${name} expected ${expected} got ${got}`);
-  }
-}
-const groups = [];
-function group(name, fn) {
-  groups.push({ name, fn });
-}
+// Every request in this suite is made as the manager.
+const reset = () => resetAll(["manager"]);
+const call = (method, urlPath, body) => request("manager", method, urlPath, body);
 
 const BASE_CLIENT = {
   businessType: "corporation",
@@ -304,13 +220,16 @@ group("2 individual with a fiscal-year setting (calendar year applies)", async (
   expectAbsent(L, d, /1701Q — Q4|1702/);
   expectDescription(L, d, "BIR Form 1701Q — Q2 2026", "Statutory due date Sat, Aug 15 2026 falls on a non-working day");
   expectDescription(L, d, "BIR Form 1701 (Annual Individual ITR) — FY 2026", "calendar year 2026");
-  // 2551Q still follows the recorded fiscal quarters (Jul 2026 - Jun 2027).
+  // 2551Q follows the calendar quarters too: an individual's taxable year is the calendar
+  // year, so the July fiscal-year setting is ignored (Apr 25 Sat -> Apr 27, Jul 25 Sat -> Jul 27,
+  // Oct 25 Sun -> Oct 26, Jan 25 2027).
   expectDue(L, d, [
-    ["BIR Form 2551Q — Q1 2026", "2026-10-26"],
-    ["BIR Form 2551Q — Q2 2026", "2027-01-25"],
-    ["BIR Form 2551Q — Q3 2026", "2027-04-26"],
-    ["BIR Form 2551Q — Q4 2026", "2027-07-26"],
+    ["BIR Form 2551Q — Q1 2026", "2026-04-27"],
+    ["BIR Form 2551Q — Q2 2026", "2026-07-27"],
+    ["BIR Form 2551Q — Q3 2026", "2026-10-26"],
+    ["BIR Form 2551Q — Q4 2026", "2027-01-25"],
   ]);
+  expectDescription(L, d, "BIR Form 2551Q — Q1 2026", "(January–March 2026)");
   // eSales on the 10th (May 10 Sun -> May 11; Oct 10 Sat -> Oct 12).
   expectDue(L, d, [
     ["eSales Report — January 2026", "2026-02-10"],
@@ -334,12 +253,14 @@ group("2 individual with a fiscal-year setting (calendar year applies)", async (
 // ═════════════════════════════════════════════════════════════════════════════
 group("3 fiscal-year corporations (July-June; March-February Easter roll)", async () => {
   await reset();
-  // No usable TIN -> eSales uses the earlier 8th.
+  // No usable TIN -> eSales uses the earlier 8th. The API only accepts well-formed TINs,
+  // so the legacy value is written straight to the row.
   const jul = await createClient({
-    name: "Rules Corp (Jul-Jun)", tin: "N/A", incomeTaxType: "corporate",
+    name: "Rules Corp (Jul-Jun)", tin: "000-000-000-000", incomeTaxType: "corporate",
     fiscalYearStart: "July", fiscalYearEnd: "June",
     vatRegistered: true, withholdsEwt: true, hasInventory: true, isEsalesRequired: true,
   });
+  sql(`update clients set tin='N/A' where id=${Number(jul)}`);
   const d = await generate(jul, 2026);
   const L = "Jul-Jun corp 2026";
   expectDue(L, d, [
@@ -406,34 +327,4 @@ group("4 overwrite corrects rows saved with the old dates", async () => {
 });
 
 // ── Main ─────────────────────────────────────────────────────────────────────
-async function main() {
-  try {
-    const h = await fetch(`${BASE}/healthz`);
-    if (!h.ok) throw new Error(`healthz ${h.status}`);
-  } catch (err) {
-    console.error(`API not reachable at ${BASE}: ${err?.message ?? err}`);
-    process.exit(2);
-  }
-  for (const g of groups) {
-    if (ONLY && !g.name.includes(ONLY)) continue;
-    console.log(`\n=== ${g.name} ===`);
-    try {
-      await g.fn();
-    } catch (err) {
-      record(`group "${g.name}" crashed`, false, "no exception", String(err?.stack ?? err).slice(0, 400));
-    }
-  }
-  try {
-    await reset();
-  } catch (err) {
-    console.log(`(final fixture reset failed: ${err?.message ?? err})`);
-  }
-  console.log(`\n${passed} passed, ${failures.length} failed, ${passed + failures.length} total`);
-  if (failures.length) {
-    console.log("Failures:");
-    for (const f of failures) console.log(`  - ${f}`);
-    process.exit(1);
-  }
-}
-
-await main();
+await main({ reset });

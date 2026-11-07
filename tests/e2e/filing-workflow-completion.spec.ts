@@ -83,8 +83,9 @@ async function setupClientAndWorkflow(
   const clientRes = await request.post("/api/clients", {
     data: {
       name: `Playwright Test Client ${suffix}`,
-      // TIN must be unique across the database; embed the suffix.
-      tin: `000-${suffix.slice(0, 3)}-${suffix.slice(3)}`,
+      // TIN must be unique across the database and match ###-###-###-### (the server
+      // validates it): the run id's six digits plus the suffix letter's char code as branch.
+      tin: `000-${suffix.slice(0, 3)}-${suffix.slice(3, 6)}-${String(suffix.charCodeAt(6)).padStart(3, "0")}`,
       businessType: "Corporation",
       // withholdsCompensation = true → server generates 1601C monthly entries.
       withholdsCompensation: true,

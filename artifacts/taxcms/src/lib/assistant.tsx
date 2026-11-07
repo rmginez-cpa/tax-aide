@@ -125,7 +125,9 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       setMessages((ms) => [...ms, { role: "user", text: message }, { role: "assistant", text: "", steps: [] }]);
 
       // The page's main heading tells Claude what "this client" / "this filing" means.
-      const title = document.querySelector("main h1")?.textContent?.trim() ?? "";
+      // Pages head themselves with an <h2> (the sidebar brand is the only <h1>), so take
+      // the first h1 or h2 inside <main>.
+      const title = document.querySelector("main h1, main h2")?.textContent?.trim() ?? "";
 
       (async () => {
         try {

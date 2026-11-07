@@ -1,6 +1,6 @@
-// Cache helpers for react-query. Orval keys look like ["/api/engagements", params?]
-// or ["/api/engagements/12"]; a few pages also use hand-written keys
-// ("dashboard-summary", "clients-list"), which are covered here too.
+// Cache helpers for react-query. Every query key starts with its API URL: Orval keys look
+// like ["/api/engagements", params?] or ["/api/engagements/12"], and the hand-written ones
+// (MY_WORK_QUERY_KEY, UNREAD_COUNT_QUERY_KEY, ...) follow the same "/api/..." form.
 
 import type { Query, QueryClient } from "@tanstack/react-query";
 
@@ -15,9 +15,6 @@ export const FILING_DATA_PREFIXES = [
   "/api/checklist-items",
   "/api/notifications",
 ] as const;
-
-/** Hand-written (non-URL) query keys that hold the same data: dashboard widgets and the account page's client list. */
-const LEGACY_KEY_PREFIXES = ["dashboard-", "clients-list"] as const;
 
 /** True when `key` starts with `prefix` at a path boundary ("/api/clients" matches "/api/clients/3/compliance", not "/api/clientsX"). */
 function matchesPrefix(key: string, prefix: string): boolean {
@@ -34,9 +31,7 @@ export function queryKeyStartsWith(query: Pick<Query, "queryKey">, prefixes: rea
 
 /** True for any query that holds filing data (see FILING_DATA_PREFIXES). */
 export function isFilingDataQuery(query: Pick<Query, "queryKey">): boolean {
-  const first = query.queryKey[0];
-  if (typeof first !== "string") return false;
-  return queryKeyStartsWith(query, FILING_DATA_PREFIXES) || LEGACY_KEY_PREFIXES.some(p => first.startsWith(p));
+  return queryKeyStartsWith(query, FILING_DATA_PREFIXES);
 }
 
 /**

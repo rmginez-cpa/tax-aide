@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -176,7 +176,10 @@ export default function Deadlines() {
               <Button><Plus className="h-4 w-4 mr-2" />Add Deadline</Button>
             </DialogTrigger>
             <DialogContent>
-              <DialogHeader><DialogTitle>Create Deadline</DialogTitle></DialogHeader>
+              <DialogHeader>
+                <DialogTitle>Create Deadline</DialogTitle>
+                <DialogDescription>Add a one-off deadline. BIR filing deadlines are generated from each client's page.</DialogDescription>
+              </DialogHeader>
               <div className="grid gap-4 py-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="deadline-title">Title *</Label>

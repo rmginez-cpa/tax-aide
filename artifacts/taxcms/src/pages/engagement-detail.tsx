@@ -46,15 +46,6 @@ const CHECKLIST_STATUS_LABELS: Record<string, string> = {
 /** Manual status overrides a manager may set ("completed" is reached only by approving the workflow stages). */
 const STATUS_OVERRIDES = ["pending", "in_progress"] as const;
 
-/** The serialized engagement also carries per-stage data the generated type does not declare. */
-type StageData = { stageStatuses?: Partial<Record<FilingStageKey, string>>; stagesForReview?: number };
-
-// Extract a short form number from a taxType string, e.g. "VAT (2550Q)" → "2550Q"
-function extractFormNumber(taxType: string): string {
-  const m = taxType.match(/\(([^)]+)\)/);
-  return m ? m[1] : taxType;
-}
-
 function BackButton({ label = "Back to engagements", withText = false }: { label?: string; withText?: boolean }) {
   return withText ? (
     <Button asChild variant="outline" className="mt-4">
@@ -174,8 +165,7 @@ export default function EngagementDetail() {
   }
 
   const st = getEngagementStatus(engagement.status);
-  const stageData = engagement as typeof engagement & StageData;
-  const stageStatuses = stageData.stageStatuses ?? {};
+  const stageStatuses: Partial<Record<FilingStageKey, string>> = engagement.stageStatuses ?? {};
   const paymentNA = stageStatuses.payment === "not_applicable";
   const totalStages = paymentNA ? 3 : 4;
   const approvedStages = FILING_STAGE_KEYS.filter(k => stageStatuses[k] === "approved").length;
@@ -377,7 +367,7 @@ export default function EngagementDetail() {
           ) : documents && documents.length > 0 ? (
             <div className="space-y-2">
               {documents.map(doc => {
-                const stage = FILING_STAGES[(doc as { stage?: string | null }).stage as FilingStageKey];
+                const stage = doc.stage ? FILING_STAGES[doc.stage] : undefined;
                 return (
                   <button
                     key={doc.id}
@@ -457,8 +447,8 @@ export default function EngagementDetail() {
           deadlineId={linkedDeadline?.id ?? null}
           engagementId={engagement.id}
           clientId={engagement.clientId}
-          formNumber={extractFormNumber(engagement.taxType)}
-          description={engagement.title}
+          formNumber={engagement.formNumber ?? engagement.taxType}
+          description={engagement.clientName ?? ""}
           period={engagement.period}
           dueDate={engagement.dueDate ?? linkedDeadline?.dueDate ?? ""}
         />

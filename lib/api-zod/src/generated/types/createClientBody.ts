@@ -9,6 +9,7 @@ import type { CreateClientBodyStatus } from "./createClientBodyStatus";
 
 export interface CreateClientBody {
   name: string;
+  /** ###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400 */
   tin: string;
   businessType: string;
   /** @nullable */

@@ -4,6 +4,7 @@ import {
   useListDocuments, getListDocumentsQueryKey,
   useGetEngagement, getGetEngagementQueryKey,
   useListComments, getListCommentsQueryKey,
+  type Engagement,
 } from "@workspace/api-client-react";
 import { useAuth } from "@/lib/auth";
 import { can } from "@/lib/permissions";
@@ -45,23 +46,6 @@ import {
 
 type StageKey = FilingStageKey;
 
-/** GET /api/engagements/:id as the workflow uses it (the generated type lacks the stage fields). */
-interface Engagement {
-  id: number;
-  status: string;
-  workflowStage: string | null;
-  title: string;
-  notes: string | null;
-  approvalNotes: string | null;
-  assignedTo: number | null;
-  assignedToName: string | null;
-  isAmendment?: boolean;
-  amendedEngagementId?: number | null;
-  stageStatuses: Record<StageKey, string>;
-  stagesForReview: number;
-  taxPayable: number | null;
-}
-
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -69,6 +53,7 @@ interface Props {
   engagementId: number | null;
   clientId: number;
   formNumber: string;
+  /** Subtitle: the client name (every caller passes it). */
   description: string;
   period: string;
   dueDate: string;
@@ -185,7 +170,7 @@ export function FilingWorkflowDialog({
   const engagementQuery = useGetEngagement(engId, {
     query: { enabled, queryKey: getGetEngagementQueryKey(engId) },
   });
-  const engagement = enabled ? ((engagementQuery.data as unknown as Engagement | undefined) ?? null) : null;
+  const engagement = enabled ? engagementQuery.data ?? null : null;
 
   const { data: amendments } = useQuery({
     queryKey: [`/api/engagements/${engId}/amendments`],
@@ -425,6 +410,10 @@ export function FilingWorkflowDialog({
 
   const taxPayable = engagement?.taxPayable ?? null;
   const isPaymentNA = taxPayable !== null && taxPayable === 0;
+  // The figure belongs to the draft return: once it is submitted or approved only a
+  // manager may change it (the server refuses a maker's change with 403).
+  const draftLocked = stageStatuses.draft_return === "for_review" || stageStatuses.draft_return === "approved";
+  const taxPayableLocked = isCompleted || (draftLocked && !isManager);
 
   // Sync tax payable input when engagement loads/changes
   const taxPayableRef = useRef<number | null>(null);
@@ -437,7 +426,7 @@ export function FilingWorkflowDialog({
   const approvedCount = Object.values(stageStatuses).filter(s => s === "approved").length;
 
   const stageDocs = (stageId: StageKey) =>
-    engagementDocs.filter(d => (d as { stage?: string | null }).stage === stageId);
+    engagementDocs.filter(d => d.stage === stageId);
 
   const activeFilingLabel = engagement?.isAmendment
     ? `${engagement.title.includes("Amendment") ? engagement.title.split("—")[1]?.trim() ?? "Amendment" : "Amendment"}`
@@ -445,14 +434,13 @@ export function FilingWorkflowDialog({
 
   const hasMultipleFilings = allFilings.length > 1;
 
-  /** File picker + description + Upload, or a merged PDF (used for editable stages, and by managers on for_review stages). */
-  const renderUploader = (stageId: StageKey, note?: string) => {
+  /** File picker + description + Upload, or a merged PDF (editable stages only: the server refuses uploads to a for_review or approved stage). */
+  const renderUploader = (stageId: StageKey) => {
     const selectedFile = stageFiles[stageId];
     const descValue = stageDescs[stageId] ?? "";
     const isStageUploading = uploadingStage === stageId;
     return (
       <div className="space-y-2 pt-1 border-t">
-        {note && <p className="text-xs text-muted-foreground">{note}</p>}
         {/* Option 1: single file */}
         <div className="flex gap-2">
           <Input
@@ -518,7 +506,7 @@ export function FilingWorkflowDialog({
               </DialogTitle>
               <DialogDescription asChild>
                 <div className="text-sm text-muted-foreground mt-1">
-                  {description} · <span className="font-medium text-foreground">{period}</span> · Due {formatDate(dueDate)}
+                  {description ? `${description} · ` : null}<span className="font-medium text-foreground">{period}</span> · Due {formatDate(dueDate)}
                 </div>
               </DialogDescription>
             </div>
@@ -715,14 +703,21 @@ export function FilingWorkflowDialog({
                               value={taxPayableInput}
                               onChange={e => setTaxPayableInput(e.target.value)}
                               className="text-sm flex-1 min-w-0"
-                              disabled={isCompleted}
+                              disabled={taxPayableLocked}
                             />
-                            {!isCompleted && (
+                            {!taxPayableLocked && (
                               <Button size="sm" variant="outline" onClick={handleSaveTaxPayable} disabled={savingTaxPayable}>
                                 {savingTaxPayable ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
                               </Button>
                             )}
                           </div>
+                          {!isCompleted && taxPayableLocked && (
+                            <p className="text-xs text-muted-foreground">
+                              {stageStatuses.draft_return === "approved"
+                                ? "Locked: the draft return is approved. A manager can undo that approval to change it."
+                                : "Locked while the draft return is pending approval. Recall the submission to change it."}
+                            </p>
+                          )}
                           {taxPayable !== null && (
                             <p className="text-xs text-muted-foreground">
                               {taxPayable === 0
@@ -785,9 +780,6 @@ export function FilingWorkflowDialog({
 
                       {/* Upload — when stage is editable (not_started or in_progress) */}
                       {!isViewer && isStageEditable && renderUploader(stage.id)}
-
-                      {/* Manager can also upload when stage is for_review */}
-                      {isManager && isStageForReview && renderUploader(stage.id, "Upload additional documents (optional)")}
 
                       {/* Staff (makers and above): Submit button */}
                       {!isViewer && isStageEditable && !isCompleted && (

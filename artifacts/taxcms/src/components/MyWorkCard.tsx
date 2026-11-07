@@ -3,6 +3,7 @@
 // deadlines due in the next 14 days, clients their open deadlines and filings in progress.
 
 import { useQuery } from "@tanstack/react-query";
+import type { MyWork, MyWorkDeadline, MyWorkFiling } from "@workspace/api-client-react";
 import { Link } from "wouter";
 import { ChevronRight, ClipboardCheck, Inbox } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,41 +15,7 @@ import { formatDate } from "@/lib/format";
 import { FILING_STAGES, getEngagementStatus, getDeadlineUrgency, type FilingStageKey } from "@/lib/status";
 import { cn } from "@/lib/utils";
 
-export interface MyWorkFiling {
-  id: number;
-  title: string;
-  clientId: number;
-  clientName: string | null;
-  taxType: string;
-  period: string;
-  status: string;
-  dueDate: string | null;
-  overdue: boolean;
-  daysUntilDue: number | null;
-  stagesForReview: string[];
-  waitingSince: string;
-}
-
-export interface MyWorkDeadline {
-  id: number;
-  title: string;
-  clientId: number | null;
-  clientName: string | null;
-  engagementId: number | null;
-  dueDate: string;
-  priority: string;
-  overdue: boolean;
-  daysUntilDue: number;
-}
-
-export interface MyWork {
-  kind: "review" | "maker" | "client";
-  today: string;
-  windowDays: number | null;
-  totals: { filings: number; deadlines: number };
-  filings: MyWorkFiling[];
-  deadlines: MyWorkDeadline[];
-}
+export type { MyWork, MyWorkDeadline, MyWorkFiling } from "@workspace/api-client-react";
 
 /** Starts with "/api/dashboard", so invalidateFilingData() refreshes it after filing mutations. */
 export const MY_WORK_QUERY_KEY = ["/api/dashboard/my-work"] as const;
@@ -197,14 +164,14 @@ export function MyWorkCard() {
         ) : isError ? (
           <ErrorState compact error={error} onRetry={refetch} title="Could not load your work" />
         ) : !data ? null : data.kind === "review" ? (
-          <Section empty="Nothing is waiting for your review." total={data.totals.filings} shown={data.filings.length} moreHref="/engagements">
+          <Section empty="Nothing is waiting for your review." total={data.totals.filings} shown={data.filings.length} moreHref="/engagements?review=1">
             {data.filings.map((f) => <FilingRow key={f.id} f={f} kind="review" />)}
           </Section>
         ) : (
           <div className="grid gap-6 lg:grid-cols-2">
             {data.kind === "maker" ? (
               <>
-                <Section title="My open filings" empty="No open filings assigned to you." total={data.totals.filings} shown={data.filings.length} moreHref="/engagements">
+                <Section title="My open filings" empty="No open filings assigned to you." total={data.totals.filings} shown={data.filings.length} moreHref="/engagements?mine=1">
                   {data.filings.map((f) => <FilingRow key={f.id} f={f} kind="maker" />)}
                 </Section>
                 <Section title={`My deadlines (next ${data.windowDays ?? 14} days)`} empty="No deadlines due in the next two weeks." total={data.totals.deadlines} shown={data.deadlines.length} moreHref="/deadlines">

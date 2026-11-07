@@ -11,15 +11,21 @@ import type { DeadlineStatus } from "./deadlineStatus";
 export interface Deadline {
   id: number;
   /** @nullable */
-  engagementId?: number | null;
+  engagementId: number | null;
   /** @nullable */
-  clientId?: number | null;
+  clientId: number | null;
   /** @nullable */
-  clientName?: string | null;
+  clientName: string | null;
   title: string;
+  /** Form code from the title, the same as the compliance checklist's ("1601EQ", "AnnexF"); "OTHER" for a title that names no form. Sent by the /deadlines endpoints. */
+  formNumber?: string;
+  /** Period label from the title, the same as the compliance checklist's ("Q1 2026", "Annual 2026"); the whole title when it has none. Sent by the /deadlines endpoints. */
+  period?: string;
   /** @nullable */
-  description?: string | null;
+  description: string | null;
+  /** YYYY-MM-DD */
   dueDate: string;
+  /** Stored as pending / completed (completed when the linked filing is completed); overdue is only sent by GET /dashboard/overdue. Derive overdue from dueDate (Asia/Manila) elsewhere. */
   status: DeadlineStatus;
   priority: DeadlinePriority;
   createdAt: string;

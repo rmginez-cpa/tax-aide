@@ -6,6 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
+/**
+ * Stored as pending / completed (completed when the linked filing is completed); overdue is only sent by GET /dashboard/overdue. Derive overdue from dueDate (Asia/Manila) elsewhere.
+ */
 export type DeadlineStatus =
   (typeof DeadlineStatus)[keyof typeof DeadlineStatus];
 

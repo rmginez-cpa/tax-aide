@@ -5,139 +5,21 @@
 // !! DESTRUCTIVE: fixture.sql TRUNCATEs every application table (and this suite rewrites
 // !! audit_logs). Point it only at a throwaway database. Refuses to run unless TAXAIDE_TEST_RESET_DB=1.
 //
-// Run:  see tests/api/README.md (replace authz.test.mjs with admin.test.mjs)
+// Run:  see tests/api/README.md (or node tests/api/run-all.mjs admin)
 // Env:  API_BASE, FIXTURE, UPLOADS_DIR, PGHOST/PGUSER/PGDATABASE/PGPASSWORD, ONLY=<group substring>
 
-import { execSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { guard, BASE, cookies, sql, sqlNum, reset, call, record, assert, group, main } from "./_harness.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+guard();
 
-if (process.env.TAXAIDE_TEST_RESET_DB !== "1") {
-  console.error("Refusing to run: this suite wipes the database. Set TAXAIDE_TEST_RESET_DB=1 and point PG*/API_BASE at a throwaway database.");
-  process.exit(2);
-}
-const BASE = process.env.API_BASE ?? "http://localhost:8080/api";
-const FIXTURE = process.env.FIXTURE ?? path.join(HERE, "fixture.sql");
-const PG_ENV = {
-  ...process.env,
-  PGPASSWORD: process.env.PGPASSWORD ?? "taxaide",
-  PGHOST: process.env.PGHOST ?? "localhost",
-  PGUSER: process.env.PGUSER ?? "taxaide",
-  PGDATABASE: process.env.PGDATABASE ?? "taxaide",
-};
-const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.join(HERE, "uploads");
-const ONLY = process.env.ONLY ?? "";
-
-const USERS = {
-  admin: ["admin@firm.ph", "admin123"],
-  manager: ["manager@firm.ph", "manager123"],
-  maker: ["accountant@firm.ph", "accountant123"],
-  client: ["client@example.com", "client123"], // -> Alpha (1)
-  clientb: ["clientb@example.com", "client123"], // -> Bravo (2)
-  orphan: ["orphan@example.com", "client123"], // unlinked client
-  viewer: ["viewer@example.com", "client123"], // legacy viewer -> Alpha (1)
-};
 const MANAGERS = ["manager", "admin"];
 const DENIED_ROLES = ["maker", "client", "clientb", "orphan", "viewer"];
 
-// ── DB helpers ───────────────────────────────────────────────────────────────
-function sql(query) {
-  return execSync("psql -q -tA -v ON_ERROR_STOP=1", { input: query, env: PG_ENV, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 })
-    .toString()
-    .trim();
-}
-function sqlNum(query) {
-  const n = Number(sql(query).split("\n")[0]);
-  if (Number.isNaN(n)) throw new Error(`non-numeric SQL result for ${query}`);
-  return n;
-}
-
-// ── HTTP helpers ─────────────────────────────────────────────────────────────
-const cookies = {};
-
-async function login(role) {
-  const [email, password] = USERS[role];
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [res.headers.get("set-cookie") ?? ""];
-  const sid = setCookies.map((c) => c.split(";")[0]).find((c) => c.startsWith("connect.sid="));
-  if (res.status !== 200 || !sid) throw new Error(`login failed for ${role}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-  cookies[role] = sid;
-}
-
-async function reset() {
-  execSync(`psql -q -v ON_ERROR_STOP=1 -f ${JSON.stringify(FIXTURE)}`, { env: PG_ENV, stdio: ["ignore", "ignore", "pipe"] });
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  fs.writeFileSync(path.join(UPLOADS_DIR, "a.txt"), "alpha");
-  fs.writeFileSync(path.join(UPLOADS_DIR, "b.txt"), "bravo");
-  sql(`
-    update users set role='super_admin', client_id=null where id=1;
-    update users set role='manager', client_id=null where id=2;
-    update users set role='maker', client_id=null where id=3;
-    update users set role='client', client_id=1 where id=4;
-  `);
-  for (const role of Object.keys(USERS)) await login(role);
-}
-
-async function call(role, method, urlPath) {
-  const headers = {};
-  if (role && cookies[role]) headers.Cookie = cookies[role];
-  const res = await fetch(`${BASE}${urlPath}`, { method, headers, redirect: "manual" });
-  const text = await res.text();
-  let json;
-  try {
-    json = text ? JSON.parse(text) : undefined;
-  } catch {
-    json = undefined;
-  }
-  return { status: res.status, headers: res.headers, text, json };
-}
-
-// ── Runner ───────────────────────────────────────────────────────────────────
-let passed = 0;
-const failures = [];
-function record(name, ok, expected, got) {
-  if (ok) {
-    passed++;
-    console.log(`PASS ${name}`);
-  } else {
-    failures.push(name);
-    console.log(`FAIL ${name} expected ${expected} got ${got}`);
-  }
-}
-function assert(name, cond, expected, got) {
-  let ok;
-  let actual = got;
-  try {
-    ok = typeof cond === "function" ? cond() : cond;
-  } catch (err) {
-    ok = false;
-    actual = `exception ${err?.message ?? err}`;
-  }
-  if (typeof actual === "function") {
-    try {
-      actual = actual();
-    } catch (err) {
-      actual = `exception ${err?.message ?? err}`;
-    }
-  }
-  record(name, ok === true, expected, actual);
-}
 async function status(name, role, urlPath, expected) {
   const r = await call(role, "GET", urlPath);
   const codes = Array.isArray(expected) ? expected : [expected];
   record(`[${role ?? "anon"}] ${name}`, codes.includes(r.status), codes.join("|"), `${r.status} ${r.text.slice(0, 160)}`);
   return r;
-}
-const groups = [];
-function group(name, fn) {
-  groups.push({ name, fn });
 }
 
 const total = (r) => Number(r.headers.get("x-total-count"));
@@ -414,34 +296,4 @@ group("5 csv export", async () => {
 });
 
 // ── Main ─────────────────────────────────────────────────────────────────────
-async function main() {
-  try {
-    const h = await fetch(`${BASE}/healthz`);
-    if (!h.ok) throw new Error(`healthz ${h.status}`);
-  } catch (err) {
-    console.error(`API not reachable at ${BASE}: ${err?.message ?? err}`);
-    process.exit(2);
-  }
-  for (const g of groups) {
-    if (ONLY && !g.name.includes(ONLY)) continue;
-    console.log(`\n=== ${g.name} ===`);
-    try {
-      await g.fn();
-    } catch (err) {
-      record(`group "${g.name}" crashed`, false, "no exception", String(err?.stack ?? err).slice(0, 400));
-    }
-  }
-  try {
-    await reset();
-  } catch (err) {
-    console.log(`(final fixture reset failed: ${err?.message ?? err})`);
-  }
-  console.log(`\n${passed} passed, ${failures.length} failed, ${passed + failures.length} total`);
-  if (failures.length) {
-    console.log("Failures:");
-    for (const f of failures) console.log(`  - ${f}`);
-    process.exit(1);
-  }
-}
-
-await main();
+await main({ reset });

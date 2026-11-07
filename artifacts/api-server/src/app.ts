@@ -20,7 +20,8 @@ import {
   trustProxySetting,
 } from "./lib/security";
 import { passwordPolicyError } from "./lib/passwordPolicy";
-import { pool, db, usersTable, clientsTable } from "@workspace/db";
+import { pool, db, usersTable, clientsTable, engagementsTable } from "@workspace/db";
+import { taxTypeFromDeadlineTitle } from "./lib/filingLabels";
 
 const PgSession = connectPgSimple(session);
 
@@ -223,7 +224,28 @@ async function bootstrapAdmin() {
   logger.warn({ email }, "Created bootstrap super admin; remove BOOTSTRAP_ADMIN_PASSWORD from the environment now");
 }
 
+/**
+ * One-off data fix (idempotent): engagements started from a deadline used to store the
+ * whole deadline title as their tax type ("BIR Form 1601C — February 2026"); store the
+ * form code ("1601C") like every other engagement.
+ */
+async function backfillEngagementTaxTypes() {
+  const rows = await db
+    .select({ id: engagementsTable.id, title: engagementsTable.title })
+    .from(engagementsTable)
+    .where(eq(engagementsTable.taxType, engagementsTable.title));
+  let fixed = 0;
+  for (const row of rows) {
+    const taxType = taxTypeFromDeadlineTitle(row.title);
+    if (taxType === row.title) continue;
+    await db.update(engagementsTable).set({ taxType }).where(eq(engagementsTable.id, row.id));
+    fixed++;
+  }
+  if (fixed) logger.info({ fixed }, "Backfilled engagement tax types from deadline titles");
+}
+
 // Run seed asynchronously on startup (does not block the server from starting)
 seedDefaultAccounts();
+backfillEngagementTaxTypes().catch((err: Error) => logger.warn({ err }, "Engagement tax type backfill failed"));
 
 export default app;

@@ -74,6 +74,21 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /auth/config:
+    get:
+      operationId: getAuthConfig
+      tags: [auth]
+      summary: Public auth settings (no authentication)
+      description: Whether the login page may show the demo accounts (true when SEED_DEMO_ACCOUNTS=true, or outside production unless SEED_DEMO_ACCOUNTS=false).
+      security: []
+      responses:
+        "200":
+          description: Auth settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthConfig"
+
   /auth/logout:
     post:
       operationId: logout
@@ -186,6 +201,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
+        "400":
+          description: Invalid field (e.g. a password shorter than 8 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The change would demote the last super_admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     delete:
       operationId: deleteUser
       tags: [users]
@@ -199,6 +226,18 @@ paths:
       responses:
         "204":
           description: Deleted
+        "400":
+          description: A super_admin cannot delete their own account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The user is the last super_admin (two super admins deleting each other at once)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   # CLIENTS
   /clients:
@@ -232,6 +271,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Client"
+        "400":
+          description: Invalid body (e.g. a malformed TIN)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /clients/{id}:
     get:
@@ -280,6 +325,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Client"
+        "400":
+          description: Invalid body (e.g. a malformed TIN)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     delete:
       operationId: deleteClient
       tags: [clients]
@@ -670,6 +721,10 @@ paths:
       operationId: listDocuments
       tags: [documents]
       summary: List documents
+      description: |
+        Client accounts are always restricted to their own client, whatever filters they pass.
+        Without limit/offset every match is returned. The body stays a plain array; the
+        X-Total-Count header carries the number of matches before paging.
       parameters:
         - name: engagementId
           in: query
@@ -679,15 +734,59 @@ paths:
           in: query
           schema:
             type: ["integer", "null"]
+        - name: q
+          in: query
+          description: Original file name contains (case-insensitive, literal; at most 200 characters).
+          schema:
+            type: string
+            maxLength: 200
+        - name: stage
+          in: query
+          description: Filing workflow stage of the document, or "none" for documents not linked to a stage.
+          schema:
+            type: string
+            enum: [source_collection, draft_return, confirmation, payment, none]
+        - name: mimeType
+          in: query
+          description: MIME type prefix ("image/", "application/pdf"); comma-separated = any of (at most 10).
+          schema:
+            type: string
+        - name: order
+          in: query
+          description: By upload time; "asc" (default, oldest first) or "desc" (newest first).
+          schema:
+            type: string
+            enum: [asc, desc]
+        - name: limit
+          in: query
+          description: Page size (1-200). Omit for every match.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
       responses:
         "200":
           description: List of documents
+          headers:
+            X-Total-Count:
+              $ref: "#/components/headers/XTotalCount"
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/Document"
+        "400":
+          description: Invalid filter or paging value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     post:
       operationId: uploadDocument
       tags: [documents]
@@ -859,6 +958,19 @@ paths:
                 items:
                   $ref: "#/components/schemas/Notification"
 
+  /notifications/unread-count:
+    get:
+      operationId: getUnreadNotificationCount
+      tags: [notifications]
+      summary: Unread notification count of the current user
+      responses:
+        "200":
+          description: Unread count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnreadCount"
+
   /notifications/{id}/read:
     post:
       operationId: markNotificationRead
@@ -897,28 +1009,177 @@ paths:
       operationId: listAuditLogs
       tags: [audit]
       summary: List audit logs
+      description: Managers and super admins only. Newest first. The body stays a plain array; the X-Total-Count header carries the number of matching entries.
       parameters:
         - name: engagementId
           in: query
+          description: Entries about this engagement (entityType engagement).
           schema:
             type: ["integer", "null"]
         - name: clientId
           in: query
+          description: Entries about this client (entityType client).
           schema:
             type: ["integer", "null"]
+        - name: userId
+          in: query
+          description: Entries made by this user.
+          schema:
+            type: integer
+            minimum: 1
+        - name: action
+          in: query
+          description: Exact action (see GET /audit-logs/filters).
+          schema:
+            type: string
+            maxLength: 64
+        - name: entityType
+          in: query
+          description: Exact entity type (see GET /audit-logs/filters).
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          description: First day, inclusive (YYYY-MM-DD, Asia/Manila).
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          description: Last day, inclusive (YYYY-MM-DD, Asia/Manila).
+          schema:
+            type: string
+            format: date
+        - name: q
+          in: query
+          description: Description contains (case-insensitive, literal; at most 200 characters).
+          schema:
+            type: string
+            maxLength: 200
         - name: limit
           in: query
+          description: Page size (default 50, at most 500; malformed values fall back to the default).
+          schema:
+            type: ["integer", "null"]
+        - name: offset
+          in: query
+          description: Entries to skip (default 0; malformed values fall back to 0).
           schema:
             type: ["integer", "null"]
       responses:
         "200":
           description: List of audit logs
+          headers:
+            X-Total-Count:
+              $ref: "#/components/headers/XTotalCount"
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/AuditLog"
+        "400":
+          description: Invalid filter value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /audit-logs/filters:
+    get:
+      operationId: getAuditLogFilters
+      tags: [audit]
+      summary: Filter options of the audit log
+      description: Managers and super admins only. The users, actions and entity types that occur in the log.
+      responses:
+        "200":
+          description: Filter options
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogFilters"
+
+  /audit-logs/export.csv:
+    get:
+      operationId: exportAuditLogsCsv
+      tags: [audit]
+      summary: Export audit logs as CSV
+      description: |
+        Managers and super admins only. Same filters as GET /audit-logs, newest first, at most
+        10,000 rows (RFC 4180, UTF-8 with BOM, CRLF). The export itself is audited.
+      parameters:
+        - name: engagementId
+          in: query
+          description: Entries about this engagement (entityType engagement).
+          schema:
+            type: ["integer", "null"]
+        - name: clientId
+          in: query
+          description: Entries about this client (entityType client).
+          schema:
+            type: ["integer", "null"]
+        - name: userId
+          in: query
+          description: Entries made by this user.
+          schema:
+            type: integer
+            minimum: 1
+        - name: action
+          in: query
+          description: Exact action (see GET /audit-logs/filters).
+          schema:
+            type: string
+            maxLength: 64
+        - name: entityType
+          in: query
+          description: Exact entity type (see GET /audit-logs/filters).
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          description: First day, inclusive (YYYY-MM-DD, Asia/Manila).
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          description: Last day, inclusive (YYYY-MM-DD, Asia/Manila).
+          schema:
+            type: string
+            format: date
+        - name: q
+          in: query
+          description: Description contains (case-insensitive, literal; at most 200 characters).
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        "200":
+          description: CSV file (attachment)
+          headers:
+            X-Total-Count:
+              $ref: "#/components/headers/XTotalCount"
+            X-Export-Truncated:
+              description: '"true" when more entries matched than the 10,000 exported.'
+              schema:
+                type: string
+                enum: ["true", "false"]
+            Content-Disposition:
+              description: attachment; filename="audit-log-YYYY-MM-DD.csv"
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          description: Invalid filter value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   # DASHBOARD
   /dashboard/summary:
@@ -933,6 +1194,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardSummary"
+
+  /dashboard/my-work:
+    get:
+      operationId: getMyWork
+      tags: [dashboard]
+      summary: The current user's "needs my action" list
+      description: |
+        Role-aware. review (managers / super admins): filings with stages awaiting review,
+        oldest first. maker: open filings assigned to me by due date, plus their open
+        deadlines due in the next windowDays days. client: the linked client's open deadlines
+        and filings in progress. Each list holds at most 25 rows; totals has the full counts.
+      responses:
+        "200":
+          description: My work
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyWork"
 
   /dashboard/upcoming-deadlines:
     get:
@@ -993,7 +1272,30 @@ paths:
                   $ref: "#/components/schemas/StatusCount"
 
 components:
+  headers:
+    XTotalCount:
+      description: Number of matching rows before paging.
+      schema:
+        type: integer
+
   schemas:
+    AuthConfig:
+      type: object
+      properties:
+        demoAccounts:
+          type: boolean
+          description: Whether the demo accounts are seeded (the login page may show them).
+      required:
+        - demoAccounts
+
+    UnreadCount:
+      type: object
+      properties:
+        count:
+          type: integer
+      required:
+        - count
+
     HealthStatus:
       type: object
       properties:
@@ -1101,6 +1403,9 @@ components:
           enum: [super_admin, manager, maker, accountant, client, viewer, null]
         password:
           type: ["string", "null"]
+        currentPassword:
+          type: ["string", "null"]
+          description: Required (and checked) when users change their own password; a super_admin resetting another account's password does not send it.
         clientId:
           type: ["integer", "null"]
           description: Linked client for client/viewer accounts (super_admin only).
@@ -1114,6 +1419,7 @@ components:
           type: string
         tin:
           type: string
+          description: "###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400"
         businessType:
           type: string
         contactEmail:
@@ -1173,17 +1479,17 @@ components:
           type: string
         workflowCounts:
           type: object
-          description: "Aggregate filing workflow counts across all engagements for this client (present on list responses)."
+          description: "Filing workflow badge counts (GET /clients only): the same items the client page lists for the current tax year, plus every overdue open deadline."
           properties:
             inProgress:
               type: integer
-              description: "Number of engagements currently in progress"
+              description: "This tax year's filings whose linked engagement is in progress"
             forReview:
               type: integer
-              description: "Number of engagements awaiting manager review"
+              description: "This tax year's filings with at least one stage awaiting manager review"
             overdue:
               type: integer
-              description: "Number of overdue deadline entries not yet filed"
+              description: "Open deadlines past due (any tax year), one per filing"
           required:
             - inProgress
             - forReview
@@ -1209,6 +1515,7 @@ components:
           type: string
         tin:
           type: string
+          description: "###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400"
         businessType:
           type: string
         contactEmail:
@@ -1264,6 +1571,7 @@ components:
           type: ["string", "null"]
         tin:
           type: ["string", "null"]
+          description: "###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400"
         businessType:
           type: ["string", "null"]
         contactEmail:
@@ -1336,7 +1644,7 @@ components:
       properties:
         formNumber:
           type: string
-          description: "BIR form number (e.g. 2550M, 1702)"
+          description: "BIR form number (e.g. 2550Q, 1702)"
         description:
           type: string
         period:
@@ -1356,22 +1664,17 @@ components:
           description: "ID of the linked deadline record, if it exists"
         engagementId:
           type: ["integer", "null"]
+          description: "Filing (engagement) linked to the deadline, if any"
         workflowStage:
           type: ["string", "null"]
         workflowStatus:
           type: ["string", "null"]
+          description: "Status of the linked engagement (pending | in_progress | completed)"
         stageStatuses:
-          type: object
-          description: "Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable"
-          properties:
-            source_collection:
-              type: string
-            draft_return:
-              type: string
-            confirmation:
-              type: string
-            payment:
-              type: string
+          description: "Per-stage statuses of the linked engagement (null without one); payment is not_applicable when taxPayable is 0"
+          oneOf:
+            - $ref: "#/components/schemas/StageStatuses"
+            - type: "null"
         taxPayable:
           type: ["number", "null"]
           description: "Tax amount payable (null = not entered, 0 = none due, >0 = payment required)"
@@ -1382,6 +1685,12 @@ components:
         - dueDate
         - frequency
         - status
+        - deadlineId
+        - engagementId
+        - workflowStage
+        - workflowStatus
+        - stageStatuses
+        - taxPayable
 
     ClientCompliance:
       type: object
@@ -1428,13 +1737,15 @@ components:
           type: string
         taxType:
           type: string
+        formNumber:
+          type: string
+          description: "Short form code for headings (\"1601C\", \"1702\", \"AnnexF\"), derived on the server like the compliance checklist's. Sent by the /engagements endpoints."
         period:
           type: string
         fiscalYear:
           type: ["string", "null"]
         status:
-          type: string
-          enum: [pending, in_progress, for_review, approved, filed, completed]
+          $ref: "#/components/schemas/EngagementStatus"
         assignedTo:
           type: ["integer", "null"]
         assignedToName:
@@ -1454,10 +1765,24 @@ components:
         taxPayable:
           type: ["number", "null"]
           description: "Tax payable amount (null = not entered; 0 = none; >0 = payment required)"
+        workflowStage:
+          type: ["string", "null"]
+          description: "Legacy single-stage pointer (the stages are now independent)"
+        stageStatuses:
+          $ref: "#/components/schemas/StageStatuses"
+        stagesForReview:
+          type: integer
+          description: "Number of stages awaiting manager review"
+        isAmendment:
+          type: boolean
+        amendedEngagementId:
+          type: ["integer", "null"]
+          description: "For an amendment: the filing it amends"
         createdAt:
           type: string
         updatedAt:
           type: string
+      description: "stageStatuses, stagesForReview, workflowStage, isAmendment and amendedEngagementId are sent by the /engagements endpoints (not by GET /dashboard/overdue)."
       required:
         - id
         - clientId
@@ -1467,6 +1792,33 @@ components:
         - status
         - createdAt
         - updatedAt
+
+    EngagementStatus:
+      type: string
+      enum: [pending, in_progress, completed]
+      description: "pending (no stage started), in_progress, completed (every required stage approved). Rows from before the stage workflow may still hold the retired for_review / approved / filed; show those as-is."
+
+    StageStatus:
+      type: string
+      enum: [not_started, in_progress, for_review, approved, not_applicable]
+
+    StageStatuses:
+      type: object
+      description: "Status of each of the four parallel filing stages (payment is not_applicable when taxPayable is 0)"
+      properties:
+        source_collection:
+          $ref: "#/components/schemas/StageStatus"
+        draft_return:
+          $ref: "#/components/schemas/StageStatus"
+        confirmation:
+          $ref: "#/components/schemas/StageStatus"
+        payment:
+          $ref: "#/components/schemas/StageStatus"
+      required:
+        - source_collection
+        - draft_return
+        - confirmation
+        - payment
 
     CreateEngagementBody:
       type: object
@@ -1511,6 +1863,7 @@ components:
         status:
           type: ["string", "null"]
           enum: [pending, in_progress, for_review, approved, filed, completed, "null"]
+          description: "Manager-only override to pending or in_progress. completed is reached by approving the stages (400); the retired for_review / approved / filed are rejected (400)."
         assignedTo:
           type: ["integer", "null"]
         dueDate:
@@ -1541,13 +1894,21 @@ components:
           type: ["string", "null"]
         title:
           type: string
+        formNumber:
+          type: string
+          description: "Form code from the title, the same as the compliance checklist's (\"1601EQ\", \"AnnexF\"); \"OTHER\" for a title that names no form. Sent by the /deadlines endpoints."
+        period:
+          type: string
+          description: "Period label from the title, the same as the compliance checklist's (\"Q1 2026\", \"Annual 2026\"); the whole title when it has none. Sent by the /deadlines endpoints."
         description:
           type: ["string", "null"]
         dueDate:
           type: string
+          description: "YYYY-MM-DD"
         status:
           type: string
           enum: [pending, completed, overdue]
+          description: "Stored as pending / completed (completed when the linked filing is completed); overdue is only sent by GET /dashboard/overdue. Derive overdue from dueDate (Asia/Manila) elsewhere."
         priority:
           type: string
           enum: [low, medium, high]
@@ -1557,7 +1918,11 @@ components:
           type: string
       required:
         - id
+        - engagementId
+        - clientId
+        - clientName
         - title
+        - description
         - dueDate
         - status
         - priority
@@ -1692,6 +2057,11 @@ components:
           type: integer
         uploadedByName:
           type: ["string", "null"]
+        stage:
+          description: "Filing workflow stage the document belongs to (null = general)"
+          oneOf:
+            - $ref: "#/components/schemas/DocumentStage"
+            - type: "null"
         createdAt:
           type: string
         updatedAt:
@@ -1707,6 +2077,10 @@ components:
         - uploadedBy
         - createdAt
         - updatedAt
+
+    DocumentStage:
+      type: string
+      enum: [source_collection, draft_return, confirmation, payment]
 
     UploadDocumentBody:
       type: object
@@ -1923,3 +2297,142 @@ components:
       required:
         - status
         - count
+
+    AuditLogFilters:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+            required: [id, name]
+        actions:
+          type: array
+          items:
+            type: string
+        entityTypes:
+          type: array
+          items:
+            type: string
+      required:
+        - users
+        - actions
+        - entityTypes
+
+    MyWorkFiling:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        clientId:
+          type: integer
+        clientName:
+          type: ["string", "null"]
+        taxType:
+          type: string
+        period:
+          type: string
+        status:
+          type: string
+        dueDate:
+          type: ["string", "null"]
+        overdue:
+          type: boolean
+        daysUntilDue:
+          type: ["integer", "null"]
+        stagesForReview:
+          type: array
+          description: "Stage keys awaiting review (payment is left out when no tax is payable)"
+          items:
+            $ref: "#/components/schemas/DocumentStage"
+        waitingSince:
+          type: string
+          description: "When the filing last changed (ISO timestamp)"
+      required:
+        - id
+        - title
+        - clientId
+        - clientName
+        - taxType
+        - period
+        - status
+        - dueDate
+        - overdue
+        - daysUntilDue
+        - stagesForReview
+        - waitingSince
+
+    MyWorkDeadline:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        clientId:
+          type: ["integer", "null"]
+        clientName:
+          type: ["string", "null"]
+        engagementId:
+          type: ["integer", "null"]
+        dueDate:
+          type: string
+        priority:
+          type: string
+        overdue:
+          type: boolean
+        daysUntilDue:
+          type: integer
+      required:
+        - id
+        - title
+        - clientId
+        - clientName
+        - engagementId
+        - dueDate
+        - priority
+        - overdue
+        - daysUntilDue
+
+    MyWork:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [review, maker, client]
+        today:
+          type: string
+          description: "Today in Asia/Manila (YYYY-MM-DD)"
+        windowDays:
+          type: ["integer", "null"]
+          description: "Deadline window of the maker list (null for the other kinds)"
+        totals:
+          type: object
+          properties:
+            filings:
+              type: integer
+            deadlines:
+              type: integer
+          required: [filings, deadlines]
+        filings:
+          type: array
+          items:
+            $ref: "#/components/schemas/MyWorkFiling"
+        deadlines:
+          type: array
+          items:
+            $ref: "#/components/schemas/MyWorkDeadline"
+      required:
+        - kind
+        - today
+        - windowDays
+        - totals
+        - filings
+        - deadlines

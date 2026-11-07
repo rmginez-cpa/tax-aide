@@ -116,7 +116,13 @@ const MAX_DOCUMENT_PAGE = 200;
 //                            X-Total-Count header carries the number of matches before paging.
 // Client accounts are always restricted to their own client, whatever filters they pass.
 router.get("/documents", requireAuth, async (req, res): Promise<void> => {
-  const queryParams = ListDocumentsQueryParams.safeParse(req.query);
+  // Only the two id filters go through the generated schema: the other parameters are
+  // validated below with explicit 400s, and a value the schema rejects (e.g. "limit=")
+  // must not make the whole parse fail and silently drop the id filters.
+  const queryParams = ListDocumentsQueryParams.pick({ engagementId: true, clientId: true }).safeParse({
+    engagementId: req.query.engagementId,
+    clientId: req.query.clientId,
+  });
   const conditions: SQL[] = [];
 
   if (queryParams.success && queryParams.data.engagementId != null) {
@@ -432,7 +438,9 @@ router.get("/documents/:id/content", requireAuth, async (req, res): Promise<void
   res.setHeader("Content-Type", mimeType);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Disposition", contentDisposition(disposition, doc.originalName));
-  res.setHeader("Cache-Control", "private, max-age=3600");
+  // Tax files are per-user: never keep them in the browser cache, which is keyed by URL
+  // only (another user of the same browser, or a signed-out one, would get them back).
+  res.setHeader("Cache-Control", "private, no-store");
   if (stored.size != null) {
     res.setHeader("Content-Length", stored.size);
   }

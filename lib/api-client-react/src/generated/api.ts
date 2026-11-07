@@ -19,6 +19,8 @@ import type {
 import type {
   ApproveEngagementBody,
   AuditLog,
+  AuditLogFilters,
+  AuthConfig,
   AuthResponse,
   ChecklistItem,
   Client,
@@ -36,6 +38,7 @@ import type {
   Document,
   Engagement,
   ErrorResponse,
+  ExportAuditLogsCsvParams,
   GenerateDeadlinesBody,
   GenerateDeadlinesResult,
   GetClientComplianceParams,
@@ -48,9 +51,11 @@ import type {
   ListEngagementsParams,
   LoginBody,
   MessageResponse,
+  MyWork,
   Notification,
   OverdueSummary,
   StatusCount,
+  UnreadCount,
   UpdateChecklistItemBody,
   UpdateClientBody,
   UpdateCommentBody,
@@ -232,6 +237,82 @@ export const useLogin = <
 > => {
   return useMutation(getLoginMutationOptions(options));
 };
+
+/**
+ * Whether the login page may show the demo accounts (true when SEED_DEMO_ACCOUNTS=true, or outside production unless SEED_DEMO_ACCOUNTS=false).
+ * @summary Public auth settings (no authentication)
+ */
+export const getGetAuthConfigUrl = () => {
+  return `/api/auth/config`;
+};
+
+export const getAuthConfig = async (
+  options?: RequestInit,
+): Promise<AuthConfig> => {
+  return customFetch<AuthConfig>(getGetAuthConfigUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAuthConfigQueryKey = () => {
+  return [`/api/auth/config`] as const;
+};
+
+export const getGetAuthConfigQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAuthConfig>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAuthConfig>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAuthConfigQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAuthConfig>>> = ({
+    signal,
+  }) => getAuthConfig({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAuthConfig>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAuthConfigQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAuthConfig>>
+>;
+export type GetAuthConfigQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Public auth settings (no authentication)
+ */
+
+export function useGetAuthConfig<
+  TData = Awaited<ReturnType<typeof getAuthConfig>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAuthConfig>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAuthConfigQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * @summary Logout
@@ -626,7 +707,7 @@ export const updateUser = async (
 };
 
 export const getUpdateUserMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -667,13 +748,13 @@ export type UpdateUserMutationResult = NonNullable<
   Awaited<ReturnType<typeof updateUser>>
 >;
 export type UpdateUserMutationBody = BodyType<UpdateUserBody>;
-export type UpdateUserMutationError = ErrorType<unknown>;
+export type UpdateUserMutationError = ErrorType<ErrorResponse>;
 
 /**
  * @summary Update user
  */
 export const useUpdateUser = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -710,7 +791,7 @@ export const deleteUser = async (
 };
 
 export const getDeleteUserMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -751,13 +832,13 @@ export type DeleteUserMutationResult = NonNullable<
   Awaited<ReturnType<typeof deleteUser>>
 >;
 
-export type DeleteUserMutationError = ErrorType<unknown>;
+export type DeleteUserMutationError = ErrorType<ErrorResponse>;
 
 /**
  * @summary Delete user
  */
 export const useDeleteUser = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -869,7 +950,7 @@ export const createClient = async (
 };
 
 export const getCreateClientMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -910,13 +991,13 @@ export type CreateClientMutationResult = NonNullable<
   Awaited<ReturnType<typeof createClient>>
 >;
 export type CreateClientMutationBody = BodyType<CreateClientBody>;
-export type CreateClientMutationError = ErrorType<unknown>;
+export type CreateClientMutationError = ErrorType<ErrorResponse>;
 
 /**
  * @summary Create client
  */
 export const useCreateClient = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -1041,7 +1122,7 @@ export const updateClient = async (
 };
 
 export const getUpdateClientMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -1082,13 +1163,13 @@ export type UpdateClientMutationResult = NonNullable<
   Awaited<ReturnType<typeof updateClient>>
 >;
 export type UpdateClientMutationBody = BodyType<UpdateClientBody>;
-export type UpdateClientMutationError = ErrorType<unknown>;
+export type UpdateClientMutationError = ErrorType<ErrorResponse>;
 
 /**
  * @summary Update client
  */
 export const useUpdateClient = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -2715,6 +2796,10 @@ export const useDeleteChecklistItem = <
 };
 
 /**
+ * Client accounts are always restricted to their own client, whatever filters they pass.
+Without limit/offset every match is returned. The body stays a plain array; the
+X-Total-Count header carries the number of matches before paging.
+
  * @summary List documents
  */
 export const getListDocumentsUrl = (params?: ListDocumentsParams) => {
@@ -2749,7 +2834,7 @@ export const getListDocumentsQueryKey = (params?: ListDocumentsParams) => {
 
 export const getListDocumentsQueryOptions = <
   TData = Awaited<ReturnType<typeof listDocuments>>,
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
 >(
   params?: ListDocumentsParams,
   options?: {
@@ -2779,7 +2864,7 @@ export const getListDocumentsQueryOptions = <
 export type ListDocumentsQueryResult = NonNullable<
   Awaited<ReturnType<typeof listDocuments>>
 >;
-export type ListDocumentsQueryError = ErrorType<unknown>;
+export type ListDocumentsQueryError = ErrorType<ErrorResponse>;
 
 /**
  * @summary List documents
@@ -2787,7 +2872,7 @@ export type ListDocumentsQueryError = ErrorType<unknown>;
 
 export function useListDocuments<
   TData = Awaited<ReturnType<typeof listDocuments>>,
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
 >(
   params?: ListDocumentsParams,
   options?: {
@@ -3579,6 +3664,82 @@ export function useListNotifications<
 }
 
 /**
+ * @summary Unread notification count of the current user
+ */
+export const getGetUnreadNotificationCountUrl = () => {
+  return `/api/notifications/unread-count`;
+};
+
+export const getUnreadNotificationCount = async (
+  options?: RequestInit,
+): Promise<UnreadCount> => {
+  return customFetch<UnreadCount>(getGetUnreadNotificationCountUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetUnreadNotificationCountQueryKey = () => {
+  return [`/api/notifications/unread-count`] as const;
+};
+
+export const getGetUnreadNotificationCountQueryOptions = <
+  TData = Awaited<ReturnType<typeof getUnreadNotificationCount>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getUnreadNotificationCount>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetUnreadNotificationCountQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getUnreadNotificationCount>>
+  > = ({ signal }) => getUnreadNotificationCount({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getUnreadNotificationCount>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetUnreadNotificationCountQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getUnreadNotificationCount>>
+>;
+export type GetUnreadNotificationCountQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Unread notification count of the current user
+ */
+
+export function useGetUnreadNotificationCount<
+  TData = Awaited<ReturnType<typeof getUnreadNotificationCount>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getUnreadNotificationCount>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetUnreadNotificationCountQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * @summary Mark notification as read
  */
 export const getMarkNotificationReadUrl = (id: number) => {
@@ -3744,6 +3905,7 @@ export const useMarkAllNotificationsRead = <
 };
 
 /**
+ * Managers and super admins only. Newest first. The body stays a plain array; the X-Total-Count header carries the number of matching entries.
  * @summary List audit logs
  */
 export const getListAuditLogsUrl = (params?: ListAuditLogsParams) => {
@@ -3778,7 +3940,7 @@ export const getListAuditLogsQueryKey = (params?: ListAuditLogsParams) => {
 
 export const getListAuditLogsQueryOptions = <
   TData = Awaited<ReturnType<typeof listAuditLogs>>,
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
 >(
   params?: ListAuditLogsParams,
   options?: {
@@ -3808,7 +3970,7 @@ export const getListAuditLogsQueryOptions = <
 export type ListAuditLogsQueryResult = NonNullable<
   Awaited<ReturnType<typeof listAuditLogs>>
 >;
-export type ListAuditLogsQueryError = ErrorType<unknown>;
+export type ListAuditLogsQueryError = ErrorType<ErrorResponse>;
 
 /**
  * @summary List audit logs
@@ -3816,7 +3978,7 @@ export type ListAuditLogsQueryError = ErrorType<unknown>;
 
 export function useListAuditLogs<
   TData = Awaited<ReturnType<typeof listAuditLogs>>,
-  TError = ErrorType<unknown>,
+  TError = ErrorType<ErrorResponse>,
 >(
   params?: ListAuditLogsParams,
   options?: {
@@ -3829,6 +3991,182 @@ export function useListAuditLogs<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getListAuditLogsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Managers and super admins only. The users, actions and entity types that occur in the log.
+ * @summary Filter options of the audit log
+ */
+export const getGetAuditLogFiltersUrl = () => {
+  return `/api/audit-logs/filters`;
+};
+
+export const getAuditLogFilters = async (
+  options?: RequestInit,
+): Promise<AuditLogFilters> => {
+  return customFetch<AuditLogFilters>(getGetAuditLogFiltersUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAuditLogFiltersQueryKey = () => {
+  return [`/api/audit-logs/filters`] as const;
+};
+
+export const getGetAuditLogFiltersQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAuditLogFilters>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAuditLogFilters>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAuditLogFiltersQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getAuditLogFilters>>
+  > = ({ signal }) => getAuditLogFilters({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAuditLogFilters>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAuditLogFiltersQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAuditLogFilters>>
+>;
+export type GetAuditLogFiltersQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Filter options of the audit log
+ */
+
+export function useGetAuditLogFilters<
+  TData = Awaited<ReturnType<typeof getAuditLogFilters>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAuditLogFilters>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAuditLogFiltersQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Managers and super admins only. Same filters as GET /audit-logs, newest first, at most
+10,000 rows (RFC 4180, UTF-8 with BOM, CRLF). The export itself is audited.
+
+ * @summary Export audit logs as CSV
+ */
+export const getExportAuditLogsCsvUrl = (params?: ExportAuditLogsCsvParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/audit-logs/export.csv?${stringifiedParams}`
+    : `/api/audit-logs/export.csv`;
+};
+
+export const exportAuditLogsCsv = async (
+  params?: ExportAuditLogsCsvParams,
+  options?: RequestInit,
+): Promise<string> => {
+  return customFetch<string>(getExportAuditLogsCsvUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getExportAuditLogsCsvQueryKey = (
+  params?: ExportAuditLogsCsvParams,
+) => {
+  return [`/api/audit-logs/export.csv`, ...(params ? [params] : [])] as const;
+};
+
+export const getExportAuditLogsCsvQueryOptions = <
+  TData = Awaited<ReturnType<typeof exportAuditLogsCsv>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  params?: ExportAuditLogsCsvParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof exportAuditLogsCsv>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getExportAuditLogsCsvQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof exportAuditLogsCsv>>
+  > = ({ signal }) => exportAuditLogsCsv(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof exportAuditLogsCsv>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ExportAuditLogsCsvQueryResult = NonNullable<
+  Awaited<ReturnType<typeof exportAuditLogsCsv>>
+>;
+export type ExportAuditLogsCsvQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Export audit logs as CSV
+ */
+
+export function useExportAuditLogsCsv<
+  TData = Awaited<ReturnType<typeof exportAuditLogsCsv>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  params?: ExportAuditLogsCsvParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof exportAuditLogsCsv>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getExportAuditLogsCsvQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;
@@ -3904,6 +4242,76 @@ export function useGetDashboardSummary<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetDashboardSummaryQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Role-aware. review (managers / super admins): filings with stages awaiting review,
+oldest first. maker: open filings assigned to me by due date, plus their open
+deadlines due in the next windowDays days. client: the linked client's open deadlines
+and filings in progress. Each list holds at most 25 rows; totals has the full counts.
+
+ * @summary The current user's "needs my action" list
+ */
+export const getGetMyWorkUrl = () => {
+  return `/api/dashboard/my-work`;
+};
+
+export const getMyWork = async (options?: RequestInit): Promise<MyWork> => {
+  return customFetch<MyWork>(getGetMyWorkUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetMyWorkQueryKey = () => {
+  return [`/api/dashboard/my-work`] as const;
+};
+
+export const getGetMyWorkQueryOptions = <
+  TData = Awaited<ReturnType<typeof getMyWork>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<Awaited<ReturnType<typeof getMyWork>>, TError, TData>;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetMyWorkQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getMyWork>>> = ({
+    signal,
+  }) => getMyWork({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getMyWork>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetMyWorkQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getMyWork>>
+>;
+export type GetMyWorkQueryError = ErrorType<unknown>;
+
+/**
+ * @summary The current user's "needs my action" list
+ */
+
+export function useGetMyWork<
+  TData = Awaited<ReturnType<typeof getMyWork>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<Awaited<ReturnType<typeof getMyWork>>, TError, TData>;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetMyWorkQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

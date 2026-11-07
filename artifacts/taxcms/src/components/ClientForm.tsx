@@ -21,13 +21,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TIN_PATTERN } from "@/lib/policy";
 
 export const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 export const BUSINESS_TYPES = ["Corporation","Sole Proprietorship","Partnership","Cooperative","Non-Profit Organization","One Person Corporation (OPC)","Barangay Micro Business Enterprise (BMBE)"];
 
-/** BIR TIN: 9-digit TIN plus a 3- or 5-digit branch code, e.g. 123-456-789-000 or 123-456-789-00000. */
-export const TIN_PATTERN = /^\d{3}-\d{3}-\d{3}-(\d{3}|\d{5})$/;
+export { TIN_PATTERN };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RDO_PATTERN = /^\d{1,3}[A-Za-z]?$/;
 

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import {
   db,
   usersTable,
@@ -34,6 +34,24 @@ async function resolveClientId(value: unknown): Promise<{ clientId: number | nul
   const [client] = await db.select({ id: clientsTable.id }).from(clientsTable).where(eq(clientsTable.id, n));
   if (!client) return { error: "Client not found" };
   return { clientId: client.id };
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+const LAST_SUPER_ADMIN_ERROR = "At least one super admin account must remain";
+
+/**
+ * Whether a super_admin other than `userId` exists. Locks every super_admin row (FOR UPDATE)
+ * for the rest of the transaction, so two concurrent demotions / deletions of different
+ * super admins are serialized and cannot both remove "the other" one.
+ */
+async function otherSuperAdminExists(tx: Tx, userId: number): Promise<boolean> {
+  const admins = await tx
+    .select({ id: usersTable.id })
+    .from(usersTable)
+    .where(eq(usersTable.role, "super_admin"))
+    .for("update");
+  return admins.some((a) => a.id !== userId);
 }
 
 function serializeUser(user: typeof usersTable.$inferSelect) {
@@ -161,7 +179,7 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
-  const { name, role, password, clientId } = req.body ?? {};
+  const { name, role, password, clientId, currentPassword } = req.body ?? {};
   const updates: Partial<typeof usersTable.$inferInsert> = {};
 
   if (name != null) {
@@ -175,6 +193,17 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
     const passwordError = passwordPolicyError(password);
     if (passwordError) {
       res.status(400).json({ error: passwordError }); return;
+    }
+    // Changing your own password needs the current one, so a stolen or left-open
+    // session cannot lock the owner out. (A super_admin resetting someone else's does not.)
+    if (callerId === id) {
+      if (typeof currentPassword !== "string" || currentPassword === "") {
+        res.status(400).json({ error: "Enter your current password to change it" }); return;
+      }
+      const [self] = await db.select({ passwordHash: usersTable.passwordHash }).from(usersTable).where(eq(usersTable.id, id));
+      if (!self || !(await bcrypt.compare(currentPassword, self.passwordHash))) {
+        res.status(403).json({ error: "Current password is incorrect" }); return;
+      }
     }
     updates.passwordHash = await bcrypt.hash(password, 10);
   }
@@ -201,10 +230,22 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
-  const user = await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
+    // Demoting a super admin: lock the super admins first, then re-read the target.
+    if (updates.role != null && updates.role !== "super_admin") {
+      const others = await otherSuperAdminExists(tx, id);
+      const [target] = await tx.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, id));
+      if (target?.role === "super_admin" && !others) return "last_super_admin" as const;
+    }
     const [before] = await tx.select().from(usersTable).where(eq(usersTable.id, id));
     if (!before) return null;
     const [after] = await tx.update(usersTable).set(updates).where(eq(usersTable.id, id)).returning();
+
+    // A new password ends every other session of that account (an attacker's included);
+    // the caller's own session stays signed in.
+    if (updates.passwordHash) {
+      await tx.execute(sql`DELETE FROM user_sessions WHERE (sess->>'userId') = ${String(id)} AND sid <> ${req.sessionID}`);
+    }
 
     // Data the account saw under its old scope must not follow it to the new one.
     const scopeChanged = before.role !== after.role || (before.clientId ?? null) !== (after.clientId ?? null);
@@ -221,6 +262,8 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
     return after;
   });
 
+  if (result === "last_super_admin") { res.status(409).json({ error: LAST_SUPER_ADMIN_ERROR }); return; }
+  const user = result;
   if (!user) { res.status(404).json({ error: "User not found" }); return; }
 
   await logAudit({
@@ -245,7 +288,25 @@ router.delete("/users/:id", requireRole("super_admin"), async (req, res): Promis
     return;
   }
 
-  const [user] = await db.delete(usersTable).where(eq(usersTable.id, id)).returning();
+  // The caller is a super admin, so this only triggers when two super admins delete each
+  // other at the same time: the row locks make the second one see it would remove the last.
+  const result = await db.transaction(async (tx) => {
+    const others = await otherSuperAdminExists(tx, id);
+    const [target] = await tx.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, id));
+    if (!target) return null;
+    if (target.role === "super_admin" && !others) return "last_super_admin" as const;
+    // The caller must still exist (and still be a super admin) once the locks are held.
+    const [caller] = await tx
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(and(eq(usersTable.id, callerId), eq(usersTable.role, "super_admin"), ne(usersTable.id, id)));
+    if (!caller) return "caller_gone" as const;
+    const [deleted] = await tx.delete(usersTable).where(eq(usersTable.id, id)).returning();
+    return deleted ?? null;
+  });
+  if (result === "last_super_admin") { res.status(409).json({ error: LAST_SUPER_ADMIN_ERROR }); return; }
+  if (result === "caller_gone") { res.status(403).json({ error: "Forbidden" }); return; }
+  const user = result;
   if (!user) { res.status(404).json({ error: "User not found" }); return; }
 
   await logAudit({

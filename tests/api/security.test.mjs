@@ -16,71 +16,33 @@
 // Env:  API_BASE, FIXTURE, UPLOADS_DIR (must equal the server's UPLOADS_DIR),
 //       PGHOST/PGUSER/PGDATABASE/PGPASSWORD, ONLY=<group substring>
 
-import { execSync } from "node:child_process";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import {
+  guard, BASE, sql, resetDb as reset, sidOf, setCookies, parseJson, pass, fail, skip, group, main,
+} from "./_harness.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+guard();
 
-if (process.env.TAXAIDE_TEST_RESET_DB !== "1") {
-  console.error("Refusing to run: this suite wipes the database. Set TAXAIDE_TEST_RESET_DB=1 and point PG*/API_BASE at a throwaway database.");
-  process.exit(2);
-}
-const BASE = process.env.API_BASE ?? "http://localhost:8080/api";
-const FIXTURE = process.env.FIXTURE ?? path.join(HERE, "fixture.sql");
-const PG_ENV = {
-  ...process.env,
-  PGPASSWORD: process.env.PGPASSWORD ?? "taxaide",
-  PGHOST: process.env.PGHOST ?? "localhost",
-  PGUSER: process.env.PGUSER ?? "taxaide",
-  PGDATABASE: process.env.PGDATABASE ?? "taxaide",
-};
-const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.join(HERE, "uploads");
-const ONLY = process.env.ONLY ?? "";
 const PROXY = !!process.env.TRUST_PROXY && !["false", "0", "no", "off"].includes(process.env.TRUST_PROXY.toLowerCase());
 const MAX_PER_EMAIL = Number(process.env.LOGIN_MAX_FAILURES_PER_EMAIL || 5);
 const MAX_PER_IP = Number(process.env.LOGIN_MAX_FAILURES_PER_IP || 50);
+const MAX_PER_ACCOUNT = Number(process.env.LOGIN_MAX_FAILURES_PER_ACCOUNT || 20);
 const WINDOW_SECONDS = Number(process.env.LOGIN_FAILURE_WINDOW_MINUTES || 15) * 60;
 const ALLOWED = (process.env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 
 const ADMIN = ["admin@firm.ph", "admin123"];
 const MANAGER = ["manager@firm.ph", "manager123"];
 
-// ── DB ───────────────────────────────────────────────────────────────────────
-function sql(query) {
-  return execSync("psql -q -tA -v ON_ERROR_STOP=1", { input: query, env: PG_ENV, stdio: ["pipe", "pipe", "pipe"] })
-    .toString()
-    .trim();
-}
-function reset() {
-  execSync(`psql -q -v ON_ERROR_STOP=1 -f ${JSON.stringify(FIXTURE)}`, { env: PG_ENV, stdio: ["ignore", "ignore", "pipe"] });
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  fs.writeFileSync(path.join(UPLOADS_DIR, "a.txt"), "alpha");
-  fs.writeFileSync(path.join(UPLOADS_DIR, "b.txt"), "bravo");
-  // Same role pinning as authz.test.mjs (users 1-4 survive the fixture).
-  sql(`
-    update users set role='super_admin', client_id=null where id=1;
-    update users set role='manager', client_id=null where id=2;
-    update users set role='maker', client_id=null where id=3;
-    update users set role='client', client_id=1 where id=4;
-  `);
-}
-
 // ── HTTP ─────────────────────────────────────────────────────────────────────
+// This suite sends its own requests (made-up client IPs, raw bodies, timings) instead of
+// the harness's role-based call(). reset() is the harness's resetDb(): no sign-ins.
 /** A made-up client IP (only honoured by a server running with TRUST_PROXY). */
 function fakeIp() {
   const b = crypto.randomBytes(3);
   return `10.${b[0]}.${b[1]}.${b[2] || 1}`;
 }
-function sidOf(res) {
-  const all = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [res.headers.get("set-cookie") ?? ""];
-  return all.map((c) => c.split(";")[0]).find((c) => c.startsWith("connect.sid=")) ?? null;
-}
 function setCookieLine(res) {
-  const all = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [res.headers.get("set-cookie") ?? ""];
-  return all.find((c) => c.startsWith("connect.sid=")) ?? "";
+  return setCookies(res).find((c) => c.startsWith("connect.sid=")) ?? "";
 }
 
 async function call(method, urlPath, { body, cookie, ip, headers: extra = {}, raw } = {}) {
@@ -99,13 +61,7 @@ async function call(method, urlPath, { body, cookie, ip, headers: extra = {}, ra
   const res = await fetch(`${BASE}${urlPath}`, { method, headers, body: payload, redirect: "manual" });
   const text = await res.text();
   const ms = performance.now() - started;
-  let json;
-  try {
-    json = text ? JSON.parse(text) : undefined;
-  } catch {
-    json = undefined;
-  }
-  return { status: res.status, headers: res.headers, text, json, ms, res };
+  return { status: res.status, headers: res.headers, text, json: parseJson(text), ms, res };
 }
 
 function login(email, password, opts = {}) {
@@ -120,30 +76,12 @@ async function loginOk(email, password, opts = {}) {
 }
 
 // ── Runner ───────────────────────────────────────────────────────────────────
-let passed = 0;
-let skipped = 0;
-const failures = [];
-
 function assert(name, ok, got) {
-  if (ok) {
-    passed++;
-    console.log(`PASS ${name}`);
-  } else {
-    failures.push(name);
-    console.log(`FAIL ${name}${got !== undefined ? ` (got ${typeof got === "string" ? got : JSON.stringify(got)})` : ""}`);
-  }
-}
-function skip(name, why) {
-  skipped++;
-  console.log(`SKIP ${name} (${why})`);
+  if (ok) pass(name);
+  else fail(name, got !== undefined ? ` (got ${typeof got === "string" ? got : JSON.stringify(got)})` : "");
 }
 function short(r) {
   return `${r.status} ${(r.text ?? "").replace(/\s+/g, " ").slice(0, 160)}`;
-}
-
-const groups = [];
-function group(name, fn) {
-  groups.push({ name, fn });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -284,6 +222,41 @@ group("6 per-IP rate limiting", async () => {
   assert("another IP is unaffected", fine.status === 200, short(fine));
 });
 
+group("6b IPv6 /64 grouping and the per-account limit", async () => {
+  if (!PROXY) {
+    skip("IPv6 grouping / per-account limit", "needs TRUST_PROXY=1 (would lock out this machine)");
+    return;
+  }
+  // One /64: every address in it counts as the same client.
+  const b = crypto.randomBytes(4).toString("hex");
+  const net = `2001:db8:${b.slice(0, 4)}:${b.slice(4)}`;
+  const victim = `v6-${Date.now()}@example.com`;
+  const statuses = [];
+  for (let i = 0; i < MAX_PER_EMAIL + 1; i++) {
+    statuses.push((await login(victim, `bad-${i}`, { ip: `${net}::${(0x101 + i).toString(16)}` })).status);
+  }
+  assert(`${MAX_PER_EMAIL + 1} bad passwords from different addresses in one IPv6 /64 -> 401 x${MAX_PER_EMAIL} then 429`,
+    statuses.slice(0, MAX_PER_EMAIL).every((s) => s === 401) && statuses[MAX_PER_EMAIL] === 429, statuses);
+  const longForm = await login(victim, "bad-long", { ip: `${net}:0:0:0:ffff` });
+  assert("…an uncompressed address in that /64 is blocked too", longForm.status === 429, short(longForm));
+
+  // IPv4-mapped IPv6 and plain IPv4 are the same client.
+  const v4 = fakeIp();
+  const mapped = `mapped-${Date.now()}@example.com`;
+  for (let i = 0; i < MAX_PER_EMAIL; i++) await login(mapped, `bad-${i}`, { ip: i % 2 ? v4 : `::ffff:${v4}` });
+  const m = await login(mapped, "bad-x", { ip: v4 });
+  assert("IPv4 and its IPv4-mapped IPv6 form share one counter (429)", m.status === 429, short(m));
+
+  // Per account, whatever the address: a fresh IP for every guess still runs out.
+  const acct = `acct-${Date.now()}@example.com`;
+  const acctStatuses = [];
+  for (let i = 0; i < MAX_PER_ACCOUNT + 1; i++) acctStatuses.push((await login(acct, `bad-${i}`, { ip: fakeIp() })).status);
+  assert(`${MAX_PER_ACCOUNT} bad passwords for one account from ${MAX_PER_ACCOUNT} IPs -> 401, the next -> 429`,
+    acctStatuses.slice(0, MAX_PER_ACCOUNT).every((s) => s === 401) && acctStatuses[MAX_PER_ACCOUNT] === 429, acctStatuses);
+  const otherAcct = await login(`other-${Date.now()}@example.com`, "bad", { ip: fakeIp() });
+  assert("…other accounts are unaffected (401)", otherAcct.status === 401, short(otherAcct));
+});
+
 group("7 password policy", async () => {
   reset();
   const ip = fakeIp();
@@ -301,6 +274,27 @@ group("7 password policy", async () => {
     assert("PATCH own password with 7 characters -> 400", ps.status === 400, short(ps));
     const unchanged = await login(email, "abcd1234", { ip });
     assert("password unchanged after rejected PATCH", unchanged.status === 200, short(unchanged));
+
+    // Self-service change: the current password is required, and other sessions end.
+    const other = await loginOk(email, "abcd1234", { ip });
+    const noCur = await call("PATCH", `/users/${ok8.json.id}`, { cookie: self, body: { password: "newpass123" } });
+    assert("PATCH own password without currentPassword -> 400", noCur.status === 400, short(noCur));
+    const badCur = await call("PATCH", `/users/${ok8.json.id}`, { cookie: self, body: { password: "newpass123", currentPassword: "wrongpass1" } });
+    assert("PATCH own password with a wrong currentPassword -> 403", badCur.status === 403, short(badCur));
+    const still = await login(email, "abcd1234", { ip });
+    assert("password unchanged after missing / wrong currentPassword", still.status === 200, short(still));
+    const okCur = await call("PATCH", `/users/${ok8.json.id}`, { cookie: self, body: { password: "newpass123", currentPassword: "abcd1234" } });
+    assert("PATCH own password with the right currentPassword -> 200", okCur.status === 200, short(okCur));
+    const meSelf = await call("GET", "/auth/me", { cookie: self });
+    assert("…the session that changed it stays signed in", meSelf.status === 200, short(meSelf));
+    const meOther = await call("GET", "/auth/me", { cookie: other });
+    assert("…the account's other sessions are ended (401)", meOther.status === 401, short(meOther));
+    const reset8 = await call("PATCH", `/users/${ok8.json.id}`, { cookie: admin, body: { password: "adminset1" } });
+    assert("super_admin resets another account's password without currentPassword -> 200", reset8.status === 200, short(reset8));
+    const meAfterReset = await call("GET", "/auth/me", { cookie: self });
+    assert("…and that account's sessions are ended (401)", meAfterReset.status === 401, short(meAfterReset));
+    const meAdmin = await call("GET", "/auth/me", { cookie: admin });
+    assert("…while the admin stays signed in", meAdmin.status === 200, short(meAdmin));
     const del = await call("DELETE", `/users/${ok8.json.id}`, { cookie: admin });
     assert("cleanup: DELETE test user", del.status === 204 || del.status === 200, short(del));
   }
@@ -325,6 +319,9 @@ group("8 security headers and body limit", async () => {
   assert("document content keeps nosniff", c.headers.get("x-content-type-options") === "nosniff", c.headers.get("x-content-type-options"));
   assert("document content has no CSP default-src 'none' (viewer must render it)", !/default-src 'none'/.test(c.headers.get("content-security-policy") ?? ""), c.headers.get("content-security-policy"));
   assert("document content keeps its own Cache-Control", /private/.test(c.headers.get("cache-control") ?? ""), c.headers.get("cache-control"));
+  assert("document content is never cached (no-store, no max-age)", /no-store/.test(c.headers.get("cache-control") ?? "") && !/max-age/.test(c.headers.get("cache-control") ?? ""), c.headers.get("cache-control"));
+  const out = await call("POST", "/auth/logout", { cookie: admin });
+  assert("logout clears the browser cache (Clear-Site-Data: \"cache\")", out.status === 200 && /"cache"/.test(out.headers.get("clear-site-data") ?? ""), `${out.status} ${out.headers.get("clear-site-data")}`);
 
   const big = await call("POST", "/auth/login", { ip, raw: JSON.stringify({ email: "x@example.com", password: "a".repeat(1_100_000) }) });
   assert("JSON body over 1mb -> 413 JSON", big.status === 413 && typeof big.json?.error === "string", short(big));
@@ -351,34 +348,5 @@ group("9 CORS", async () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-async function main() {
-  try {
-    await fetch(`${BASE}/healthz`);
-  } catch (err) {
-    console.error(`API not reachable at ${BASE}: ${err?.message ?? err}`);
-    process.exit(2);
-  }
-  reset();
-  for (const g of groups) {
-    if (ONLY && !g.name.includes(ONLY)) continue;
-    console.log(`\n=== ${g.name} ===`);
-    try {
-      await g.fn();
-    } catch (err) {
-      assert(`group "${g.name}" crashed`, false, String(err?.stack ?? err).slice(0, 400));
-    }
-  }
-  try {
-    reset();
-  } catch (err) {
-    console.log(`(final fixture reset failed: ${err?.message ?? err})`);
-  }
-  console.log(`\n${passed} passed, ${failures.length} failed, ${skipped} skipped`);
-  if (failures.length) {
-    console.log("Failures:");
-    for (const f of failures) console.log(`  - ${f}`);
-    process.exit(1);
-  }
-}
-
-await main();
+// The API only has to be reachable (no /healthz status check); the fixture is loaded first.
+await main({ reset, resetFirst: true, healthStrict: false });

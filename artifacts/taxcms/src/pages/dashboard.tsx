@@ -8,9 +8,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Users, Briefcase, Calendar, AlertCircle, CheckCircle2, Clock } from "lucide-react";
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend } from "recharts";
 import { useAuth } from "@/lib/auth";
+import { UnlinkedClientNotice, useIsUnlinkedClient } from "@/components/UnlinkedClientNotice";
 import { can, isClientRole } from "@/lib/permissions";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { getEngagementStatus, ENGAGEMENT_STATUS_CHART_COLORS, DEADLINE_URGENCY_TEXT } from "@/lib/status";
+import { getEngagementStatus, engagementStatusChartColor, DEADLINE_URGENCY_TEXT } from "@/lib/status";
 import { ErrorState } from "@/components/ErrorState";
 import { MyWorkCard } from "@/components/MyWorkCard";
 
@@ -19,6 +20,8 @@ import { MyWorkCard } from "@/components/MyWorkCard";
 export default function Dashboard() {
   const { user } = useAuth();
   const isClient = isClientRole(user?.role);
+  // An unlinked client account sees nothing: never tell it that it is "all caught up".
+  const unlinked = useIsUnlinkedClient();
   const summaryQuery = useGetDashboardSummary({ query: { queryKey: getGetDashboardSummaryQueryKey() } });
   const deadlinesQuery = useGetUpcomingDeadlines({ query: { queryKey: getGetUpcomingDeadlinesQueryKey() } });
   // Recent activity is the audit trail: managers and super admins only.
@@ -34,7 +37,7 @@ export default function Dashboard() {
   const chartData = breakdown?.map(item => ({
     name: getEngagementStatus(item.status).label,
     value: item.count,
-    color: ENGAGEMENT_STATUS_CHART_COLORS[item.status] || ENGAGEMENT_STATUS_CHART_COLORS.pending
+    color: engagementStatusChartColor(item.status),
   })) || [];
 
   return (
@@ -43,6 +46,8 @@ export default function Dashboard() {
         <h2 className="text-2xl font-bold tracking-tight">Dashboard Overview</h2>
         <p className="text-muted-foreground">Welcome back. Here's what's happening with your engagements.</p>
       </div>
+
+      <UnlinkedClientNotice />
 
       <MyWorkCard />
 
@@ -165,8 +170,8 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="py-8 text-center text-sm text-muted-foreground flex flex-col items-center">
-                <CheckCircle2 className="h-8 w-8 text-emerald-500 mb-2 opacity-50" />
-                No upcoming deadlines. You're all caught up!
+                {!unlinked && <CheckCircle2 className="h-8 w-8 text-emerald-500 mb-2 opacity-50" />}
+                {unlinked ? "No deadlines to show." : "No upcoming deadlines. You're all caught up!"}
               </div>
             )}
           </CardContent>

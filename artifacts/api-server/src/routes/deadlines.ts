@@ -11,6 +11,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, requireStaff, requireManager, clientScope, canAccessClient } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
+import { extractFormNumber, extractPeriod, taxTypeFromDeadlineTitle } from "../lib/filingLabels";
 
 const router = Router();
 
@@ -36,6 +37,9 @@ function toJson(d: DeadlineRow, clientNames: Map<number, string>) {
     clientId: d.clientId ?? null,
     clientName: d.clientId != null ? clientNames.get(d.clientId) ?? null : null,
     title: d.title,
+    // Same labels as the compliance checklist, so every page shows one form code / period.
+    formNumber: extractFormNumber(d.title),
+    period: extractPeriod(d.title),
     description: d.description ?? null,
     dueDate: d.dueDate,
     status: d.status,
@@ -49,18 +53,14 @@ async function serializeDeadline(d: DeadlineRow) {
   return toJson(d, await loadClientNames([d.clientId]));
 }
 
-const MONTH_NAMES =
-  "January|February|March|April|May|June|July|August|September|October|November|December";
-const PERIOD_RE = new RegExp(`\\b((?:${MONTH_NAMES}) \\d{4}|Q[1-4] \\d{4}|FY \\d{4}|Annual \\d{4})\\b`);
-
 /**
- * The filing period a deadline covers, read from its title
- * (e.g. "BIR Form 2550Q — Q1 2026" -> "Q1 2026", "BIR Form 1702 ... — FY 2026" -> "FY 2026").
- * Falls back to the text after the last " — ", then to the deadline's tax year.
+ * The filing period a deadline covers, labelled like the compliance checklist
+ * (extractPeriod: "Q1 2026", "FY 2026", "Annual 2026", "2nd Semester 2025").
+ * For a hand-made title with no period: the text after the last " — ", then the tax year.
  */
 function periodFromDeadline(d: Pick<DeadlineRow, "title" | "taxYear">): string {
-  const match = d.title.match(PERIOD_RE);
-  if (match) return match[1];
+  const period = extractPeriod(d.title);
+  if (period !== d.title) return period;
   const dash = d.title.lastIndexOf(" — ");
   if (dash >= 0) {
     const tail = d.title.slice(dash + 3).trim();
@@ -200,7 +200,12 @@ router.patch("/deadlines/:id", requireStaff, async (req, res): Promise<void> => 
   const updates: Partial<typeof deadlinesTable.$inferInsert> = {};
   if (parsed.data.title != null) updates.title = parsed.data.title;
   if ("description" in parsed.data) updates.description = parsed.data.description ?? null;
-  if (parsed.data.dueDate != null) updates.dueDate = parsed.data.dueDate;
+  const dueDateChanged = parsed.data.dueDate != null && parsed.data.dueDate !== current.dueDate;
+  if (dueDateChanged) {
+    updates.dueDate = parsed.data.dueDate!;
+    // Edited by hand (e.g. a BIR extension): regenerating with overwrite keeps it.
+    updates.dueDateManual = true;
+  }
   if (status != null) updates.status = status;
   if (priority != null) updates.priority = priority;
 
@@ -209,11 +214,18 @@ router.patch("/deadlines/:id", requireStaff, async (req, res): Promise<void> => 
     return;
   }
 
-  const [deadline] = await db
-    .update(deadlinesTable)
-    .set(updates)
-    .where(eq(deadlinesTable.id, params.data.id))
-    .returning();
+  const deadline = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(deadlinesTable)
+      .set(updates)
+      .where(eq(deadlinesTable.id, params.data.id))
+      .returning();
+    // The filing started from this deadline keeps the same due date.
+    if (row && dueDateChanged && row.engagementId != null) {
+      await tx.update(engagementsTable).set({ dueDate: row.dueDate }).where(eq(engagementsTable.id, row.engagementId));
+    }
+    return row;
+  });
 
   if (!deadline) {
     res.status(404).json({ error: "Deadline not found" });
@@ -305,7 +317,8 @@ router.post("/deadlines/:id/start-workflow", requireStaff, async (req, res): Pro
         .values({
           clientId: deadline.clientId,
           title: deadline.title,
-          taxType: deadline.title,
+          // The form code ("1601C"), like hand-made engagements' tax types, not the whole title.
+          taxType: taxTypeFromDeadlineTitle(deadline.title),
           period: periodFromDeadline(deadline),
           status: "in_progress",
           workflowStage: "source_collection",

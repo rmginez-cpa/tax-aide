@@ -45,7 +45,7 @@ const COMPLIANCE_ICONS: Record<string, LucideIcon> = {
   overdue: AlertCircle,
 };
 
-/** Checklist labels per formNumber (codes from extractFormNumber in api-server routes/clients.ts). */
+/** Checklist labels per formNumber (codes from extractFormNumber in api-server lib/filingLabels.ts). */
 const FORM_DESCRIPTIONS: Record<string, string> = {
   "2550Q": "Quarterly Value-Added Tax Return",
   "2551Q": "Quarterly Percentage Tax Return",
@@ -238,7 +238,7 @@ export default function ClientDetail() {
     if (overwrite) {
       const ok = await confirm({
         title: `Replace existing deadlines for ${yr}?`,
-        description: `Existing ${yr} deadlines of ${client?.name ?? "this client"} get the current due dates, descriptions and priorities (their status and linked filings are kept). Generated deadlines that no longer apply to the BIR 2303 registration are removed, unless they are completed or linked to a filing. Missing deadlines are created.`,
+        description: `Existing ${yr} deadlines of ${client?.name ?? "this client"} get the current due dates, descriptions and priorities (their status and linked filings are kept, and so is a due date edited by hand). Generated deadlines that no longer apply to the BIR 2303 registration are removed, unless they are completed or linked to a filing. Missing deadlines are created.`,
         confirmLabel: "Replace deadlines",
         destructive: true,
       });
@@ -461,7 +461,7 @@ export default function ClientDetail() {
                         <Checkbox id="overwrite" checked={overwrite} onCheckedChange={v => setOverwrite(v === true)} className="mt-0.5" aria-describedby="overwrite-help" />
                         <div>
                           <label htmlFor="overwrite" className="text-sm font-medium cursor-pointer">Replace existing deadlines</label>
-                          <p id="overwrite-help" className="text-xs text-muted-foreground">Update the due dates of existing items for this year and remove generated items that no longer apply (unless completed or linked to a filing).</p>
+                          <p id="overwrite-help" className="text-xs text-muted-foreground">Update the due dates of existing items for this year (a due date edited by hand, e.g. for a BIR extension, is kept) and remove generated items that no longer apply (unless completed or linked to a filing).</p>
                         </div>
                       </div>
                       <div className="p-3 bg-muted rounded-md">
@@ -618,7 +618,8 @@ export default function ClientDetail() {
                       deadlineId: item.deadlineId ?? null,
                       engagementId: item.engagementId ?? null,
                       formNumber: item.formNumber,
-                      description: item.description,
+                      // The dialog subtitle names the client, as on every other page.
+                      description: client.name,
                       period: item.period,
                       dueDate: item.dueDate,
                     })}
@@ -646,7 +647,7 @@ export default function ClientDetail() {
                       {hasWorkflow && item.stageStatuses && (
                         <div className="hidden sm:flex items-center gap-0.5">
                           {FILING_STAGE_KEYS.map(key => {
-                            const status = (item.stageStatuses as Record<string, string | undefined>)[key] ?? "not_started";
+                            const status = item.stageStatuses?.[key] ?? "not_started";
                             const IconComp = status === "not_applicable" ? MinusCircle : STAGE_ICONS[key];
                             return (
                               <span key={key} title={`${FILING_STAGES[key].label}: ${getStageStatus(status).label}`}>

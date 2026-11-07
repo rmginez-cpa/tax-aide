@@ -6,7 +6,6 @@ import {
   getListEngagementsQueryKey,
   getListClientsQueryKey,
   type Document as ApiDocument,
-  type Engagement,
 } from "@workspace/api-client-react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -14,7 +13,7 @@ import { useAuth, useAuthConfig } from "@/lib/auth";
 import { can, isClientRole } from "@/lib/permissions";
 import { apiFetch, downloadDocument, errorMessage } from "@/lib/api";
 import { formatBytes, formatDateTime } from "@/lib/format";
-import { FILING_STAGES, FILING_STAGE_KEYS, getStageStatus, type FilingStageKey } from "@/lib/status";
+import { FILING_STAGES, FILING_STAGE_KEYS, type FilingStageKey } from "@/lib/status";
 import { invalidateFilingData } from "@/lib/queries";
 import { useUrlFilterState } from "@/hooks/use-url-filter-state";
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -32,13 +31,15 @@ import {
 import { FileViewer } from "@/components/FileViewer";
 import { MergePDFDialog } from "@/components/MergePDFDialog";
 import {
+  DocumentLinkFields, NO_DOCUMENT_LINK, appendDocumentLink, normalizeDocumentLink, type DocumentLink,
+} from "@/components/DocumentLinkFields";
+import {
   Plus, Search, FileText, Trash2, Download, User2, Eye,
   FileSpreadsheet, FileType, Image, Sparkles, Upload, Merge, Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { UnlinkedClientNotice } from "@/components/UnlinkedClientNotice";
 
-/** A document as returned by GET /api/documents (the server also sends `stage`). */
-type DocumentRow = ApiDocument & { stage?: string | null };
 
 const PAGE_SIZE = 25;
 const MAX_UPLOAD_MB = 50;
@@ -101,7 +102,7 @@ function pageWindow(page: number, pages: number): number[] {
   return out;
 }
 
-const canView = (doc: DocumentRow) => {
+const canView = (doc: ApiDocument) => {
   // Only show View for docs uploaded via the real file system (fileUrl points to content endpoint)
   if (!doc.fileUrl?.startsWith("/api/documents/")) return false;
   const mt = doc.mimeType;
@@ -167,7 +168,7 @@ export default function Documents() {
     queryKey: ["/api/documents", "page", listParams],
     queryFn: async ({ signal }) => {
       const res = await apiFetch<Response>(`/documents?${listParams}`, { signal, responseType: "response" });
-      const docs = (await res.json()) as DocumentRow[];
+      const docs = (await res.json()) as ApiDocument[];
       const total = Number(res.headers.get("X-Total-Count") ?? docs.length);
       return { docs, total: Number.isFinite(total) ? total : docs.length };
     },
@@ -187,7 +188,7 @@ export default function Documents() {
   // ── Actions ─────────────────────────────────────────────────────────────
   const [uploadOpen, setUploadOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
-  const [viewerDoc, setViewerDoc] = useState<DocumentRow | null>(null);
+  const [viewerDoc, setViewerDoc] = useState<ApiDocument | null>(null);
   const [seeding, setSeeding] = useState(false);
 
   const handleSeedSamples = async () => {
@@ -203,7 +204,7 @@ export default function Documents() {
     }
   };
 
-  const handleDelete = async (doc: DocumentRow) => {
+  const handleDelete = async (doc: ApiDocument) => {
     const deleted = await confirm({
       title: "Delete this document?",
       description: `"${doc.originalName}" will be deleted permanently. This cannot be undone.`,
@@ -216,7 +217,7 @@ export default function Documents() {
     toast({ title: "Document deleted" });
   };
 
-  const handleDownload = async (doc: DocumentRow) => {
+  const handleDownload = async (doc: ApiDocument) => {
     try {
       await downloadDocument(doc.id, doc.originalName);
     } catch (e) {
@@ -275,6 +276,8 @@ export default function Documents() {
           )}
         </div>
       </div>
+
+      <UnlinkedClientNotice />
 
       {/* Filters */}
       <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">
@@ -477,6 +480,8 @@ export default function Documents() {
       <MergePDFDialog
         open={mergeOpen}
         onClose={() => setMergeOpen(false)}
+        clients={clients ?? []}
+        defaultLink={{ clientId, filingId, stage: isStageKey(stage) ? stage : "" }}
         onUploaded={() => {
           invalidateFilingData(queryClient);
           toast({ title: "Merged PDF uploaded successfully" });
@@ -504,19 +509,8 @@ function UploadDialog({ open, onOpenChange, defaults, clients, onUploaded }: Upl
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [description, setDescription] = useState("");
-  const [clientId, setClientId] = useState("");
-  const [filingId, setFilingId] = useState("");
-  const [stage, setStage] = useState<FilingStageKey | "">("");
+  const [link, setLink] = useState<DocumentLink>(NO_DOCUMENT_LINK);
   const [uploading, setUploading] = useState(false);
-
-  const filingParams = { clientId: Number(clientId) };
-  const { data: filings, isLoading: loadingFilings } = useListEngagements(filingParams, {
-    query: { enabled: open && !!clientId, queryKey: getListEngagementsQueryKey(filingParams) },
-  });
-  // The server also sends per-stage statuses (not in the generated type).
-  const filing = filings?.find(f => String(f.id) === filingId) as
-    | (Engagement & { stageStatuses?: Record<string, string> })
-    | undefined;
 
   const reset = () => {
     setSelectedFile(null);
@@ -528,20 +522,9 @@ function UploadDialog({ open, onOpenChange, defaults, clients, onUploaded }: Upl
     if (uploading) return;
     if (next) {
       reset();
-      setClientId(defaults.clientId);
-      setFilingId(defaults.clientId ? defaults.filingId : "");
-      setStage(defaults.clientId && defaults.filingId ? defaults.stage : "");
+      setLink(normalizeDocumentLink(defaults));
     }
     onOpenChange(next);
-  };
-
-  /** Why a stage cannot take uploads (mirrors the server's lock rules), or null. */
-  const stageLock = (key: FilingStageKey): string | null => {
-    if (!filing) return null;
-    if (filing.status === "completed") return "filing completed";
-    const s = filing.stageStatuses?.[key];
-    if (s === "for_review" || s === "approved") return getStageStatus(s).label.toLowerCase();
-    return null;
   };
 
   const tooLarge = !!selectedFile && selectedFile.size > MAX_UPLOAD_MB * 1024 * 1024;
@@ -556,9 +539,7 @@ function UploadDialog({ open, onOpenChange, defaults, clients, onUploaded }: Upl
       const formData = new FormData();
       formData.append("file", selectedFile);
       if (description.trim()) formData.append("description", description.trim());
-      if (clientId) formData.append("clientId", clientId);
-      if (clientId && filingId) formData.append("engagementId", filingId);
-      if (clientId && filingId && stage) formData.append("stage", stage);
+      appendDocumentLink(formData, link);
       await apiFetch("/documents/upload", { method: "POST", body: formData });
       await onUploaded();
       onOpenChange(false);
@@ -619,56 +600,7 @@ function UploadDialog({ open, onOpenChange, defaults, clients, onUploaded }: Upl
             </button>
           </div>
 
-          <div className="space-y-1.5">
-            <Label>Client <span className="text-muted-foreground">(optional)</span></Label>
-            <Select value={clientId || "none"} onValueChange={v => { setClientId(v === "none" ? "" : v); setFilingId(""); setStage(""); }}>
-              <SelectTrigger aria-label="Client"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">No client (firm document)</SelectItem>
-                {clients.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {clientId && (
-            <div className="space-y-1.5">
-              <Label>Filing <span className="text-muted-foreground">(optional)</span></Label>
-              <Select value={filingId || "none"} onValueChange={v => { setFilingId(v === "none" ? "" : v); setStage(""); }}>
-                <SelectTrigger aria-label="Filing"><SelectValue placeholder={loadingFilings ? "Loading filings..." : undefined} /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">{loadingFilings ? "Loading filings..." : "Not linked to a filing"}</SelectItem>
-                  {(filings ?? []).map(f => (
-                    <SelectItem key={f.id} value={String(f.id)} disabled={f.status === "completed"}>
-                      {f.title}{f.status === "completed" ? " (completed)" : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {!loadingFilings && filings?.length === 0 && (
-                <p className="text-xs text-muted-foreground">This client has no filings yet. Start one from a deadline.</p>
-              )}
-            </div>
-          )}
-
-          {clientId && filingId && (
-            <div className="space-y-1.5">
-              <Label>Workflow stage <span className="text-muted-foreground">(optional)</span></Label>
-              <Select value={stage || "none"} onValueChange={v => setStage(v === "none" ? "" : (v as FilingStageKey))}>
-                <SelectTrigger aria-label="Workflow stage"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No stage</SelectItem>
-                  {FILING_STAGE_KEYS.map(k => {
-                    const lock = stageLock(k);
-                    return (
-                      <SelectItem key={k} value={k} disabled={!!lock}>
-                        {FILING_STAGES[k].label}{lock ? ` (${lock})` : ""}
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+          <DocumentLinkFields value={link} onChange={setLink} clients={clients} enabled={open} disabled={uploading} />
 
           <div className="space-y-1.5">
             <Label htmlFor="upload-description">Description <span className="text-muted-foreground">(optional)</span></Label>

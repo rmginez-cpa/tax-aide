@@ -1,6 +1,7 @@
 // Notification helpers shared by the navigation badge and the notifications page.
 
 import { useQuery } from "@tanstack/react-query";
+import type { UnreadCount } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import { isClientRole } from "@/lib/permissions";
 
@@ -17,7 +18,7 @@ export const UNREAD_POLL_MS = 60_000;
 export function useUnreadNotificationCount(enabled = true): number {
   const { data } = useQuery({
     queryKey: UNREAD_COUNT_QUERY_KEY,
-    queryFn: ({ signal }) => apiFetch<{ count: number }>("/notifications/unread-count", { signal }),
+    queryFn: ({ signal }) => apiFetch<UnreadCount>("/notifications/unread-count", { signal }),
     enabled,
     refetchInterval: UNREAD_POLL_MS,
     refetchOnWindowFocus: true,

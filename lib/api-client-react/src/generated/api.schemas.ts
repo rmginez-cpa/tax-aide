@@ -5,6 +5,15 @@
  * BIR Tax Client Management System API
  * OpenAPI spec version: 0.1.0
  */
+export interface AuthConfig {
+  /** Whether the demo accounts are seeded (the login page may show them). */
+  demoAccounts: boolean;
+}
+
+export interface UnreadCount {
+  count: number;
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -91,6 +100,11 @@ export interface UpdateUserBody {
   /** @nullable */
   password?: string | null;
   /**
+   * Required (and checked) when users change their own password; a super_admin resetting another account's password does not send it.
+   * @nullable
+   */
+  currentPassword?: string | null;
+  /**
    * Linked client for client/viewer accounts (super_admin only).
    * @nullable
    */
@@ -105,20 +119,21 @@ export const ClientStatus = {
 } as const;
 
 /**
- * Aggregate filing workflow counts across all engagements for this client (present on list responses).
+ * Filing workflow badge counts (GET /clients only): the same items the client page lists for the current tax year, plus every overdue open deadline.
  */
 export type ClientWorkflowCounts = {
-  /** Number of engagements currently in progress */
+  /** This tax year's filings whose linked engagement is in progress */
   inProgress: number;
-  /** Number of engagements awaiting manager review */
+  /** This tax year's filings with at least one stage awaiting manager review */
   forReview: number;
-  /** Number of overdue deadline entries not yet filed */
+  /** Open deadlines past due (any tax year), one per filing */
   overdue: number;
 };
 
 export interface Client {
   id: number;
   name: string;
+  /** ###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400 */
   tin: string;
   businessType: string;
   /** @nullable */
@@ -165,7 +180,7 @@ export interface Client {
   isEsalesRequired?: boolean;
   createdAt: string;
   updatedAt: string;
-  /** Aggregate filing workflow counts across all engagements for this client (present on list responses). */
+  /** Filing workflow badge counts (GET /clients only): the same items the client page lists for the current tax year, plus every overdue open deadline. */
   workflowCounts?: ClientWorkflowCounts;
 }
 
@@ -179,6 +194,7 @@ export const CreateClientBodyStatus = {
 
 export interface CreateClientBody {
   name: string;
+  /** ###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400 */
   tin: string;
   businessType: string;
   /** @nullable */
@@ -229,7 +245,10 @@ export const UpdateClientBodyStatus = {
 export interface UpdateClientBody {
   /** @nullable */
   name?: string | null;
-  /** @nullable */
+  /**
+   * ###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400
+   * @nullable
+   */
   tin?: string | null;
   /** @nullable */
   businessType?: string | null;
@@ -305,18 +324,28 @@ export const ComplianceItemStatus = {
   overdue: "overdue",
 } as const;
 
+export type StageStatus = (typeof StageStatus)[keyof typeof StageStatus];
+
+export const StageStatus = {
+  not_started: "not_started",
+  in_progress: "in_progress",
+  for_review: "for_review",
+  approved: "approved",
+  not_applicable: "not_applicable",
+} as const;
+
 /**
- * Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable
+ * Status of each of the four parallel filing stages (payment is not_applicable when taxPayable is 0)
  */
-export type ComplianceItemStageStatuses = {
-  source_collection?: string;
-  draft_return?: string;
-  confirmation?: string;
-  payment?: string;
-};
+export interface StageStatuses {
+  source_collection: StageStatus;
+  draft_return: StageStatus;
+  confirmation: StageStatus;
+  payment: StageStatus;
+}
 
 export interface ComplianceItem {
-  /** BIR form number (e.g. 2550M, 1702) */
+  /** BIR form number (e.g. 2550Q, 1702) */
   formNumber: string;
   description: string;
   /** Human-readable period (e.g. 'January 2025', 'Q1 2025') */
@@ -329,20 +358,26 @@ export interface ComplianceItem {
    * ID of the linked deadline record, if it exists
    * @nullable
    */
-  deadlineId?: number | null;
+  deadlineId: number | null;
+  /**
+   * Filing (engagement) linked to the deadline, if any
+   * @nullable
+   */
+  engagementId: number | null;
   /** @nullable */
-  engagementId?: number | null;
-  /** @nullable */
-  workflowStage?: string | null;
-  /** @nullable */
-  workflowStatus?: string | null;
-  /** Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable */
-  stageStatuses?: ComplianceItemStageStatuses;
+  workflowStage: string | null;
+  /**
+   * Status of the linked engagement (pending | in_progress | completed)
+   * @nullable
+   */
+  workflowStatus: string | null;
+  /** Per-stage statuses of the linked engagement (null without one); payment is not_applicable when taxPayable is 0 */
+  stageStatuses: StageStatuses | null;
   /**
    * Tax amount payable (null = not entered, 0 = none due, >0 = payment required)
    * @nullable
    */
-  taxPayable?: number | null;
+  taxPayable: number | null;
 }
 
 export type ClientComplianceSummary = {
@@ -360,18 +395,21 @@ export interface ClientCompliance {
   summary: ClientComplianceSummary;
 }
 
+/**
+ * pending (no stage started), in_progress, completed (every required stage approved). Rows from before the stage workflow may still hold the retired for_review / approved / filed; show those as-is.
+ */
 export type EngagementStatus =
   (typeof EngagementStatus)[keyof typeof EngagementStatus];
 
 export const EngagementStatus = {
   pending: "pending",
   in_progress: "in_progress",
-  for_review: "for_review",
-  approved: "approved",
-  filed: "filed",
   completed: "completed",
 } as const;
 
+/**
+ * stageStatuses, stagesForReview, workflowStage, isAmendment and amendedEngagementId are sent by the /engagements endpoints (not by GET /dashboard/overdue).
+ */
 export interface Engagement {
   id: number;
   clientId: number;
@@ -379,6 +417,8 @@ export interface Engagement {
   clientName?: string | null;
   title: string;
   taxType: string;
+  /** Short form code for headings ("1601C", "1702", "AnnexF"), derived on the server like the compliance checklist's. Sent by the /engagements endpoints. */
+  formNumber?: string;
   period: string;
   /** @nullable */
   fiscalYear?: string | null;
@@ -404,6 +444,20 @@ export interface Engagement {
    * @nullable
    */
   taxPayable?: number | null;
+  /**
+   * Legacy single-stage pointer (the stages are now independent)
+   * @nullable
+   */
+  workflowStage?: string | null;
+  stageStatuses?: StageStatuses;
+  /** Number of stages awaiting manager review */
+  stagesForReview?: number;
+  isAmendment?: boolean;
+  /**
+   * For an amendment: the filing it amends
+   * @nullable
+   */
+  amendedEngagementId?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -424,6 +478,7 @@ export interface CreateEngagementBody {
 }
 
 /**
+ * Manager-only override to pending or in_progress. completed is reached by approving the stages (400); the retired for_review / approved / filed are rejected (400).
  * @nullable
  */
 export type UpdateEngagementBodyStatus =
@@ -455,7 +510,10 @@ export interface UpdateEngagementBody {
    * @nullable
    */
   taxPayable?: number | null;
-  /** @nullable */
+  /**
+   * Manager-only override to pending or in_progress. completed is reached by approving the stages (400); the retired for_review / approved / filed are rejected (400).
+   * @nullable
+   */
   status?: UpdateEngagementBodyStatus;
   /** @nullable */
   assignedTo?: number | null;
@@ -471,6 +529,9 @@ export interface ApproveEngagementBody {
   notes?: string | null;
 }
 
+/**
+ * Stored as pending / completed (completed when the linked filing is completed); overdue is only sent by GET /dashboard/overdue. Derive overdue from dueDate (Asia/Manila) elsewhere.
+ */
 export type DeadlineStatus =
   (typeof DeadlineStatus)[keyof typeof DeadlineStatus];
 
@@ -492,15 +553,21 @@ export const DeadlinePriority = {
 export interface Deadline {
   id: number;
   /** @nullable */
-  engagementId?: number | null;
+  engagementId: number | null;
   /** @nullable */
-  clientId?: number | null;
+  clientId: number | null;
   /** @nullable */
-  clientName?: string | null;
+  clientName: string | null;
   title: string;
+  /** Form code from the title, the same as the compliance checklist's ("1601EQ", "AnnexF"); "OTHER" for a title that names no form. Sent by the /deadlines endpoints. */
+  formNumber?: string;
+  /** Period label from the title, the same as the compliance checklist's ("Q1 2026", "Annual 2026"); the whole title when it has none. Sent by the /deadlines endpoints. */
+  period?: string;
   /** @nullable */
-  description?: string | null;
+  description: string | null;
+  /** YYYY-MM-DD */
   dueDate: string;
+  /** Stored as pending / completed (completed when the linked filing is completed); overdue is only sent by GET /dashboard/overdue. Derive overdue from dueDate (Asia/Manila) elsewhere. */
   status: DeadlineStatus;
   priority: DeadlinePriority;
   createdAt: string;
@@ -633,6 +700,15 @@ export interface UpdateChecklistItemBody {
   sortOrder?: number | null;
 }
 
+export type DocumentStage = (typeof DocumentStage)[keyof typeof DocumentStage];
+
+export const DocumentStage = {
+  source_collection: "source_collection",
+  draft_return: "draft_return",
+  confirmation: "confirmation",
+  payment: "payment",
+} as const;
+
 export interface Document {
   id: number;
   /** @nullable */
@@ -652,6 +728,8 @@ export interface Document {
   uploadedBy: number;
   /** @nullable */
   uploadedByName?: string | null;
+  /** Filing workflow stage the document belongs to (null = general) */
+  stage?: DocumentStage | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -774,6 +852,79 @@ export interface StatusCount {
   count: number;
 }
 
+export type AuditLogFiltersUsersItem = {
+  id: number;
+  name: string;
+};
+
+export interface AuditLogFilters {
+  users: AuditLogFiltersUsersItem[];
+  actions: string[];
+  entityTypes: string[];
+}
+
+export interface MyWorkFiling {
+  id: number;
+  title: string;
+  clientId: number;
+  /** @nullable */
+  clientName: string | null;
+  taxType: string;
+  period: string;
+  status: string;
+  /** @nullable */
+  dueDate: string | null;
+  overdue: boolean;
+  /** @nullable */
+  daysUntilDue: number | null;
+  /** Stage keys awaiting review (payment is left out when no tax is payable) */
+  stagesForReview: DocumentStage[];
+  /** When the filing last changed (ISO timestamp) */
+  waitingSince: string;
+}
+
+export interface MyWorkDeadline {
+  id: number;
+  title: string;
+  /** @nullable */
+  clientId: number | null;
+  /** @nullable */
+  clientName: string | null;
+  /** @nullable */
+  engagementId: number | null;
+  dueDate: string;
+  priority: string;
+  overdue: boolean;
+  daysUntilDue: number;
+}
+
+export type MyWorkKind = (typeof MyWorkKind)[keyof typeof MyWorkKind];
+
+export const MyWorkKind = {
+  review: "review",
+  maker: "maker",
+  client: "client",
+} as const;
+
+export type MyWorkTotals = {
+  filings: number;
+  deadlines: number;
+};
+
+export interface MyWork {
+  kind: MyWorkKind;
+  /** Today in Asia/Manila (YYYY-MM-DD) */
+  today: string;
+  /**
+   * Deadline window of the maker list (null for the other kinds)
+   * @nullable
+   */
+  windowDays: number | null;
+  totals: MyWorkTotals;
+  filings: MyWorkFiling[];
+  deadlines: MyWorkDeadline[];
+}
+
 export type GetClientComplianceParams = {
   /**
    * @nullable
@@ -819,7 +970,53 @@ export type ListDocumentsParams = {
    * @nullable
    */
   clientId?: number | null;
+  /**
+   * Original file name contains (case-insensitive, literal; at most 200 characters).
+   * @maxLength 200
+   */
+  q?: string;
+  /**
+   * Filing workflow stage of the document, or "none" for documents not linked to a stage.
+   */
+  stage?: ListDocumentsStage;
+  /**
+   * MIME type prefix ("image/", "application/pdf"); comma-separated = any of (at most 10).
+   */
+  mimeType?: string;
+  /**
+   * By upload time; "asc" (default, oldest first) or "desc" (newest first).
+   */
+  order?: ListDocumentsOrder;
+  /**
+   * Page size (1-200). Omit for every match.
+   * @minimum 1
+   * @maximum 200
+   */
+  limit?: number;
+  /**
+   * @minimum 0
+   */
+  offset?: number;
 };
+
+export type ListDocumentsStage =
+  (typeof ListDocumentsStage)[keyof typeof ListDocumentsStage];
+
+export const ListDocumentsStage = {
+  source_collection: "source_collection",
+  draft_return: "draft_return",
+  confirmation: "confirmation",
+  payment: "payment",
+  none: "none",
+} as const;
+
+export type ListDocumentsOrder =
+  (typeof ListDocumentsOrder)[keyof typeof ListDocumentsOrder];
+
+export const ListDocumentsOrder = {
+  asc: "asc",
+  desc: "desc",
+} as const;
 
 export type ListCommentsParams = {
   /**
@@ -830,15 +1027,92 @@ export type ListCommentsParams = {
 
 export type ListAuditLogsParams = {
   /**
+   * Entries about this engagement (entityType engagement).
    * @nullable
    */
   engagementId?: number | null;
   /**
+   * Entries about this client (entityType client).
    * @nullable
    */
   clientId?: number | null;
   /**
+   * Entries made by this user.
+   * @minimum 1
+   */
+  userId?: number;
+  /**
+   * Exact action (see GET /audit-logs/filters).
+   * @maxLength 64
+   */
+  action?: string;
+  /**
+   * Exact entity type (see GET /audit-logs/filters).
+   * @maxLength 64
+   */
+  entityType?: string;
+  /**
+   * First day, inclusive (YYYY-MM-DD, Asia/Manila).
+   */
+  from?: string;
+  /**
+   * Last day, inclusive (YYYY-MM-DD, Asia/Manila).
+   */
+  to?: string;
+  /**
+   * Description contains (case-insensitive, literal; at most 200 characters).
+   * @maxLength 200
+   */
+  q?: string;
+  /**
+   * Page size (default 50, at most 500; malformed values fall back to the default).
    * @nullable
    */
   limit?: number | null;
+  /**
+   * Entries to skip (default 0; malformed values fall back to 0).
+   * @nullable
+   */
+  offset?: number | null;
+};
+
+export type ExportAuditLogsCsvParams = {
+  /**
+   * Entries about this engagement (entityType engagement).
+   * @nullable
+   */
+  engagementId?: number | null;
+  /**
+   * Entries about this client (entityType client).
+   * @nullable
+   */
+  clientId?: number | null;
+  /**
+   * Entries made by this user.
+   * @minimum 1
+   */
+  userId?: number;
+  /**
+   * Exact action (see GET /audit-logs/filters).
+   * @maxLength 64
+   */
+  action?: string;
+  /**
+   * Exact entity type (see GET /audit-logs/filters).
+   * @maxLength 64
+   */
+  entityType?: string;
+  /**
+   * First day, inclusive (YYYY-MM-DD, Asia/Manila).
+   */
+  from?: string;
+  /**
+   * Last day, inclusive (YYYY-MM-DD, Asia/Manila).
+   */
+  to?: string;
+  /**
+   * Description contains (case-insensitive, literal; at most 200 characters).
+   * @maxLength 200
+   */
+  q?: string;
 };

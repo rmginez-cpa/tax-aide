@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useSearch } from "wouter";
+import { useUrlFilterState } from "@/hooks/use-url-filter-state";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AuditLog as AuditLogEntry } from "@workspace/api-client-react";
+import type { AuditLog as AuditLogEntry, AuditLogFilters } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -51,25 +51,21 @@ const FILTER_KEYS = ["userId", "action", "entityType", "from", "to", "q"] as con
 type FilterKey = (typeof FILTER_KEYS)[number];
 type Filters = Partial<Record<FilterKey, string>>;
 
-interface AuditFacets {
-  users: { id: number; name: string }[];
-  actions: string[];
-  entityTypes: string[];
-}
-
 interface AuditPage {
   rows: AuditLogEntry[];
   total: number;
 }
 
-function readFilters(search: string): { filters: Filters; page: number } {
-  const sp = new URLSearchParams(search);
+/** URL keys (filters + page) and their defaults, for useUrlFilterState. */
+const URL_DEFAULTS: Record<FilterKey | "page", string> = { userId: "", action: "", entityType: "", from: "", to: "", q: "", page: "" };
+
+function readFilters(raw: Record<FilterKey | "page", string>): { filters: Filters; page: number } {
   const filters: Filters = {};
   for (const k of FILTER_KEYS) {
-    const v = sp.get(k)?.trim();
+    const v = raw[k]?.trim();
     if (v) filters[k] = v;
   }
-  const page = Math.max(1, Math.floor(Number(sp.get("page")) || 1));
+  const page = Math.max(1, Math.floor(Number(raw.page) || 1));
   return { filters, page };
 }
 
@@ -86,11 +82,11 @@ function dispositionFilename(header: string | null): string | null {
 }
 
 export default function AuditLog() {
-  const search = useSearch();
-  const [location, setLocation] = useLocation();
+  // Shared URL filter state: parameters this page does not manage are kept.
+  const [rawUrl, setUrl] = useUrlFilterState(URL_DEFAULTS);
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const { filters, page } = useMemo(() => readFilters(search), [search]);
+  const { filters, page } = useMemo(() => readFilters(rawUrl), [rawUrl]);
   const [exporting, setExporting] = useState(false);
 
   const filtersRef = useRef(filters);
@@ -104,10 +100,10 @@ export default function AuditLog() {
   }, [filters.q]);
 
   const navigate = (next: Filters, nextPage = 1) => {
-    const sp = filterParams(next);
-    if (nextPage > 1) sp.set("page", String(nextPage));
-    const qs = sp.toString();
-    setLocation(qs ? `${location}?${qs}` : location, { replace: true });
+    const patch: Record<FilterKey | "page", string> = { ...URL_DEFAULTS };
+    for (const k of FILTER_KEYS) patch[k] = next[k] ?? "";
+    patch.page = nextPage > 1 ? String(nextPage) : "";
+    setUrl(patch);
   };
   const setFilter = (key: FilterKey, value: string | undefined) => {
     navigate({ ...filters, [key]: value && value !== ALL ? value : undefined });
@@ -137,9 +133,9 @@ export default function AuditLog() {
     placeholderData: keepPreviousData,
   });
 
-  const { data: facets } = useQuery<AuditFacets>({
+  const { data: facets } = useQuery<AuditLogFilters>({
     queryKey: ["/api/audit-logs/filters"],
-    queryFn: ({ signal }) => apiFetch<AuditFacets>("/audit-logs/filters", { signal }),
+    queryFn: ({ signal }) => apiFetch<AuditLogFilters>("/audit-logs/filters", { signal }),
     staleTime: 60_000,
   });
 

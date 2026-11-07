@@ -9,233 +9,17 @@
 // Env:  API_BASE, FIXTURE, UPLOADS_DIR (must equal the server's UPLOADS_DIR),
 //       PGHOST/PGUSER/PGDATABASE/PGPASSWORD, ONLY=<group substring>, DRY_RUN=1
 
-import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import {
+  guard, DRY_RUN, BASE, UPLOADS_DIR, cookies, sidOf, sql, sqlNum, q, reset, call, upload, is, DENIED, NOT_2XX,
+  CLIENT_ERR, BAD_REF, DELETED, pred, arr, EMPTY, record, check, assert, group, main,
+} from "./_harness.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+guard({ allowDryRun: true });
 
-if (process.env.TAXAIDE_TEST_RESET_DB !== "1" && process.env.DRY_RUN !== "1") {
-  console.error("Refusing to run: this suite wipes the database. Set TAXAIDE_TEST_RESET_DB=1 and point PG*/API_BASE at a throwaway database.");
-  process.exit(2);
-}
-const BASE = process.env.API_BASE ?? "http://localhost:8080/api";
-const FIXTURE = process.env.FIXTURE ?? path.join(HERE, "fixture.sql");
-const PG_ENV = {
-  ...process.env,
-  PGPASSWORD: process.env.PGPASSWORD ?? "taxaide",
-  PGHOST: process.env.PGHOST ?? "localhost",
-  PGUSER: process.env.PGUSER ?? "taxaide",
-  PGDATABASE: process.env.PGDATABASE ?? "taxaide",
-};
-// Must match the API's UPLOADS_DIR (restart-api.sh). The fixture's document rows point at
-// a.txt / b.txt, so reset() writes those files (5 bytes each, matching file_size).
-const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.join(HERE, "uploads");
-const ONLY = process.env.ONLY ?? "";
-// DRY_RUN=1: touch neither the API nor the DB (stubs both) — only for counting cases / harness smoke checks.
-const DRY_RUN = process.env.DRY_RUN === "1";
-if (DRY_RUN) {
-  globalThis.fetch = async () =>
-    new Response("[]", { status: 200, headers: { "set-cookie": "connect.sid=dry; Path=/", "content-type": "application/json" } });
-}
-
-const USERS = {
-  admin: ["admin@firm.ph", "admin123"],
-  manager: ["manager@firm.ph", "manager123"],
-  maker: ["accountant@firm.ph", "accountant123"],
-  client: ["client@example.com", "client123"], // -> Alpha (1)
-  clientb: ["clientb@example.com", "client123"], // -> Bravo (2)
-  orphan: ["orphan@example.com", "client123"], // unlinked client
-  viewer: ["viewer@example.com", "client123"], // legacy viewer -> Alpha (1)
-};
 const STAFF = ["maker", "manager", "admin"];
 const CLIENTS = ["client", "viewer"]; // both scoped to Alpha
-
-// ── DB helpers ───────────────────────────────────────────────────────────────
-function sql(query) {
-  if (DRY_RUN) return "0";
-  return execSync("psql -q -tA -v ON_ERROR_STOP=1", { input: query, env: PG_ENV, stdio: ["pipe", "pipe", "pipe"] })
-    .toString()
-    .trim();
-}
-function sqlNum(query) {
-  const out = sql(query);
-  const n = Number(out.split("\n")[0]);
-  if (Number.isNaN(n)) throw new Error(`non-numeric SQL result for ${query}: ${out}`);
-  return n;
-}
-function q(s) {
-  return `'${String(s).replace(/'/g, "''")}'`;
-}
-
-// ── HTTP helpers ─────────────────────────────────────────────────────────────
-const cookies = {};
-
-async function login(role) {
-  const [email, password] = USERS[role];
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [res.headers.get("set-cookie") ?? ""];
-  const sid = setCookies.map((c) => c.split(";")[0]).find((c) => c.startsWith("connect.sid="));
-  if (res.status !== 200 || !sid) {
-    throw new Error(`login failed for ${role}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-  }
-  cookies[role] = sid;
-}
-
-async function loginAll() {
-  for (const role of Object.keys(USERS)) await login(role);
-}
-
-// Users 1-4 survive the fixture, so pin their role/link/name back after every reset
-// (a test that demotes the maker, or a server bug that lets a client promote itself,
-// must not leak into later groups or later runs).
-let restoreUsersSql = null;
-async function reset() {
-  if (restoreUsersSql === null) {
-    const rows = sql("select id||chr(9)||name from users where id between 1 and 4 order by id").split("\n").filter(Boolean);
-    restoreUsersSql = rows
-      .map((row) => {
-        const [id, name] = row.split("\t");
-        return `update users set name=${q(name)} where id=${Number(id)};`;
-      })
-      .join("\n");
-  }
-  if (!DRY_RUN) {
-    execSync(`psql -q -v ON_ERROR_STOP=1 -f ${JSON.stringify(FIXTURE)}`, { env: PG_ENV, stdio: ["ignore", "ignore", "pipe"] });
-    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-    fs.writeFileSync(path.join(UPLOADS_DIR, "a.txt"), "alpha");
-    fs.writeFileSync(path.join(UPLOADS_DIR, "b.txt"), "bravo");
-  }
-  sql(`
-    update users set role='super_admin', client_id=null where id=1;
-    update users set role='manager', client_id=null where id=2;
-    update users set role='maker', client_id=null where id=3;
-    update users set role='client', client_id=1 where id=4;
-    ${restoreUsersSql}
-  `);
-  // The fixture wipes user_sessions, so everybody must sign in again.
-  await loginAll();
-}
-
-async function call(role, method, urlPath, body) {
-  const headers = {};
-  if (role && cookies[role]) headers.Cookie = cookies[role];
-  let payload;
-  if (body instanceof FormData) {
-    payload = body;
-  } else if (body !== undefined && body !== null) {
-    headers["Content-Type"] = "application/json";
-    payload = JSON.stringify(body);
-  }
-  const res = await fetch(`${BASE}${urlPath}`, { method, headers, body: payload, redirect: "manual" });
-  const text = await res.text();
-  let json;
-  try {
-    json = text ? JSON.parse(text) : undefined;
-  } catch {
-    json = undefined;
-  }
-  return { status: res.status, headers: res.headers, text, json };
-}
-
-function upload(fields, content = "hello from the authz test", name = "authz-test.txt") {
-  const fd = new FormData();
-  fd.append("file", new Blob([content], { type: "text/plain" }), name);
-  for (const [k, v] of Object.entries(fields)) fd.append(k, String(v));
-  return fd;
-}
-
-// ── Expectations ─────────────────────────────────────────────────────────────
-// An expectation is { desc, test(res) -> true | false | string(reason) }.
-function is(...codes) {
-  return { desc: codes.join("|"), test: (r) => codes.includes(r.status) };
-}
-const DENIED = { desc: "403|404 (never 2xx)", test: (r) => r.status === 403 || r.status === 404 };
-const NOT_2XX = { desc: "non-2xx", test: (r) => r.status < 200 || r.status >= 300 };
-const CLIENT_ERR = { desc: "4xx", test: (r) => r.status >= 400 && r.status < 500 };
-const BAD_REF = { desc: "400|404", test: (r) => r.status === 400 || r.status === 404 };
-const DELETED = is(204, 200);
-const CREATED = is(201, 200);
-function pred(desc, fn, status = 200) {
-  return {
-    desc: status == null ? desc : `${status} + ${desc}`,
-    test: (r) => {
-      if (status != null && r.status !== status) return false;
-      return fn(r.json, r);
-    },
-  };
-}
-const arr = (desc, fn) => pred(desc, (j) => Array.isArray(j) && fn(j));
-const EMPTY = arr("[]", (a) => a.length === 0);
-
-// ── Runner ───────────────────────────────────────────────────────────────────
-let passed = 0;
-const failures = [];
-
-function record(name, ok, expected, got) {
-  if (ok) {
-    passed++;
-    console.log(`PASS ${name}`);
-  } else {
-    failures.push(name);
-    console.log(`FAIL ${name} expected ${expected} got ${got}`);
-  }
-}
-
-function short(r) {
-  const t = (r.text ?? "").replace(/\s+/g, " ");
-  return t.length > 160 ? `${t.slice(0, 160)}…` : t;
-}
-
-async function check(name, role, method, urlPath, body, expect) {
-  const exp = typeof expect === "number" ? is(expect) : expect;
-  let r;
-  try {
-    r = await call(role, method, urlPath, typeof body === "function" ? body() : body);
-  } catch (err) {
-    record(`[${role}] ${name}`, false, exp.desc, `exception ${err?.message ?? err}`);
-    return { status: 0, json: undefined, text: "", headers: new Headers() };
-  }
-  let verdict;
-  try {
-    verdict = exp.test(r);
-  } catch (err) {
-    verdict = `predicate threw ${err?.message ?? err}`;
-  }
-  const ok = verdict === true;
-  const why = typeof verdict === "string" ? ` (${verdict})` : "";
-  record(`[${role}] ${name}`, ok, exp.desc, `${r.status}${why} ${short(r)}`);
-  return r;
-}
-
-function assert(name, cond, expected, got) {
-  let ok;
-  let actual = got;
-  try {
-    ok = typeof cond === "function" ? cond() : cond;
-  } catch (err) {
-    ok = false;
-    actual = `exception ${err?.message ?? err}`;
-  }
-  record(name, ok === true, expected, typeof actual === "function" ? safe(actual) : actual);
-}
-function safe(fn) {
-  try {
-    return fn();
-  } catch (err) {
-    return `exception ${err?.message ?? err}`;
-  }
-}
-
-const groups = [];
-function group(name, fn) {
-  groups.push({ name, fn });
-}
 
 // ── Snapshot of the mutable app data (for "nothing changed" checks) ─────────
 function snapshot() {
@@ -460,7 +244,7 @@ group("2 client writes rejected", async () => {
   await check("PATCH /users/4 own name", "client", "PATCH", "/users/4", { name: "Alpha Client Renamed" }, 200);
   await check("PATCH /users/4 own name back", "client", "PATCH", "/users/4", { name: origName }, 200);
   await check("PATCH /users/5 someone else's name", "client", "PATCH", "/users/5", { name: "Hacked" }, DENIED);
-  await check("PATCH /users/7 own password", "viewer", "PATCH", "/users/7", { password: "newpass123" }, 200);
+  await check("PATCH /users/7 own password", "viewer", "PATCH", "/users/7", { password: "newpass123", currentPassword: "client123" }, 200);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1156,39 +940,128 @@ group("12f client-list workflow badges match the client page", async () => {
     () => c2.inProgress === c1.inProgress && c2.forReview === c1.forReview, JSON.stringify(c1), JSON.stringify(c2));
 });
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-async function main() {
-  try {
-    const h = await fetch(`${BASE}/healthz`);
-    if (!h.ok) throw new Error(`healthz ${h.status}`);
-  } catch (err) {
-    console.error(`API not reachable at ${BASE}: ${err?.message ?? err}`);
-    process.exit(2);
-  }
+// ═════════════════════════════════════════════════════════════════════════════
+// 12g) The last super_admin can be neither demoted nor deleted (409)
+// ═════════════════════════════════════════════════════════════════════════════
+/** Signs a non-fixture account in and stores its cookie under `key` (for call/check). */
+async function loginAs(key, email, password) {
+  const res = await fetch(`${BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const sid = sidOf(res);
+  if (res.status !== 200 || !sid) throw new Error(`login failed for ${email}: ${res.status}`);
+  cookies[key] = sid;
+}
+const superAdmins = () => sqlNum("select count(*) from users where role='super_admin'");
 
-  for (const g of groups) {
-    if (ONLY && !g.name.includes(ONLY)) continue;
-    console.log(`\n=== ${g.name} ===`);
-    try {
-      await g.fn();
-    } catch (err) {
-      record(`group "${g.name}" crashed`, false, "no exception", String(err?.stack ?? err).slice(0, 400));
+group("12g last super_admin", async () => {
+  await reset();
+  const A = "admin";
+  assert("the fixture has exactly one super_admin (user 1)", () => superAdmins() === 1, 1, () => superAdmins());
+  const lastMsg = pred("409 + last super admin message", (j) => /super admin/i.test(j?.error ?? ""), 409);
+  await check("PATCH /users/1 demote the last super_admin to manager", A, "PATCH", "/users/1", { role: "manager" }, lastMsg);
+  await check("PATCH /users/1 demote the last super_admin to client", A, "PATCH", "/users/1", { role: "client", clientId: 1 }, 409);
+  await check("PATCH /users/1 demote the last super_admin to maker (with a name change)", A, "PATCH", "/users/1",
+    { role: "maker", name: "Renamed Admin" }, 409);
+  assert("user 1 is still super_admin, name unchanged", () => sql("select role||','||(name='Renamed Admin') from users where id=1") === "super_admin,false",
+    "super_admin,false", () => sql("select role||','||name from users where id=1"));
+  await check("PATCH /users/1 role super_admin (no demotion)", A, "PATCH", "/users/1", { role: "super_admin" }, 200);
+
+  // With a second super_admin either one may be demoted, until one is left.
+  sql("update users set role='super_admin' where id=2");
+  await check("PATCH /users/2 demote a super_admin while another remains", A, "PATCH", "/users/2", { role: "manager" }, 200);
+  await check("PATCH /users/1 demote self when last again", A, "PATCH", "/users/1", { role: "manager" }, 409);
+  sql("update users set role='super_admin' where id=2");
+  await check("PATCH /users/1 demoted by the other super_admin", "manager", "PATCH", "/users/1", { role: "manager" }, 200);
+  await check("PATCH /users/2 demote self, now the last one", "manager", "PATCH", "/users/2", { role: "maker" }, 409);
+  assert("one super_admin left (user 2)", () => sql("select string_agg(id::text, ',') from users where role='super_admin'") === "2",
+    "2", () => sql("select string_agg(id::text, ',') from users where role='super_admin'"));
+  // Deleting a non-super_admin is unaffected.
+  await check("DELETE /users/6 (a client account)", "manager", "DELETE", "/users/6", null, DELETED);
+
+  // Two super admins removing each other at the same moment: never both.
+  for (const [verb, method, body] of [["delete", "DELETE", null], ["demote", "PATCH", { role: "manager" }]]) {
+    for (let round = 1; round <= 3; round++) {
+      await reset();
+      const ids = [];
+      for (const side of ["a", "b"]) {
+        const email = `sa-${verb}-${round}${side}@example.com`;
+        const r = await call(A, "POST", "/users", { email, name: `SA ${side}`, password: "secret123", role: "super_admin" });
+        ids.push(r.json?.id);
+        await loginAs(`sa${side}`, email, "secret123");
+      }
+      sql("update users set role='manager' where id=1"); // the two new accounts are the only super admins
+      const [ra, rb] = await Promise.all([
+        call("saa", method, `/users/${ids[1]}`, body),
+        call("sab", method, `/users/${ids[0]}`, body),
+      ]);
+      const codes = [ra.status, rb.status].sort();
+      const ok = method === "DELETE" ? [204, 200] : [200];
+      assert(`concurrent cross-${verb} round ${round}: exactly one succeeds, the other is refused`,
+        () => codes.filter((c) => ok.includes(c)).length === 1 && codes.some((c) => [401, 403, 409].includes(c)),
+        "one 2xx + one 401|403|409", codes.join(","));
+      assert(`concurrent cross-${verb} round ${round}: a super_admin remains`, () => superAdmins() === 1, 1, () => superAdmins());
     }
   }
+});
 
-  // Leave the DB in the fixture state for whoever runs next.
-  try {
-    await reset();
-  } catch (err) {
-    console.log(`(final fixture reset failed: ${err?.message ?? err})`);
+// ═════════════════════════════════════════════════════════════════════════════
+// 12h) Retired filing-level statuses cannot be set
+// ═════════════════════════════════════════════════════════════════════════════
+group("12h retired engagement statuses", async () => {
+  await reset();
+  for (const role of ["manager", "admin"]) {
+    for (const status of ["for_review", "approved", "filed"]) {
+      await check(`PATCH /engagements/2 status ${status}`, role, "PATCH", "/engagements/2", { status }, 400);
+    }
   }
+  assert("engagement 2 still in_progress", () => sql("select status from engagements where id=2") === "in_progress",
+    "in_progress", () => sql("select status from engagements where id=2"));
+  // A legacy row keeps its old status when it is re-sent unchanged (e.g. with other edits).
+  sql("update engagements set status='filed' where id=2");
+  await check("PATCH /engagements/2 legacy status re-sent unchanged", "manager", "PATCH", "/engagements/2",
+    { status: "filed", notes: "legacy row" }, pred("status filed", (j) => j?.status === "filed"));
+  await check("PATCH /engagements/2 legacy row back to in_progress", "manager", "PATCH", "/engagements/2", { status: "in_progress" },
+    pred("status in_progress", (j) => j?.status === "in_progress"));
+  await check("GET /engagements/2 serializes the stage fields", "maker", "GET", "/engagements/2", null,
+    pred("stageStatuses + stagesForReview", (j) => j && typeof j.stageStatuses === "object" && j.stageStatuses.draft_return === "in_progress"
+      && j.stagesForReview === 0 && j.isAmendment === false));
+});
 
-  console.log(`\n${passed} passed, ${failures.length} failed, ${passed + failures.length} total`);
-  if (failures.length) {
-    console.log("Failures:");
-    for (const f of failures) console.log(`  - ${f}`);
-    process.exit(1);
-  }
-}
+// ═════════════════════════════════════════════════════════════════════════════
+// 12i) Tax payable belongs to the draft return: locked for makers once it is submitted / approved
+// ═════════════════════════════════════════════════════════════════════════════
+group("12i tax payable locked with the draft return", async () => {
+  await reset();
+  const row = () => sql("select status||','||coalesce(tax_payable::text,'NULL')||','||coalesce(approved_by,0) from engagements where id=1");
+  // Fixture engagement 1: draft_return for_review.
+  await check("maker PATCH taxPayable while the draft is for_review", "maker", "PATCH", "/engagements/1", { taxPayable: 100 }, 403);
+  await check("maker PATCH taxPayable on engagement 2 (draft in_progress)", "maker", "PATCH", "/engagements/2", { taxPayable: 500 },
+    pred("taxPayable 500", (j) => j?.taxPayable === 500));
+  // Draft and confirmation approved, 25000 entered: a maker cannot zero it to complete the filing.
+  sql("update engagements set draft_return_status='approved', confirmation_status='approved', tax_payable=25000 where id=1");
+  await check("maker PATCH taxPayable 0 after approvals", "maker", "PATCH", "/engagements/1", { taxPayable: 0 }, 403);
+  assert("filing not completed by the maker, amount kept", () => row() === "in_progress,25000.00,0", "in_progress,25000.00,0", row);
+  await check("maker PATCH the same taxPayable (no change) is allowed", "maker", "PATCH", "/engagements/1", { taxPayable: 25000, notes: "same figure" }, 200);
+  // A manager may change it; zeroing it with every other stage approved completes the filing as that manager.
+  await check("manager PATCH taxPayable 0 after approvals", "manager", "PATCH", "/engagements/1", { taxPayable: 0 },
+    pred("completed", (j) => j?.status === "completed" && j?.taxPayable === 0));
+  assert("completed with approved_by = the manager (2)", () => row() === "completed,0.00,2", "completed,0.00,2", row);
+});
 
-await main();
+// ═════════════════════════════════════════════════════════════════════════════
+// 12j) Every approver (managers and super_admins) hears about a submitted stage
+// ═════════════════════════════════════════════════════════════════════════════
+group("12j stage-ready notifications reach super_admins", async () => {
+  await reset();
+  const ready = (uid) => sqlNum(`select count(*) from notifications where user_id=${uid} and title='Stage Ready for Approval' and related_id=2`);
+  await check("maker submits engagement 2 draft_return", "maker", "POST", "/engagements/2/submit-stage", { stage: "draft_return" }, 200);
+  assert("manager (2) notified", () => ready(2) === 1, 1, () => ready(2));
+  assert("super_admin (1) notified", () => ready(1) === 1, 1, () => ready(1));
+  assert("maker (3) not notified", () => ready(3) === 0, 0, () => ready(3));
+});
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+await main({ reset });

@@ -10,7 +10,10 @@ import type { UpdateClientBodyStatus } from "./updateClientBodyStatus";
 export interface UpdateClientBody {
   /** @nullable */
   name?: string | null;
-  /** @nullable */
+  /**
+   * ###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400
+   * @nullable
+   */
   tin?: string | null;
   /** @nullable */
   businessType?: string | null;

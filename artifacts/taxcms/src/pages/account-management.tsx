@@ -39,7 +39,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ShieldCheck, Plus, Pencil, Trash2, Loader2, User, RefreshCw } from "lucide-react";
-import { useAuth } from "@/lib/auth";
+import { ME_QUERY_KEY, useAuth } from "@/lib/auth";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { ErrorState } from "@/components/ErrorState";
 import { errorMessage } from "@/lib/api";
@@ -47,9 +47,8 @@ import { formatDate } from "@/lib/format";
 import { invalidateFilingData, invalidatePrefixes } from "@/lib/queries";
 import { isClientRole } from "@/lib/permissions";
 import { ASSIGNABLE_ROLES, ROLE_DESCRIPTIONS, roleBadgeClass, roleLabel } from "@/lib/status";
+import { MIN_PASSWORD_LENGTH, passwordLengthError } from "@/lib/policy";
 
-/** Must match the server's MIN_PASSWORD_LENGTH (api-server lib/passwordPolicy.ts). */
-const MIN_PASSWORD_LENGTH = 8;
 /** Select value for "no linked client" (Radix Select items cannot use ""). */
 const NO_CLIENT = "none";
 
@@ -68,15 +67,17 @@ interface AccountForm {
   email: string;
   role: UserRole;
   password: string;
+  /** Only for changing your own password (the server checks it). */
+  currentPassword: string;
   clientId: string;
 }
 
-type FormErrors = Partial<Record<"name" | "email" | "password" | "clientId", string>>;
+type FormErrors = Partial<Record<"name" | "email" | "password" | "currentPassword" | "clientId", string>>;
 
-const BLANK_FORM: AccountForm = { name: "", email: "", role: "maker", password: "", clientId: "" };
+const BLANK_FORM: AccountForm = { name: "", email: "", role: "maker", password: "", currentPassword: "", clientId: "" };
 
 /** Field errors for the create (password required) or edit (blank password = keep) form. */
-function validate(form: AccountForm, mode: "create" | "edit"): FormErrors {
+function validate(form: AccountForm, mode: "create" | "edit", self = false): FormErrors {
   const errors: FormErrors = {};
   if (!form.name.trim()) errors.name = "Name is required.";
   if (mode === "create") {
@@ -85,9 +86,11 @@ function validate(form: AccountForm, mode: "create" | "edit"): FormErrors {
     else if (!/^[^\s@]+@[^\s@]+$/.test(email)) errors.email = "Enter a valid email address.";
   }
   if (mode === "create" || form.password !== "") {
-    if (form.password.length < MIN_PASSWORD_LENGTH) {
-      errors.password = `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
-    }
+    const passwordError = passwordLengthError(form.password);
+    if (passwordError) errors.password = passwordError;
+  }
+  if (mode === "edit" && self && form.password !== "" && form.currentPassword === "") {
+    errors.currentPassword = "Enter your current password to change it.";
   }
   if (needsClientLink(form.role) && parseClientId(form.clientId) == null) {
     errors.clientId = `${roleLabel(form.role)} accounts must be linked to a client.`;
@@ -135,7 +138,7 @@ export default function AccountManagement() {
 
   // Live validation once the user has tried to submit.
   const createShown = createErrors ? validate(form, "create") : {};
-  const editShown = editErrors ? validate(editForm, "edit") : {};
+  const editShown = editErrors ? validate(editForm, "edit", editUser != null && editUser.id === currentUser?.id) : {};
 
   const handleCreate = async () => {
     const errors = validate(form, "create");
@@ -178,19 +181,20 @@ export default function AccountManagement() {
       email: u.email,
       role: u.role,
       password: "",
+      currentPassword: "",
       clientId: u.clientId != null ? String(u.clientId) : "",
     });
   };
 
   const handleEdit = async () => {
     if (!editUser) return;
-    const errors = validate(editForm, "edit");
+    const isSelf = editUser.id === currentUser?.id;
+    const errors = validate(editForm, "edit", isSelf);
     if (Object.keys(errors).length) {
       setEditErrors(errors);
       toast({ title: Object.values(errors)[0], variant: "destructive" });
       return;
     }
-    const isSelf = editUser.id === currentUser?.id;
     try {
       await updateUser.mutateAsync({
         id: editUser.id,
@@ -198,11 +202,14 @@ export default function AccountManagement() {
           name: editForm.name.trim(),
           ...(isSelf ? {} : { role: editForm.role }),
           ...(editForm.password !== "" ? { password: editForm.password } : {}),
+          ...(isSelf && editForm.password !== "" ? { currentPassword: editForm.currentPassword } : {}),
           // Staff roles are always unlinked; the "none" sentinel maps to null.
           ...(isSelf ? {} : { clientId: needsClientLink(editForm.role) ? parseClientId(editForm.clientId) : null }),
         },
       });
       await refreshAfterChange();
+      // Your own name is shown in the sidebar / header from the cached /auth/me.
+      if (isSelf) await queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
       setEditUser(null);
       setEditErrors(null);
       toast({ title: "Account updated" });
@@ -556,9 +563,23 @@ export default function AccountManagement() {
               />
               <FieldError id="edit-password-error" message={editShown.password} />
               <p id="edit-password-help" className="text-xs text-muted-foreground">
-                At least {MIN_PASSWORD_LENGTH} characters.
+                At least {MIN_PASSWORD_LENGTH} characters.{editingSelf ? " Your other signed-in sessions are signed out." : " The account's signed-in sessions are signed out."}
               </p>
             </div>
+            {editingSelf && editForm.password !== "" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-current-password">Current Password *</Label>
+                <Input
+                  id="edit-current-password"
+                  type="password"
+                  value={editForm.currentPassword}
+                  onChange={e => setEditForm(p => ({ ...p, currentPassword: e.target.value }))}
+                  autoComplete="current-password"
+                  aria-invalid={editShown.currentPassword ? true : undefined}
+                />
+                <FieldError id="edit-current-password-error" message={editShown.currentPassword} />
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditUser(null)}>Cancel</Button>

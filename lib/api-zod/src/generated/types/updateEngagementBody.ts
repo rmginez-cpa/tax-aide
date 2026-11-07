@@ -22,7 +22,10 @@ export interface UpdateEngagementBody {
    * @nullable
    */
   taxPayable?: number | null;
-  /** @nullable */
+  /**
+   * Manager-only override to pending or in_progress. completed is reached by approving the stages (400); the retired for_review / approved / filed are rejected (400).
+   * @nullable
+   */
   status?: UpdateEngagementBodyStatus;
   /** @nullable */
   assignedTo?: number | null;

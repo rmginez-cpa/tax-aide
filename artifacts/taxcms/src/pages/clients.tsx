@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useSearchParams } from "wouter";
-import { useListClients, useCreateClient, useDeleteClient } from "@workspace/api-client-react";
+import { useListClients, useCreateClient, useDeleteClient, type Client } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,23 +18,30 @@ import { ErrorState } from "@/components/ErrorState";
 import { ClientForm, EMPTY_CLIENT_FORM } from "@/components/ClientForm";
 import { Plus, Search, Building2, Phone, Mail, Trash2, ExternalLink, Clock, Eye, AlertTriangle } from "lucide-react";
 
-function WorkflowStatusBadges({ client }: { client: any }) {
-  const counts: { inProgress: number; forReview: number; overdue: number } | undefined = client.workflowCounts;
+function WorkflowStatusBadges({ client }: { client: Client }) {
+  const counts = client.workflowCounts;
   if (!counts) return null;
   const badges = [
-    { key: "in_progress",  count: counts.inProgress, label: "in progress", icon: Clock,         cls: "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100" },
-    { key: "for_review",   count: counts.forReview,  label: "for review",  icon: Eye,            cls: "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100" },
-    { key: "overdue",      count: counts.overdue,    label: "overdue",     icon: AlertTriangle,  cls: "bg-red-50 text-red-700 border-red-200 hover:bg-red-100" },
+    // In progress / for review count this tax year's checklist items, so they open the client page's
+    // matching filter. Overdue counts the client's saved open deadlines of every tax year (like the
+    // dashboard), so it opens the deadlines list filtered to exactly those rows.
+    { key: "in_progress",  count: counts.inProgress, label: "in progress", icon: Clock,         cls: "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100",
+      href: `/clients/${client.id}?wf=in_progress`, title: undefined },
+    { key: "for_review",   count: counts.forReview,  label: "for review",  icon: Eye,            cls: "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100",
+      href: `/clients/${client.id}?wf=for_review`, title: undefined },
+    { key: "overdue",      count: counts.overdue,    label: "overdue",     icon: AlertTriangle,  cls: "bg-red-50 text-red-700 border-red-200 hover:bg-red-100",
+      href: `/deadlines?status=overdue&client=${client.id}`, title: "Open deadlines past due, all tax years" },
   ].filter(b => b.count > 0);
 
   if (badges.length === 0) return null;
 
   return (
     <div className="flex flex-wrap gap-1.5 pt-1.5">
-      {badges.map(({ key, count, label, icon: Icon, cls }) => (
+      {badges.map(({ key, count, label, icon: Icon, cls, href, title }) => (
         <Link
           key={key}
-          href={`/clients/${client.id}?wf=${key}`}
+          href={href}
+          title={title}
           className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border font-medium transition-colors ${cls}`}
         >
           <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -45,7 +52,7 @@ function WorkflowStatusBadges({ client }: { client: any }) {
   );
 }
 
-function TaxTypeBadges({ client }: { client: any }) {
+function TaxTypeBadges({ client }: { client: Client }) {
   const badges: { label: string; color: string }[] = [];
   if (client.vatRegistered) badges.push({ label: "VAT", color: "bg-blue-100 text-blue-700" });
   if (client.percentageTaxRegistered) badges.push({ label: "Percentage Tax", color: "bg-violet-100 text-violet-700" });

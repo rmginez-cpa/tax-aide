@@ -6,6 +6,12 @@ import { Link } from "wouter";
 // React elements (never innerHTML), so model output cannot inject markup.
 // Internal links (/clients/12) navigate in-app; other links open in a new tab.
 
+/**
+ * An in-app path: "/" then a plain path character (never a second "/" or a backslash, which
+ * browsers read as "//host", i.e. another site), and only URL-safe characters after it.
+ */
+const INTERNAL_HREF = /^\/(?![\/\\])[A-Za-z0-9\/_?=&.%#~+-]*$/;
+
 function inline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
   const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\*[^*\s][^*]*\*)/g;
@@ -20,7 +26,7 @@ function inline(text: string, keyBase: string): ReactNode[] {
     else if (tok.startsWith("`")) out.push(<code key={key} className="rounded bg-muted px-1 py-0.5 text-[0.85em]">{tok.slice(1, -1)}</code>);
     else if (tok.startsWith("[")) {
       const [, label, href] = tok.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)!;
-      if (href.startsWith("/") && !href.startsWith("//")) {
+      if (INTERNAL_HREF.test(href)) {
         out.push(<Link key={key} href={href} className="text-primary underline underline-offset-2">{label}</Link>);
       } else if (/^https?:\/\//i.test(href)) {
         out.push(<a key={key} href={href} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2">{label}</a>);

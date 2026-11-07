@@ -1,5 +1,5 @@
 import { z } from "zod/v4";
-import { and, desc, eq, gte, ilike, inArray, lte, lt, ne, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, lte, or, type SQL } from "drizzle-orm";
 import type Anthropic from "@anthropic-ai/sdk";
 import {
   db,
@@ -13,6 +13,7 @@ import {
 } from "@workspace/db";
 import { buildComplianceItems, serializeClient } from "../../routes/clients";
 import { manilaToday } from "../dates";
+import { openDeadlines } from "../openDeadlines";
 
 // ── Who is asking ─────────────────────────────────────────────────────────────
 // Every tool runs with the signed-in user's own access. Client (and legacy
@@ -218,12 +219,16 @@ const TOOLS = [
       const conds: SQL[] = [];
       if (cid != null) conds.push(eq(deadlinesTable.clientId, cid));
       if (status === "completed") conds.push(eq(deadlinesTable.status, "completed"));
-      if (status === "pending") conds.push(ne(deadlinesTable.status, "completed"));
-      if (status === "overdue") conds.push(ne(deadlinesTable.status, "completed"), lt(deadlinesTable.dueDate, today));
       if (due_from) conds.push(gte(deadlinesTable.dueDate, due_from));
       if (due_to) conds.push(lte(deadlinesTable.dueDate, due_to));
       const max = limit ?? 50;
-      const rows = await db.select().from(deadlinesTable).where(conds.length ? and(...conds) : undefined).orderBy(deadlinesTable.dueDate).limit(max + 1);
+      // Open deadlines are counted like the dashboard and the client badges (openDeadlines):
+      // copies of one filing once, and none of a filing that has a completed copy.
+      const rows = status === "pending" || status === "overdue"
+        ? (await openDeadlines(cid != null ? eq(deadlinesTable.clientId, cid) : undefined))
+            .filter((d) => (status !== "overdue" || d.dueDate < today) && (!due_from || d.dueDate >= due_from) && (!due_to || d.dueDate <= due_to))
+            .slice(0, max + 1)
+        : await db.select().from(deadlinesTable).where(conds.length ? and(...conds) : undefined).orderBy(deadlinesTable.dueDate).limit(max + 1);
       const clients = await namesById("clients", rows.map((r) => r.clientId));
       return {
         today,
@@ -407,13 +412,11 @@ const TOOLS = [
       const until = horizon.toISOString().slice(0, 10);
       const monthStart = `${today.slice(0, 7)}-01`;
 
-      const dl = await db
-        .select({ dueDate: deadlinesTable.dueDate, status: deadlinesTable.status })
-        .from(deadlinesTable)
-        .where(cid != null ? eq(deadlinesTable.clientId, cid) : undefined);
+      // Same rules as GET /dashboard/summary, so the assistant quotes the numbers on screen:
+      // open deadlines one per filing (openDeadlines), completion dated in Manila time.
+      const open = await openDeadlines(cid != null ? eq(deadlinesTable.clientId, cid) : undefined);
       const eng = await db.select().from(engagementsTable).where(cid != null ? eq(engagementsTable.clientId, cid) : undefined);
 
-      const open = dl.filter((d) => d.status !== "completed");
       return {
         today,
         overdueDeadlines: open.filter((d) => d.dueDate < today).length,
@@ -423,9 +426,11 @@ const TOOLS = [
           (n, e) => n + [e.sourceCollectionStatus, e.draftReturnStatus, e.confirmationStatus, e.paymentStatus].filter((s) => s === "for_review").length,
           0,
         ),
-        filingsCompletedThisMonth: eng.filter(
-          (e) => e.status === "completed" && e.approvedAt && e.approvedAt.toISOString().slice(0, 10) >= monthStart,
-        ).length,
+        filingsCompletedThisMonth: eng.filter((e) => {
+          if (e.status !== "completed") return false;
+          const completedOn = manilaToday(e.approvedAt ?? e.updatedAt);
+          return completedOn >= monthStart && completedOn <= today;
+        }).length,
         myOpenFilings: isClientUser(user) ? undefined : eng.filter((e) => e.assignedTo === user.id && e.status !== "completed").length,
       };
     },

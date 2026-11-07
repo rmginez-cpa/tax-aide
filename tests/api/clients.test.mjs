@@ -3,7 +3,7 @@
 // period / frequency mapping for every title generateBIRDeadlines produces, and the
 // role / client-scope rules of the client routes the pages use (delete 409 message,
 // compliance scoping, generate-deadlines roles).
-// Dependency-free Node 22+ ES module, same harness and env vars as authz.test.mjs.
+// Dependency-free Node 22+ ES module, shared harness (_harness.mjs) and env vars.
 //
 // !! DESTRUCTIVE: fixture.sql TRUNCATEs every application table. Point it only at a
 // !! throwaway database. The script refuses to run unless TAXAIDE_TEST_RESET_DB=1.
@@ -11,101 +11,12 @@
 // Run:  see tests/api/README.md (swap the file name)
 // Env:  API_BASE, FIXTURE, UPLOADS_DIR, PGHOST/PGUSER/PGDATABASE/PGPASSWORD, ONLY=<group substring>
 
-import { execSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { guard, sql, reset as resetAll, call, record, group, main } from "./_harness.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+guard();
 
-if (process.env.TAXAIDE_TEST_RESET_DB !== "1") {
-  console.error("Refusing to run: this suite wipes the database. Set TAXAIDE_TEST_RESET_DB=1 and point PG*/API_BASE at a throwaway database.");
-  process.exit(2);
-}
-const BASE = process.env.API_BASE ?? "http://localhost:8080/api";
-const FIXTURE = process.env.FIXTURE ?? path.join(HERE, "fixture.sql");
-const PG_ENV = {
-  ...process.env,
-  PGPASSWORD: process.env.PGPASSWORD ?? "taxaide",
-  PGHOST: process.env.PGHOST ?? "localhost",
-  PGUSER: process.env.PGUSER ?? "taxaide",
-  PGDATABASE: process.env.PGDATABASE ?? "taxaide",
-};
-const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.join(HERE, "uploads");
-const ONLY = process.env.ONLY ?? "";
-
-const USERS = {
-  manager: ["manager@firm.ph", "manager123"],
-  maker: ["accountant@firm.ph", "accountant123"],
-  client: ["client@example.com", "client123"], // linked to client 1 (Alpha Corp)
-};
-
-// ── DB / HTTP helpers ────────────────────────────────────────────────────────
-function sql(query) {
-  return execSync("psql -q -tA -v ON_ERROR_STOP=1", { input: query, env: PG_ENV, stdio: ["pipe", "pipe", "pipe"] })
-    .toString()
-    .trim();
-}
-
-const cookies = {};
-async function login(role) {
-  const [email, password] = USERS[role];
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [res.headers.get("set-cookie") ?? ""];
-  const sid = setCookies.map((c) => c.split(";")[0]).find((c) => c.startsWith("connect.sid="));
-  if (res.status !== 200 || !sid) throw new Error(`login failed for ${role}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-  cookies[role] = sid;
-}
-
-async function reset() {
-  execSync(`psql -q -v ON_ERROR_STOP=1 -f ${JSON.stringify(FIXTURE)}`, { env: PG_ENV, stdio: ["ignore", "ignore", "pipe"] });
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  fs.writeFileSync(path.join(UPLOADS_DIR, "a.txt"), "alpha");
-  fs.writeFileSync(path.join(UPLOADS_DIR, "b.txt"), "bravo");
-  sql(`
-    update users set role='super_admin', client_id=null where id=1;
-    update users set role='manager', client_id=null where id=2;
-    update users set role='maker', client_id=null where id=3;
-    update users set role='client', client_id=1 where id=4;
-  `);
-  for (const role of Object.keys(USERS)) await login(role); // the fixture wipes user_sessions
-}
-
-async function call(role, method, urlPath, body) {
-  const headers = {};
-  if (role && cookies[role]) headers.Cookie = cookies[role];
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(`${BASE}${urlPath}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-  const text = await res.text();
-  let json;
-  try {
-    json = text ? JSON.parse(text) : undefined;
-  } catch {
-    json = undefined;
-  }
-  return { status: res.status, json, text };
-}
-
-// ── Runner ───────────────────────────────────────────────────────────────────
-let passed = 0;
-const failures = [];
-function record(name, ok, expected, got) {
-  if (ok) {
-    passed++;
-    console.log(`PASS ${name}`);
-  } else {
-    failures.push(name);
-    console.log(`FAIL ${name} expected ${expected} got ${got}`);
-  }
-}
-const groups = [];
-function group(name, fn) {
-  groups.push({ name, fn });
-}
+// The roles this suite signs in (client is linked to client 1, Alpha Corp).
+const reset = () => resetAll(["manager", "maker", "client"]);
 
 const FLAGS = [
   "vatRegistered", "percentageTaxRegistered", "withholdsCompensation", "withholdsEwt",
@@ -279,34 +190,192 @@ group("3 client routes: roles and client scope", async () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-async function main() {
-  try {
-    const h = await fetch(`${BASE}/healthz`);
-    if (!h.ok) throw new Error(`healthz ${h.status}`);
-  } catch (err) {
-    console.error(`API not reachable at ${BASE}: ${err?.message ?? err}`);
-    process.exit(2);
+group("4 TIN format (same rule as the client form)", async () => {
+  await reset();
+  const tinOf = (id) => sql(`select tin from clients where id=${Number(id)}`);
+  // Accepted: 9 digits + 3- or 5-digit branch code; surrounding spaces are trimmed.
+  let n = 0;
+  for (const [tin, stored] of [["123-456-789-000", "123-456-789-000"], ["123-456-789-00000", "123-456-789-00000"], ["  987-654-321-001 ", "987-654-321-001"]]) {
+    const r = await call("maker", "POST", "/clients", formPayload({ name: `TIN Ok ${++n}`, tin }));
+    record(`[maker] POST /clients tin ${JSON.stringify(tin)} -> 201`, r.status === 201 && r.json?.tin === stored, `201 ${stored}`, `${r.status} ${r.json?.tin ?? r.text.slice(0, 120)}`);
   }
-  for (const g of groups) {
-    if (ONLY && !g.name.includes(ONLY)) continue;
-    console.log(`\n=== ${g.name} ===`);
-    try {
-      await g.fn();
-    } catch (err) {
-      record(`group "${g.name}" crashed`, false, "no exception", String(err?.stack ?? err).slice(0, 400));
-    }
+  // Rejected with 400 and nothing stored.
+  const before = Number(sql("select count(*) from clients"));
+  const BAD = ["N/A", "", "123456789000", "123-456-789", "123-456-789-0000", "123-456-789-000000", "123-456-78a-000", "123 456 789 000", "TIN 123-456-789-000"];
+  for (const tin of BAD) {
+    const r = await call("maker", "POST", "/clients", formPayload({ name: "TIN Bad", tin }));
+    record(`[maker] POST /clients tin ${JSON.stringify(tin)} -> 400`, r.status === 400 && /TIN/.test(r.json?.error ?? ""), "400 TIN message", `${r.status} ${r.text.slice(0, 120)}`);
   }
-  try {
-    await reset();
-  } catch (err) {
-    console.log(`(final fixture reset failed: ${err?.message ?? err})`);
-  }
-  console.log(`\n${passed} passed, ${failures.length} failed, ${passed + failures.length} total`);
-  if (failures.length) {
-    console.log("Failures:");
-    for (const f of failures) console.log(`  - ${f}`);
-    process.exit(1);
-  }
-}
+  const after = Number(sql("select count(*) from clients"));
+  record("no client was created with a malformed TIN", after === before, before, after);
 
-await main();
+  // PATCH: a malformed TIN is refused and the stored one kept; a valid one is saved (trimmed).
+  for (const tin of ["N/A", "", "111-111-111", "111-111-111-0000"]) {
+    const r = await call("manager", "PATCH", "/clients/1", { tin });
+    record(`[manager] PATCH /clients/1 tin ${JSON.stringify(tin)} -> 400`, r.status === 400 && /TIN/.test(r.json?.error ?? ""), "400 TIN message", `${r.status} ${r.text.slice(0, 120)}`);
+  }
+  record("client 1 keeps its TIN after the refused updates", tinOf(1) === "111-111-111-000", "111-111-111-000", tinOf(1));
+  const ok = await call("manager", "PATCH", "/clients/1", { tin: " 111-111-111-00001 " });
+  record("[manager] PATCH /clients/1 valid 5-digit branch TIN -> 200", ok.status === 200 && ok.json?.tin === "111-111-111-00001", "200 111-111-111-00001", `${ok.status} ${ok.json?.tin}`);
+  const other = await call("manager", "PATCH", "/clients/1", { name: "Alpha Corp" });
+  record("[manager] PATCH /clients/1 without tin leaves it alone", other.status === 200 && other.json?.tin === "111-111-111-00001", "200 unchanged", `${other.status} ${other.json?.tin}`);
+  // A legacy row with an old-format TIN can still be edited as long as tin is not sent.
+  sql("update clients set tin='222222222' where id=2");
+  const legacy = await call("manager", "PATCH", "/clients/2", { contactPhone: "0917" });
+  record("[manager] PATCH a legacy-TIN client without tin -> 200", legacy.status === 200 && legacy.json?.tin === "222222222", "200", `${legacy.status} ${legacy.text.slice(0, 120)}`);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+group("5 fiscal year months are validated and kept consistent on the server", async () => {
+  await reset();
+  const fy = (id) => sql(`select coalesce(fiscal_year_start,'NULL')||'/'||coalesce(fiscal_year_end,'NULL') from clients where id=${Number(id)}`);
+  let n = 0;
+  const create = (fields) => call("maker", "POST", "/clients", formPayload({ name: `FY Corp ${++n}`, tin: `333-444-55${n % 10}-000`, incomeTaxType: "corporate", ...fields }));
+  // Accepted spellings are stored as the full month name; a lone month gets its partner.
+  for (const [fields, want] of [
+    [{ fiscalYearStart: "Jul" }, "July/June"],
+    [{ fiscalYearStart: "07" }, "July/June"],
+    [{ fiscalYearStart: "july", fiscalYearEnd: "JUNE" }, "July/June"],
+    [{ fiscalYearEnd: "Jun" }, "July/June"],
+    [{ fiscalYearStart: "January", fiscalYearEnd: "December" }, "January/December"],
+    [{ fiscalYearStart: null, fiscalYearEnd: null }, "NULL/NULL"],
+  ]) {
+    const r = await create(fields);
+    record(`[maker] POST /clients ${JSON.stringify(fields)} -> 201 stored ${want}`, r.status === 201 && fy(r.json?.id) === want, `201 ${want}`, `${r.status} ${r.json?.id ? fy(r.json.id) : r.text.slice(0, 120)}`);
+  }
+  // Refused: not a month, or an end month that is not the month before the start month.
+  const before = Number(sql("select count(*) from clients"));
+  for (const fields of [{ fiscalYearStart: "Julyish" }, { fiscalYearEnd: "13" }, { fiscalYearStart: "July", fiscalYearEnd: "December" }]) {
+    const r = await create(fields);
+    record(`[maker] POST /clients ${JSON.stringify(fields)} -> 400`, r.status === 400 && /fiscal|month/i.test(r.json?.error ?? ""), "400", `${r.status} ${r.text.slice(0, 120)}`);
+  }
+  record("no client created with a bad fiscal year", Number(sql("select count(*) from clients")) === before, before, sql("select count(*) from clients"));
+
+  // PATCH: one month derives the other; an inconsistent pair is refused and nothing changes.
+  const p1 = await call("manager", "PATCH", "/clients/1", { fiscalYearStart: "Apr" });
+  record("[manager] PATCH fiscalYearStart Apr -> April/March", p1.status === 200 && fy(1) === "April/March", "200 April/March", `${p1.status} ${fy(1)}`);
+  const p2 = await call("manager", "PATCH", "/clients/1", { fiscalYearStart: "July", fiscalYearEnd: "December" });
+  record("[manager] PATCH July/December -> 400, stored pair unchanged", p2.status === 400 && fy(1) === "April/March", "400 April/March", `${p2.status} ${fy(1)}`);
+  const p3 = await call("manager", "PATCH", "/clients/1", { fiscalYearEnd: "June" });
+  record("[manager] PATCH fiscalYearEnd June -> July/June", p3.status === 200 && fy(1) === "July/June", "200 July/June", `${p3.status} ${fy(1)}`);
+  const p4 = await call("manager", "PATCH", "/clients/1", { fiscalYearStart: null });
+  record("[manager] PATCH fiscalYearStart null clears both (calendar year)", p4.status === 200 && fy(1) === "NULL/NULL", "200 NULL/NULL", `${p4.status} ${fy(1)}`);
+
+  // A legacy abbreviated value already in the database is read as that month, not January.
+  sql("update clients set fiscal_year_start='Jul', fiscal_year_end=NULL where id=1");
+  const r = await call("manager", "GET", "/clients/1/compliance?year=2026");
+  const annual = find(r.json?.items ?? [], "1702", "FY 2026");
+  record("legacy 'Jul' start: 1702 FY 2026 due 2027-10-15", annual?.dueDate === "2027-10-15", "2027-10-15", annual?.dueDate);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+group("6 individuals use the calendar year for every form", async () => {
+  await reset();
+  const c = await call("manager", "POST", "/clients", formPayload({
+    name: "Indiv FY", tin: "555-666-777-000", incomeTaxType: "individual", fiscalYearStart: "April", ...allFlags(true),
+  }));
+  const r = await call("manager", "GET", `/clients/${c.json?.id}/compliance?year=2026`);
+  const items = r.json?.items ?? [];
+  const due = (form, period) => find(items, form, period)?.dueDate;
+  record("individual with an April fiscal-year setting: 2550Q Q1 2026 due 2026-04-27 (Jan–Mar quarter)", due("2550Q", "Q1 2026") === "2026-04-27", "2026-04-27", due("2550Q", "Q1 2026"));
+  record("…2551Q Q1 2026 due 2026-04-27", due("2551Q", "Q1 2026") === "2026-04-27", "2026-04-27", due("2551Q", "Q1 2026"));
+  record("…SLS Q4 2026 due 2027-01-25", due("SLS", "Q4 2026") === "2027-01-25", "2027-01-25", due("SLS", "Q4 2026"));
+  record("…Annual Inventory List FY 2026 due 2027-02-01 (Jan 30 2027 is a Saturday)", due("Inventory", "FY 2026") === "2027-02-01", "2027-02-01", due("Inventory", "FY 2026"));
+  const inv = find(items, "Inventory", "FY 2026");
+  record("…inventory description says calendar year 2026", /calendar year 2026/.test(inv?.description ?? ""), "calendar year 2026", (inv?.description ?? "").slice(0, 120));
+  record("…1701Q Q1 2026 still calendar (due 2026-05-15)", due("1701Q", "Q1 2026") === "2026-05-15", "2026-05-15", due("1701Q", "Q1 2026"));
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+group("7 fiscal-quarter descriptions name the months they cover", async () => {
+  await reset();
+  const c = await call("manager", "POST", "/clients", formPayload({
+    name: "FY July Corp", tin: "777-888-999-000", incomeTaxType: "corporate", fiscalYearStart: "July", ...allFlags(true),
+  }));
+  const r = await call("manager", "GET", `/clients/${c.json?.id}/compliance?year=2026`);
+  const items = r.json?.items ?? [];
+  for (const form of ["2550Q", "2551Q", "1702Q", "SLS", "SLP"]) {
+    const it = find(items, form, "Q1 2026");
+    record(`July FY: ${form} Q1 2026 description says July–September 2026, fiscal quarter 1`,
+      /July–September 2026: fiscal quarter 1 of the fiscal year July 2026 – June 2027/.test(it?.description ?? ""), "July–September 2026 …", (it?.description ?? "MISSING").slice(0, 140));
+  }
+  const q4 = find(items, "2550Q", "Q4 2026");
+  record("July FY: 2550Q Q4 2026 covers April–June 2027", /April–June 2027/.test(q4?.description ?? ""), "April–June 2027", (q4?.description ?? "MISSING").slice(0, 140));
+  // Calendar-quarter withholding returns of the same client keep calendar months.
+  const eq = find(items, "1601EQ", "Q1 2026");
+  record("July FY: 1601EQ Q1 2026 is still the calendar quarter (due 2026-04-30)", eq?.dueDate === "2026-04-30", "2026-04-30", eq?.dueDate);
+  // Calendar-year client: months, no fiscal note.
+  const a = await call("manager", "GET", "/clients/1/compliance?year=2026");
+  const a2550 = find(a.json?.items ?? [], "2550Q", "Q1 2026");
+  record("calendar year: 2550Q Q1 2026 says (January–March 2026), no fiscal note",
+    /\(January–March 2026\)/.test(a2550?.description ?? "") && !/fiscal quarter/.test(a2550?.description ?? ""), "(January–March 2026)", (a2550?.description ?? "MISSING").slice(0, 120));
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+group("8 a hand-edited due date: checklist, linked filing and overwrite", async () => {
+  await reset();
+  const item = async () => find((await call("manager", "GET", "/clients/1/compliance?year=2026")).json?.items ?? [], "1601C", "January 2026");
+  const before = await item();
+  record("fixture: 1601C January 2026 (deadline 1, due 2026-02-10) is overdue", before?.deadlineId === 1 && before?.status === "overdue" && before?.dueDate === "2026-02-10",
+    "1 overdue 2026-02-10", `${before?.deadlineId} ${before?.status} ${before?.dueDate}`);
+
+  // Extension entered by hand.
+  const p = await call("maker", "PATCH", "/deadlines/1", { dueDate: "2099-01-15" });
+  record("[maker] PATCH /deadlines/1 dueDate 2099-01-15 -> 200", p.status === 200 && p.json?.dueDate === "2099-01-15", "200", `${p.status} ${p.text.slice(0, 120)}`);
+  const after = await item();
+  record("checklist shows the saved due date and judges overdue by it", after?.dueDate === "2099-01-15" && after?.status === "pending", "2099-01-15 pending", `${after?.dueDate} ${after?.status}`);
+  record("the linked filing (engagement 1) follows the new due date", sql("select due_date from engagements where id=1") === "2099-01-15", "2099-01-15", sql("select due_date from engagements where id=1"));
+  record("deadline 1 is flagged as edited by hand", sql("select due_date_manual from deadlines where id=1") === "t", "t", sql("select due_date_manual from deadlines where id=1"));
+
+  // A row whose date merely drifted (not edited by hand) is corrected by overwrite; the hand-edited one is kept.
+  const g = await call("manager", "POST", "/clients/1/generate-deadlines", { year: 2026 });
+  record("generate 2026 (no overwrite) -> 200", g.status === 200, 200, g.status);
+  sql("update deadlines set due_date='2026-12-31' where client_id=1 and title='BIR Form 1601C — November 2026'");
+  const o = await call("manager", "POST", "/clients/1/generate-deadlines", { year: 2026, overwrite: true });
+  record("overwrite reply counts the kept hand-edited date", o.status === 200 && /1 kept a due date edited by hand/.test(o.json?.message ?? ""), "… 1 kept a due date edited by hand …", `${o.status} ${o.json?.message}`);
+  record("overwrite keeps the hand-edited due date", sql("select due_date from deadlines where id=1") === "2099-01-15", "2099-01-15", sql("select due_date from deadlines where id=1"));
+  record("overwrite resets a drifted date that nobody edited",
+    sql("select due_date from deadlines where client_id=1 and title='BIR Form 1601C — November 2026'") === "2026-12-10", "2026-12-10",
+    sql("select due_date from deadlines where client_id=1 and title='BIR Form 1601C — November 2026'"));
+  record("engagement 1 still has the hand-edited date", sql("select due_date from engagements where id=1") === "2099-01-15", "2099-01-15", sql("select due_date from engagements where id=1"));
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+group("9 start-workflow labels: tax type, period and form code match the checklist", async () => {
+  await reset();
+  await call("manager", "POST", "/clients/1/generate-deadlines", { year: 2026 });
+  const items = (await call("manager", "GET", "/clients/1/compliance?year=2026")).json?.items ?? [];
+  const deadlines = (await call("maker", "GET", "/deadlines")).json ?? [];
+  // Every saved deadline carries the checklist's own form code and period.
+  let mismatches = [];
+  for (const it of items) {
+    if (it.deadlineId == null) continue;
+    const d = deadlines.find((x) => x.id === it.deadlineId);
+    if (!d || d.formNumber !== it.formNumber || d.period !== it.period) mismatches.push(`${it.formNumber} ${it.period} -> ${d?.formNumber} ${d?.period}`);
+  }
+  record(`GET /deadlines formNumber/period = checklist for all ${items.filter((i) => i.deadlineId != null).length} saved items`, mismatches.length === 0, "none", mismatches.slice(0, 5).join("; "));
+
+  for (const [title, taxType, period, form] of [
+    ["BIR Form 1601C — February 2026", "1601C", "February 2026", "1601C"],
+    ["Alphalist of Employees (1604C Attachment) — 2026", "Alphalist-1604C", "Annual 2026", "Alphalist-1604C"],
+    ["Annex F (Annual Alphalist of Employees) — 2026", "AnnexF", "Annual 2026", "AnnexF"],
+    ["BIR Form 1601EQ — Q1 2026", "1601EQ", "Q1 2026", "1601EQ"],
+  ]) {
+    const id = sql(`select id from deadlines where client_id=1 and title=${"'" + title.replace(/'/g, "''") + "'"} order by id limit 1`);
+    const s = await call("maker", "POST", `/deadlines/${id}/start-workflow`, {});
+    record(`start-workflow "${title}" -> taxType ${taxType}, period ${period}`, (s.status === 201 || s.status === 200) && s.json?.taxType === taxType && s.json?.period === period,
+      `${taxType} / ${period}`, `${s.status} ${s.json?.taxType} / ${s.json?.period}`);
+    const e = await call("maker", "GET", `/engagements/${s.json?.id}`);
+    record(`…GET /engagements/:id formNumber ${form}`, e.json?.formNumber === form, form, e.json?.formNumber);
+  }
+  // Hand-made engagements: the code in parentheses.
+  const m = await call("manager", "GET", "/engagements/1");
+  record("fixture engagement 1 (taxType 1601C) formNumber 1601C", m.json?.formNumber === "1601C", "1601C", m.json?.formNumber);
+  sql("insert into engagements (client_id, title, tax_type, period, status) values (1, 'VAT Q1', 'VAT (2550Q)', 'Q1 2026', 'pending')");
+  const all = (await call("manager", "GET", "/engagements")).json ?? [];
+  const vat = all.find((e) => e.title === "VAT Q1");
+  record("hand-made 'VAT (2550Q)' engagement formNumber 2550Q", vat?.formNumber === "2550Q", "2550Q", vat?.formNumber);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+await main({ reset });

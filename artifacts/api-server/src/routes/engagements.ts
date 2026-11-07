@@ -20,6 +20,7 @@ import {
   canAccessClient,
 } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
+import { engagementFormNumber } from "../lib/filingLabels";
 
 const router = Router();
 
@@ -151,6 +152,8 @@ function toEngagementDto(
     clientName,
     title: e.title,
     taxType: e.taxType,
+    // Short form code for headings ("1601C", "1702", "AnnexF"), the same as the checklist's.
+    formNumber: engagementFormNumber(e.taxType, e.title),
     period: e.period,
     fiscalYear: e.fiscalYear ?? null,
     status: e.status,
@@ -327,6 +330,12 @@ router.patch("/engagements/:id", requireStaff, async (req, res): Promise<void> =
     res.status(403).json({ error: "Only a manager may change a filing's status" });
     return;
   }
+  // Review and approval are per stage now: the old filing-level for_review / approved / filed
+  // are retired, so a filing's status is only ever pending, in_progress or completed.
+  if (statusChanged && requestedStatus !== "pending" && requestedStatus !== "in_progress") {
+    res.status(400).json({ error: "A filing's status can only be set to pending or in_progress (stages are reviewed and approved individually)" });
+    return;
+  }
 
   if (parsed.data.assignedTo != null && parsed.data.assignedTo !== existing.assignedTo) {
     const assigneeError = await validateAssignee(parsed.data.assignedTo);
@@ -380,6 +389,23 @@ router.patch("/engagements/:id", requireStaff, async (req, res): Promise<void> =
         const persistedNorm = locked.taxPayable != null ? Number(locked.taxPayable) : null;
         const actuallyChanged = incomingTaxPayableNorm !== persistedNorm;
 
+        // The figure belongs to the draft return: once that is submitted or approved, only a
+        // manager (the approver) may change it, like documents on a locked stage. A maker
+        // asks for the draft to be returned (or recalls it) first.
+        const callerIsManager = isManagerRole(req.session.userRole);
+        if (
+          actuallyChanged &&
+          !callerIsManager &&
+          (locked.draftReturnStatus === "for_review" || locked.draftReturnStatus === "approved")
+        ) {
+          throw new HttpError(
+            403,
+            locked.draftReturnStatus === "approved"
+              ? "Tax payable cannot be changed after the Draft Tax Return is approved. Ask a manager to undo that approval first."
+              : "Tax payable cannot be changed while the Draft Tax Return is pending manager approval. Recall the submission first.",
+          );
+        }
+
         // Reset payment stage only when the amount truly changes, so a no-op Save
         // does not invalidate an already-approved payment.
         if (actuallyChanged) {
@@ -394,7 +420,8 @@ router.patch("/engagements/:id", requireStaff, async (req, res): Promise<void> =
 
         // Auto-complete when zeroing tax payable satisfies the remaining required stages —
         // evaluated against the just-written row so no concurrent edit can slip through.
-        if (actuallyChanged && isPaymentNotApplicable(updated) && updated.status !== "completed") {
+        // Completing a filing is an approval, so only a manager's change does it.
+        if (callerIsManager && actuallyChanged && isPaymentNotApplicable(updated) && updated.status !== "completed") {
           const stages = getStageStatuses(updated);
           const nowComplete =
             stages.source_collection === "approved" &&
@@ -553,7 +580,8 @@ router.post("/engagements/:id/submit-stage", requireStaff, async (req, res): Pro
     .returning();
 
   // Notify managers
-  const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
+  // Everyone who can approve stages: managers and super_admins.
+  const managers = await db.select().from(usersTable).where(inArray(usersTable.role, ["manager", "super_admin"]));
   for (const mgr of managers) {
     await db.insert(notificationsTable).values({
       userId: mgr.id,
@@ -882,7 +910,8 @@ router.post("/engagements/:id/recall-stage", requireStaff, async (req, res): Pro
   });
 
   // Notify managers that the submission was recalled
-  const managers = await db.select().from(usersTable).where(eq(usersTable.role, "manager"));
+  // Everyone who can approve stages: managers and super_admins.
+  const managers = await db.select().from(usersTable).where(inArray(usersTable.role, ["manager", "super_admin"]));
   for (const mgr of managers) {
     await db.insert(notificationsTable).values({
       userId: mgr.id,
