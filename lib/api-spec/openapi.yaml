@@ -32,6 +32,11 @@ tags:
     description: Audit trail
   - name: dashboard
     description: Dashboard summaries
+  - name: connector
+    description: >-
+      Claude / MCP connector: the consent page (/connect/authorize) and connected apps. The MCP endpoint
+      (/api/mcp) and the OAuth protocol endpoints (/api/oauth/authorize|token|register|revoke, /.well-known/*)
+      are not described here.
 
 paths:
   /healthz:
@@ -1271,6 +1276,182 @@ paths:
                 items:
                   $ref: "#/components/schemas/StatusCount"
 
+  # CONNECTOR (Claude / MCP)
+  /oauth/connector:
+    get:
+      operationId: getConnectorInfo
+      tags: [connector]
+      summary: MCP connector settings for the signed-in user
+      description: >-
+        Whether the connector is enabled, the URL to paste into claude.ai (Customize > Connectors > Add custom connector)
+        and the scopes with whether this user's role can use them. mcpUrl is null when disabled or when the server cannot
+        build a public HTTPS URL (problem says why).
+      responses:
+        "200":
+          description: Connector settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorInfo"
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /oauth/requests/{id}:
+    get:
+      operationId: getOAuthRequest
+      tags: [connector]
+      summary: A pending connector sign-in request (for the consent page)
+      description: >-
+        The request id comes from the consent page URL (/connect/authorize?request=<id>). 404 when unknown, expired
+        (10 minutes) or already decided. 401 when not signed in: sign in, then come back to the same URL.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The pending request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthRequest"
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown, expired or already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /oauth/requests/{id}/decision:
+    post:
+      operationId: decideOAuthRequest
+      tags: [connector]
+      summary: Approve or deny a pending connector sign-in request
+      description: >-
+        Single use. Must be sent from the web app (Origin checked) as application/json. On success navigate the
+        browser to redirectTo (window.location.assign): the client's redirect URI with ?code=… or ?error=access_denied.
+        Scopes the user's role cannot use are dropped; scopes lists what was granted (empty when denied).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthDecisionBody"
+      responses:
+        "200":
+          description: Where to send the browser
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthDecisionResult"
+        "400":
+          description: Invalid body, a scope that was not requested, or taxaide.read missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not signed in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not sent from the TaxAide web app (Origin)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown, expired or already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "415":
+          description: Body is not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /oauth/grants:
+    get:
+      operationId: listOAuthGrants
+      tags: [connector]
+      summary: Active connector connections
+      description: The caller's own active connections, newest first. all=1 (super_admin only, else 403) lists everyone's.
+      parameters:
+        - name: all
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["1", "true"]
+      responses:
+        "200":
+          description: Active grants
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OAuthGrant"
+        "403":
+          description: all=1 without super_admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /oauth/grants/{id}:
+    delete:
+      operationId: revokeOAuthGrant
+      tags: [connector]
+      summary: Disconnect a connector
+      description: >-
+        Revokes every token of the connection at once. Own grants, or anyone's for super_admin; any other id answers 404.
+        Must be sent from the web app (Origin checked).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Revoked
+        "403":
+          description: Not sent from the TaxAide web app (Origin)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown, already revoked, or someone else's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   headers:
     XTotalCount:
@@ -2436,3 +2617,138 @@ components:
         - totals
         - filings
         - deadlines
+
+    ConnectorScope:
+      type: object
+      properties:
+        name:
+          type: string
+          enum: [taxaide.read, taxaide.write]
+        title:
+          type: string
+          description: Short label for the consent screen, e.g. "View your TaxAide data".
+        description:
+          type: string
+        available:
+          type: boolean
+          description: Whether the signed-in user's role can use this scope (client accounts cannot use taxaide.write).
+      required: [name, title, description, available]
+
+    ConnectorInfo:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        mcpUrl:
+          type: ["string", "null"]
+          description: The connector URL to paste into claude.ai, e.g. https://taxaide.example.com/api/mcp.
+        issuer:
+          type: ["string", "null"]
+          description: The public origin (OAuth issuer).
+        problem:
+          type: ["string", "null"]
+          description: Why mcpUrl is null although enabled (e.g. not served over HTTPS in production).
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectorScope"
+      required: [enabled, mcpUrl, issuer, problem, scopes]
+
+    OAuthClientSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: ["string", "null"]
+          description: Chosen by whoever registered the client; untrusted. Show redirectHost prominently.
+        uri:
+          type: ["string", "null"]
+        logoUri:
+          type: ["string", "null"]
+      required: [id, name, uri, logoUri]
+
+    OAuthRequestUser:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+      required: [id, name, email, role]
+
+    OAuthRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        expiresAt:
+          type: string
+        client:
+          $ref: "#/components/schemas/OAuthClientSummary"
+        redirectUri:
+          type: string
+        redirectHost:
+          type: string
+          description: Host the browser returns to after the decision (e.g. claude.ai).
+        scopes:
+          type: array
+          description: The requested scopes (taxaide.read is always included).
+          items:
+            $ref: "#/components/schemas/ConnectorScope"
+        user:
+          $ref: "#/components/schemas/OAuthRequestUser"
+      required: [id, expiresAt, client, redirectUri, redirectHost, scopes, user]
+
+    OAuthDecisionBody:
+      type: object
+      properties:
+        approve:
+          type: boolean
+        scopes:
+          type: array
+          description: Scopes to grant when approving (a subset of the requested ones, must include taxaide.read). Default all requested.
+          items:
+            type: string
+      required: [approve]
+
+    OAuthDecisionResult:
+      type: object
+      properties:
+        redirectTo:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+      required: [redirectTo, scopes]
+
+    OAuthGrant:
+      type: object
+      properties:
+        id:
+          type: integer
+        clientId:
+          type: string
+        clientName:
+          type: ["string", "null"]
+        redirectHost:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+        lastUsedAt:
+          type: ["string", "null"]
+        expiresAt:
+          type: string
+          description: When the connection lapses unless the client refreshes it (30 days after the last refresh).
+        user:
+          $ref: "#/components/schemas/OAuthRequestUser"
+      required: [id, clientId, clientName, redirectHost, scopes, createdAt, lastUsedAt, expiresAt, user]

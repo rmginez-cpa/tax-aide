@@ -13,7 +13,17 @@ Dependency-free Node 22+ suites that test a **running API server** against a Pos
 | `deadline-rules.test.mjs` | Due dates written by `POST /clients/:id/generate-deadlines` for tax years 2025–2027, incl. the weekend / holiday roll-forward |
 | `docs.test.mjs` | `GET /documents` filters (`q`, `stage`, `mimeType`), pagination with `X-Total-Count`, client scoping, upload error statuses |
 | `home.test.mjs` | `GET /dashboard/my-work` and the notification endpoints (unread count, ordering, own-user scope) |
+| `mcp.test.mjs` | Claude / MCP connector: OAuth discovery documents, `401` + `WWW-Authenticate`, dynamic client registration (allowed / refused redirect URIs), authorize errors (never redirecting for a bad client or redirect URI), consent endpoints (session, Origin, JSON, single use, role-limited scopes), PKCE / code reuse / redirect / resource checks, refresh rotation + reuse detection, RFC 7009 revocation, grants API, revocation on password / role / client change and user deletion, MCP initialize / tools/list / tools/call per role and client scoping, write tools (scope + role, audit entries, step-up `403 insufficient_scope`) |
 | `security.test.mjs` | Session cookie / fixation, login normalisation and timing, login rate limiting, password policy, security headers, CORS |
+
+`mcp-interop.mjs` (not a `*.test.mjs` suite, so `run-all.mjs` skips it; same env, run it with
+`node tests/api/mcp-interop.mjs`) drives the whole connector flow with the MCP SDK's own `Client`,
+`StreamableHTTPClientTransport` and OAuth helpers, the way claude.ai does: bare `401` → discovery →
+DCR with `https://claude.ai/api/mcp/auth_callback` → PKCE → consent via the JSON decision endpoint →
+token → `listTools` / `callTool` → refresh. Both MCP scripts load the SDK from
+`artifacts/api-server/node_modules` (it is not a dependency of `tests/`) and send their OAuth
+requests from made-up `X-Forwarded-For` addresses, so start the server with `TRUST_PROXY=1` and
+without `PUBLIC_BASE_URL`.
 
 Shared code lives in `_harness.mjs` (env, guard, DB reset, sign-in, request helpers, the
 PASS/FAIL runner); each suite imports it. `run-all.mjs` runs every suite one after another.

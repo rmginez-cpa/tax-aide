@@ -7,7 +7,11 @@ id = "3B4_FFSkEVBkAeYMFRJ2e"
 [[services]]
 localPort = 8080
 name = "API Server"
-paths = ["/api"]
+# "/.well-known" carries the OAuth discovery documents of the MCP connector, and
+# "/authorize", "/token", "/register" are origin-root aliases of /api/oauth/* for a
+# claude.ai fallback. Without them the web app's "/*" -> index.html rewrite would answer
+# these paths with HTML. See replit.md, "Connecting Claude (claude.ai custom connector)".
+paths = ["/api", "/.well-known", "/authorize", "/token", "/register"]
 
 [services.development]
 run = "pnpm --filter @workspace/api-server run dev"

@@ -125,11 +125,52 @@ Dates are the manual/eBIRForms statutory dates. Titles are stable (existing rows
 ### TaxAide Assistant (Claude)
 - "Ask TaxAide" button (bottom-right) or **Ctrl/⌘ + J** opens a chat side panel on every page (`components/assistant/AssistantPanel.tsx`, state in `lib/assistant.tsx`).
 - Backend: `artifacts/api-server/src/routes/assistant.ts` streams Server-Sent Events from the Anthropic Messages API (`@anthropic-ai/sdk`, model `claude-opus-5-5`, adaptive thinking, server-side refusal fallback). Tools live in `src/lib/assistant/tools.ts`.
-- **Read-only by design**: tools only query clients, compliance (reuses `buildComplianceItems`), deadlines, filings (engagements), documents, checklists and comments. Client/viewer accounts are hard-scoped to their own `clientId` inside every tool.
+- **Read-only by design**: the in-app assistant gets only the read tools (the same implementation also backs the Claude connector below, whose write tools it never sees); tools only query clients, compliance (reuses `buildComplianceItems`), deadlines, filings (engagements), documents, checklists and comments. Client/viewer accounts are hard-scoped to their own `clientId` inside every tool.
 - Page context: the panel sends the current route and the page's `<h1>`, so "this client" / "this filing" resolve.
 - Conversations are stored per user in `assistant_conversations` (exact API history, append-only, so prompt caching and thinking blocks stay valid). Each question is written to the audit log as `assistant_query`.
 - API: `GET /api/assistant/status`, `POST /api/assistant/chat` (SSE: `text`, `tool`, `error`, `done`), `GET|DELETE /api/assistant/conversations[/:id]`.
 - Setup: add secret `ANTHROPIC_API_KEY`, run `pnpm install` and `pnpm --filter @workspace/db run push` (creates `assistant_conversations`). Optional env: `ASSISTANT_MODEL`, `ASSISTANT_EFFORT` (low|medium|high|xhigh|max, default medium), `ASSISTANT_DAILY_LIMIT` (questions per user per 24h, default 100, 0 = unlimited).
+
+### Connecting Claude (claude.ai custom connector)
+TaxAide includes a **remote MCP server** so Claude (claude.ai, Claude Desktop, Claude mobile, Cowork, Claude Code) can look up — and, if allowed, make small edits to — TaxAide data **as the signed-in TaxAide user, with exactly that user's permissions**. TaxAide is its own OAuth 2.1 authorization server; Claude never sees a password.
+
+- **Connector URL**: `https://<your-domain>/api/mcp` (signed-in users can copy it from `GET /api/oauth/connector` → `mcpUrl`).
+- **Must be publicly reachable over HTTPS on port 443** with a public IPv4 (A) record: claude.ai connects from Anthropic's cloud (outbound ranges `160.79.104.0/21`, `153.61.208.0/20`), never from the user's browser or computer. A published Replit deployment (`https://<app>.replit.app` or a custom domain) works; a private/VPN-only or `localhost` server does not (Claude Code on the same machine can use `http://localhost`). Do not put a WAF/CDN rule in front that returns 403/429 to those ranges.
+
+**Adding it (individual Free/Pro/Max plans)** — Free allows one custom connector:
+1. In claude.ai: **Customize → Connectors → + Add → Add custom connector**.
+2. Name: `TaxAide`; URL: `https://<your-domain>/api/mcp`; Continue. Keep the detected settings (OAuth, "Register automatically" / dynamic client registration; leave client ID/secret empty) and click **Add**, then **Connect**.
+3. A TaxAide page opens: sign in if needed, review the requesting app (the return host should be `claude.ai`) and the permissions, and click Allow. "Make limited changes" is offered to staff accounts only.
+4. In a chat, enable it under **+ → Connectors**. Claude asks before each tool call ("Allow once / Always allow"); read tools are marked read-only, so you can set them to *Always allow* on the connector's page, while write tools keep asking.
+
+**Team / Enterprise**: an Owner or Primary Owner (on Enterprise also a custom role with *Manage* access to Libraries) adds it once under **Organization settings → Connectors → Add → Custom → Web** with the same name and URL. Each member then opens **Customize → Connectors**, finds TaxAide (labelled *Custom*) and clicks **Connect**, which signs them in with *their own* TaxAide account. Auth settings cannot be edited later: to change them, remove and re-add the connector. Claude Code: `claude mcp add --transport http taxaide https://<your-domain>/api/mcp`, then `/mcp` to sign in.
+
+**Scopes and tools** (all scoped like the web app: client/viewer accounts see only their linked client; out-of-scope ids look "not found"; an unlinked client account sees nothing):
+
+| Scope | Who can grant it | Tools |
+|---|---|---|
+| `taxaide.read` "View your TaxAide data" | everyone (always granted) | `find_clients`, `get_client`, `get_client_compliance`, `list_deadlines`, `list_filings`, `get_filing`, `list_documents`, `workload_overview` (the in-app assistant's tools, `src/lib/assistant/tools.ts`; annotated `readOnlyHint`) |
+| `taxaide.write` "Make limited changes" | staff roles only (maker, manager, super_admin); dropped for client accounts | `add_filing_comment` (POST /comments), `set_deadline_notes` (deadline description), `update_checklist_item` (status / notes). Same service functions, rules and audit entries as the HTTP routes (`src/lib/services/*`), marked "(via Claude connector)" with `metadata.via = "claude_connector"` and the grant id. |
+
+Never available: approving / returning / recalling stages, deleting, uploading or downloading files, user/account administration, passwords and roles. A staff user whose grant lacks `taxaide.write` gets `403 insufficient_scope` for a write tool (Claude then offers to re-authorize). Tool results are compact JSON (also as `structuredContent`), capped at 80,000 characters, and never contain password hashes, sessions, tokens or storage paths; the server instructions tell Claude that record text is untrusted data.
+
+**Revoking**: users disconnect on the web app's connected-apps page (`DELETE /api/oauth/grants/:id`); a super_admin can list and revoke everyone's (`GET /api/oauth/grants?all=1`). Grants are revoked automatically when the user changes their password, when an admin resets it or changes their role or linked client, and when the user is deleted. Tokens re-check the user on every request. Removing the connector in claude.ai does not revoke it in TaxAide.
+
+**How it works** (`src/routes/mcp.ts`, `src/routes/oauth.ts`, `src/lib/mcp/*`; tables `oauth_clients`, `oauth_authorization_requests`, `oauth_codes`, `oauth_grants`, `oauth_tokens` from `lib/db/src/schema/oauth.ts`):
+- `POST /api/mcp` — Streamable HTTP, stateless (a new MCP server + transport per request, JSON responses, no `Mcp-Session-Id`); `GET`/`DELETE` → 405. Bearer token required: without one → `401` + `WWW-Authenticate: Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource/api/mcp", scope="taxaide.read taxaide.write"`. Body limit 128 KB. Mounted before the cookie session: MCP and token requests never read or create sessions.
+- Discovery: protected-resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource/api/mcp`, `/.well-known/oauth-protected-resource` and `/api/.well-known/oauth-protected-resource`; authorization-server metadata (RFC 8414) at `/.well-known/oauth-authorization-server` and `/.well-known/openid-configuration`. The issuer is the origin itself (`https://<host>`).
+- OAuth endpoints: `/api/oauth/authorize`, `/api/oauth/token`, `/api/oauth/register` (dynamic client registration, RFC 7591), `/api/oauth/revoke` (RFC 7009), with origin-root aliases `/authorize`, `/token`, `/register` for a known claude.ai fallback. Authorization code + PKCE S256 only; codes single-use, 5 minutes, bound to client, redirect URI, PKCE challenge, resource and user; access tokens 1 hour; refresh tokens 30 days, rotated on every use, and a reused refresh token (or code) revokes the whole grant. The `resource` parameter (RFC 8707) must be this server's `/api/mcp` URL. Only SHA-256 hashes of codes and tokens are stored; a confidential client's secret is derived from `SESSION_SECRET` (rotating it invalidates those secrets). Per-IP rate limits: authorize 300 / token 1000 / revoke 300 per 15 min, register 200 per hour. Expired rows are cleaned up hourly.
+- Consent: `/api/oauth/authorize` validates the request (an unknown client or unregistered redirect URI is shown as an error, never redirected), stores it for 10 minutes and redirects the browser to the web app's `/connect/authorize?request=<id>`; that page uses `GET /api/oauth/requests/:id` and `POST /api/oauth/requests/:id/decision` (session + same-Origin + JSON).
+- **Replit routing**: the API artifact serves `["/api", "/.well-known", "/authorize", "/token", "/register"]` (`artifacts/api-server/.replit-artifact/artifact.toml`). Without the extra paths the web app's `/* → /index.html` rewrite would answer discovery with HTML and claude.ai could not sign in. Do not add web-app routes under those paths.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `MCP_ENABLED` | on | `false` turns off `/api/mcp`, the OAuth endpoints, the consent endpoints and the discovery documents (404). `GET /api/oauth/connector` then says `enabled: false`; existing grants can still be listed and revoked. |
+| `PUBLIC_BASE_URL` | derived per request | Public origin, e.g. `https://taxaide.example.com` (no path). When set, every URL uses it and connector requests for any other `Host` get 403 (DNS-rebinding / Host-header protection). When unset, URLs come from the request (`X-Forwarded-Proto` / `X-Forwarded-Host` with `TRUST_PROXY`). Invalid values stop the server at startup; `http://` is refused in production. |
+| `MCP_ALLOWED_REDIRECT_URIS` | `https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback,http://localhost/*,http://127.0.0.1/*,http://[::1]/*` | Comma-separated redirect URIs clients may register: https entries match exactly; loopback `http://` entries match any port (RFC 8252), and with `/*` any path. Setting it replaces the defaults. |
+| `MCP_ALLOW_INSECURE_HTTP` | `false` | Allows an `http://` public URL in production. Never on the public internet. |
+
+- **Tests**: `tests/api/mcp.test.mjs` (in `run-all.mjs`) and `tests/api/mcp-interop.mjs` (the MCP SDK's own client doing the claude.ai flow end to end; same env, run it directly).
 
 ### Security / deployment
 Code: `artifacts/api-server/src/lib/security.ts` (config + headers), `lib/rateLimit.ts` (login limiter), `lib/passwordPolicy.ts`, wired up in `app.ts` and `routes/auth.ts`.

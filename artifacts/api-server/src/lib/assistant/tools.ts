@@ -12,22 +12,28 @@ import {
   usersTable,
 } from "@workspace/db";
 import { buildComplianceItems, serializeClient } from "../../routes/clients";
+import { clientScopeFor, isClientRole, isStaffRole, type Actor } from "../../middlewares/auth";
 import { manilaToday } from "../dates";
 import { openDeadlines } from "../openDeadlines";
+import { ServiceError, type WriteChannel } from "../services/common";
+import { createComment } from "../services/comments";
+import { updateDeadline } from "../services/deadlines";
+import { updateChecklistItem } from "../services/checklist";
 
 // ── Who is asking ─────────────────────────────────────────────────────────────
-// Every tool runs with the signed-in user's own access. Client (and legacy
-// viewer) accounts only ever see their linked client; tools never write.
+// One tool implementation serves the in-app assistant (read tools only) and the
+// remote MCP connector (read tools, plus the write tools when the grant has the
+// write scope). Every tool runs with the user's own access: client (and legacy
+// viewer) accounts only ever see their linked client (clientScopeFor, the same
+// rule as the HTTP routes), and write tools go through the same service
+// functions, permission checks and audit logging as the HTTP routes.
 
-export interface AssistantUser {
-  id: number;
+export interface AssistantUser extends Actor {
   name: string;
-  role: string;
-  clientId: number | null;
 }
 
 export function isClientUser(u: AssistantUser): boolean {
-  return u.role === "client" || u.role === "viewer";
+  return isClientRole(u.role);
 }
 
 export { manilaToday };
@@ -36,12 +42,19 @@ class ToolError extends Error {}
 
 /** For client accounts, the client id they may see; otherwise the requested one. */
 function scopeClientId(u: AssistantUser, requested?: number): number | undefined {
-  if (!isClientUser(u)) return requested;
-  if (!u.clientId) throw new ToolError("This account is not linked to a client record, so there is no data to show.");
-  if (requested != null && requested !== u.clientId) {
+  const scope = clientScopeFor(u);
+  if (scope === null) return requested;
+  if (!scope) throw new ToolError("This account is not linked to a client record, so there is no data to show.");
+  if (requested != null && requested !== scope) {
     throw new ToolError("Not found, or you do not have access to that client.");
   }
-  return u.clientId;
+  return scope;
+}
+
+/** Whether `u` may see a record of `clientId` (the HTTP routes' canAccessClient). */
+function canSeeClient(u: AssistantUser, clientId: number | null | undefined): boolean {
+  const scope = clientScopeFor(u);
+  return scope === null || (clientId != null && clientId === scope);
 }
 
 const STAGES = ["source_collection", "draft_return", "confirmation", "payment"] as const;
@@ -88,11 +101,22 @@ function registrations(c: typeof clientsTable.$inferSelect): string[] {
 
 interface ToolDef<S extends z.ZodType> {
   name: string;
+  /** Human-readable name (MCP `title`). */
+  title: string;
   description: string;
   /** Short present-tense label shown to the user while the tool runs. */
   label: string;
   input: S;
-  run: (input: z.infer<S>, user: AssistantUser) => Promise<unknown>;
+  /**
+   * read: available to everyone, scoped to what the user may see.
+   * write: only over the MCP connector, with the write scope, for staff roles
+   * (every write tool wraps a staff-only HTTP route).
+   */
+  access: "read" | "write";
+  /** MCP hints for write tools: may overwrite existing data / same call twice has no further effect. */
+  destructive?: boolean;
+  idempotent?: boolean;
+  run: (input: z.infer<S>, user: AssistantUser, via?: WriteChannel) => Promise<unknown>;
 }
 
 function defineTool<S extends z.ZodType>(t: ToolDef<S>): ToolDef<S> {
@@ -105,6 +129,8 @@ const isoDate = () => z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 const TOOLS = [
   defineTool({
     name: "find_clients",
+    title: "Find clients",
+    access: "read",
     label: "Looking up clients",
     description:
       "Search the firm's clients by name, trade name or TIN. Returns id, name, TIN, status, RDO and registered tax types. " +
@@ -140,6 +166,8 @@ const TOOLS = [
 
   defineTool({
     name: "get_client",
+    title: "Get client profile",
+    access: "read",
     label: "Reading client profile",
     description:
       "Full profile of one client: contact details, BIR 2303 registration (RDO, line of business, fiscal year, income tax type) and every registered tax type.",
@@ -154,6 +182,8 @@ const TOOLS = [
 
   defineTool({
     name: "get_client_compliance",
+    title: "Get client compliance checklist",
+    access: "read",
     label: "Checking the compliance calendar",
     description:
       "The BIR compliance checklist for one client and tax year, computed from their 2303 registration: every required return/attachment " +
@@ -202,6 +232,8 @@ const TOOLS = [
 
   defineTool({
     name: "list_deadlines",
+    title: "List deadlines",
+    access: "read",
     label: "Checking deadlines",
     description:
       "BIR filing deadlines saved in TaxAide, ordered by due date. Filter by client, status and due-date range. " +
@@ -248,6 +280,8 @@ const TOOLS = [
 
   defineTool({
     name: "list_filings",
+    title: "List filings",
+    access: "read",
     label: "Checking filings in progress",
     description:
       "Filing workflows (engagements). Each has four independent stages - source_collection, draft_return, confirmation, payment - " +
@@ -305,6 +339,8 @@ const TOOLS = [
 
   defineTool({
     name: "get_filing",
+    title: "Get filing details",
+    access: "read",
     label: "Reading the filing",
     description:
       "Everything about one filing (engagement): stage statuses, tax payable, assignee, approval notes, the documents uploaded to each stage, " +
@@ -312,7 +348,7 @@ const TOOLS = [
     input: z.object({ engagement_id: id() }),
     run: async ({ engagement_id }, user) => {
       const [e] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, engagement_id));
-      if (!e || (isClientUser(user) && e.clientId !== user.clientId)) {
+      if (!e || !canSeeClient(user, e.clientId)) {
         throw new ToolError("Filing not found, or you do not have access to it.");
       }
       const [docs, checklist, comments] = await Promise.all([
@@ -359,6 +395,8 @@ const TOOLS = [
 
   defineTool({
     name: "list_documents",
+    title: "List documents",
+    access: "read",
     label: "Searching documents",
     description: "Uploaded documents (file name, type, client, filing, stage, uploader, date), newest first. Filter by client, filing or file name.",
     input: z.object({
@@ -397,6 +435,8 @@ const TOOLS = [
 
   defineTool({
     name: "workload_overview",
+    title: "Workload overview",
+    access: "read",
     label: "Summarizing the workload",
     description:
       "Headline numbers for the user's view of TaxAide: overdue deadlines, deadlines due in the next N days, filings in progress, " +
@@ -435,12 +475,100 @@ const TOOLS = [
       };
     },
   }),
+
+  // ── Write tools (MCP connector only) ────────────────────────────────────────
+  // Small, reversible edits. Approving / returning / recalling stages, deleting,
+  // files and account administration are deliberately not offered.
+
+  defineTool({
+    name: "add_filing_comment",
+    title: "Add a comment to a filing",
+    access: "write",
+    destructive: false,
+    idempotent: false,
+    label: "Adding a comment",
+    description:
+      "Add a note to a filing's (engagement's) comment thread, shown to the firm's staff and to the client on the filing page. " +
+      "It is posted under the connected user's name. It cannot approve or return a stage. Confirm the text with the user first.",
+    input: z.object({
+      engagement_id: id(),
+      content: z.string().min(1).max(5000).describe("The comment text (plain text, up to 5000 characters)."),
+    }),
+    run: async ({ engagement_id, content }, user, via) => {
+      const c = await createComment(user, { engagementId: engagement_id, content }, via);
+      return { comment: { id: c.id, engagementId: c.engagementId, content: c.content, author: user.name, createdAt: c.createdAt.toISOString() } };
+    },
+  }),
+
+  defineTool({
+    name: "set_deadline_notes",
+    title: "Set a deadline's notes",
+    access: "write",
+    destructive: true,
+    idempotent: true,
+    label: "Updating deadline notes",
+    description:
+      "Replace the notes (description) of one saved deadline. The previous notes are overwritten, so read them first with list_deadlines " +
+      "or include them if the user wants to add to them. Pass null to clear the notes. Does not change the due date or status.",
+    input: z.object({
+      deadline_id: id(),
+      notes: z.string().max(5000).nullable().describe("New notes (up to 5000 characters), or null to clear them."),
+    }),
+    run: async ({ deadline_id, notes }, user, via) => {
+      const d = await updateDeadline(user, deadline_id, { description: notes }, via);
+      return { deadline: { id: d.id, title: d.title, dueDate: d.dueDate, status: d.status, notes: d.description ?? null } };
+    },
+  }),
+
+  defineTool({
+    name: "update_checklist_item",
+    title: "Update a checklist item",
+    access: "write",
+    destructive: true,
+    idempotent: true,
+    label: "Updating the checklist",
+    description:
+      "Set the status and/or the notes of one item on a filing's checklist (the ids come from get_filing's checklist). " +
+      "status: pending | received | filed | paid | not_applicable; any status other than pending records the connected user as completing it. " +
+      "notes replaces the previous notes (null clears them).",
+    input: z
+      .object({
+        item_id: id(),
+        status: z.enum(["pending", "received", "filed", "paid", "not_applicable"]).optional(),
+        notes: z.string().max(5000).nullable().optional(),
+      })
+      .refine((v) => v.status !== undefined || v.notes !== undefined, { message: "Give a status, notes, or both." }),
+    run: async ({ item_id, status, notes }, user, via) => {
+      const patch: { status?: typeof status; notes?: string | null } = {};
+      if (status !== undefined) patch.status = status;
+      if (notes !== undefined) patch.notes = notes;
+      const i = await updateChecklistItem(user, item_id, patch, via);
+      return { checklistItem: { id: i.id, engagementId: i.engagementId, label: i.label, status: i.status, notes: i.notes ?? null } };
+    },
+  }),
 ];
 
 const BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
-/** Tool definitions for the Messages API (stable order, so the prompt cache holds). */
-export const assistantTools: Anthropic.Beta.Messages.BetaTool[] = TOOLS.map((t) => {
+export type ToolSpec = (typeof TOOLS)[number];
+
+/** Whether `user`'s role may use the write tools at all (they all wrap staff-only routes). */
+export function canUseWriteTools(user: Pick<Actor, "role">): boolean {
+  return isStaffRole(user.role);
+}
+
+/** The tools `user` may call: the read tools, plus the write tools when `allowWrite` and the role permits. */
+export function toolsFor(user: AssistantUser, opts: { allowWrite: boolean }): ToolSpec[] {
+  const write = opts.allowWrite && canUseWriteTools(user);
+  return TOOLS.filter((t) => t.access === "read" || write);
+}
+
+export const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(TOOLS.filter((t) => t.access === "write").map((t) => t.name));
+
+const READ_TOOLS = TOOLS.filter((t) => t.access === "read");
+
+/** Read tool definitions for the Messages API (stable order, so the prompt cache holds). The in-app assistant never writes. */
+export const assistantTools: Anthropic.Beta.Messages.BetaTool[] = READ_TOOLS.map((t) => {
   const { $schema: _ignored, ...schema } = z.toJSONSchema(t.input) as Record<string, unknown>;
   return {
     name: t.name,
@@ -454,24 +582,40 @@ export function toolLabel(name: string): string {
   return BY_NAME.get(name)?.label ?? name;
 }
 
-/** Validate and run one tool call. Never throws: failures come back as an is_error result. */
+export type ToolOutcome = { ok: true; result: unknown } | { ok: false; message: string };
+
+/**
+ * Validates and runs one tool call for `user`. Rule violations (scope, not found,
+ * permission, bad input) come back as { ok: false }; unexpected errors throw.
+ */
+export async function executeTool(
+  name: string,
+  rawInput: unknown,
+  user: AssistantUser,
+  opts: { allowWrite: boolean; via?: WriteChannel },
+): Promise<ToolOutcome> {
+  const tool = BY_NAME.get(name);
+  if (!tool || !toolsFor(user, opts).includes(tool)) return { ok: false, message: `Unknown tool "${name}".` };
+  const parsed = tool.input.safeParse(rawInput ?? {});
+  if (!parsed.success) return { ok: false, message: `Invalid input for ${name}: ${z.prettifyError(parsed.error)}` };
+  try {
+    const result = await (tool.run as (i: unknown, u: AssistantUser, v?: WriteChannel) => Promise<unknown>)(parsed.data, user, opts.via);
+    return { ok: true, result };
+  } catch (err) {
+    if (err instanceof ToolError) return { ok: false, message: err.message };
+    // Out-of-scope or missing records answer 404 / 400 in the routes; never reveal which.
+    if (err instanceof ServiceError) return { ok: false, message: err.status === 403 ? "You do not have permission to do that." : err.message };
+    throw err;
+  }
+}
+
+/** The in-app assistant's entry point (read tools only). Never throws for rule violations: they come back as an is_error result. */
 export async function runTool(
   name: string,
   rawInput: unknown,
   user: AssistantUser,
 ): Promise<{ content: string; isError: boolean }> {
-  const tool = BY_NAME.get(name);
-  if (!tool) return { content: `Unknown tool "${name}".`, isError: true };
-  // With eager input streaming the API does not validate tool input, so do it here.
-  const parsed = tool.input.safeParse(rawInput ?? {});
-  if (!parsed.success) {
-    return { content: `Invalid input for ${name}: ${z.prettifyError(parsed.error)}`, isError: true };
-  }
-  try {
-    const result = await (tool.run as (i: unknown, u: AssistantUser) => Promise<unknown>)(parsed.data, user);
-    return { content: JSON.stringify(result), isError: false };
-  } catch (err) {
-    if (err instanceof ToolError) return { content: err.message, isError: true };
-    throw err;
-  }
+  // With eager input streaming the API does not validate tool input; executeTool does.
+  const r = await executeTool(name, rawInput, user, { allowWrite: false });
+  return r.ok ? { content: JSON.stringify(r.result), isError: false } : { content: r.message, isError: true };
 }

@@ -26,6 +26,7 @@ import type {
   Client,
   ClientCompliance,
   Comment,
+  ConnectorInfo,
   CreateChecklistItemBody,
   CreateClientBody,
   CreateCommentBody,
@@ -49,10 +50,15 @@ import type {
   ListDeadlinesParams,
   ListDocumentsParams,
   ListEngagementsParams,
+  ListOAuthGrantsParams,
   LoginBody,
   MessageResponse,
   MyWork,
   Notification,
+  OAuthDecisionBody,
+  OAuthDecisionResult,
+  OAuthGrant,
+  OAuthRequest,
   OverdueSummary,
   StatusCount,
   UnreadCount,
@@ -4621,3 +4627,435 @@ export function useGetEngagementStatusBreakdown<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Whether the connector is enabled, the URL to paste into claude.ai (Customize > Connectors > Add custom connector) and the scopes with whether this user's role can use them. mcpUrl is null when disabled or when the server cannot build a public HTTPS URL (problem says why).
+ * @summary MCP connector settings for the signed-in user
+ */
+export const getGetConnectorInfoUrl = () => {
+  return `/api/oauth/connector`;
+};
+
+export const getConnectorInfo = async (
+  options?: RequestInit,
+): Promise<ConnectorInfo> => {
+  return customFetch<ConnectorInfo>(getGetConnectorInfoUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetConnectorInfoQueryKey = () => {
+  return [`/api/oauth/connector`] as const;
+};
+
+export const getGetConnectorInfoQueryOptions = <
+  TData = Awaited<ReturnType<typeof getConnectorInfo>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getConnectorInfo>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetConnectorInfoQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getConnectorInfo>>
+  > = ({ signal }) => getConnectorInfo({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getConnectorInfo>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetConnectorInfoQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getConnectorInfo>>
+>;
+export type GetConnectorInfoQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary MCP connector settings for the signed-in user
+ */
+
+export function useGetConnectorInfo<
+  TData = Awaited<ReturnType<typeof getConnectorInfo>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getConnectorInfo>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetConnectorInfoQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * The request id comes from the consent page URL (/connect/authorize?request=<id>). 404 when unknown, expired (10 minutes) or already decided. 401 when not signed in: sign in, then come back to the same URL.
+ * @summary A pending connector sign-in request (for the consent page)
+ */
+export const getGetOAuthRequestUrl = (id: string) => {
+  return `/api/oauth/requests/${id}`;
+};
+
+export const getOAuthRequest = async (
+  id: string,
+  options?: RequestInit,
+): Promise<OAuthRequest> => {
+  return customFetch<OAuthRequest>(getGetOAuthRequestUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetOAuthRequestQueryKey = (id: string) => {
+  return [`/api/oauth/requests/${id}`] as const;
+};
+
+export const getGetOAuthRequestQueryOptions = <
+  TData = Awaited<ReturnType<typeof getOAuthRequest>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOAuthRequest>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetOAuthRequestQueryKey(id);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getOAuthRequest>>> = ({
+    signal,
+  }) => getOAuthRequest(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getOAuthRequest>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetOAuthRequestQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getOAuthRequest>>
+>;
+export type GetOAuthRequestQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary A pending connector sign-in request (for the consent page)
+ */
+
+export function useGetOAuthRequest<
+  TData = Awaited<ReturnType<typeof getOAuthRequest>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOAuthRequest>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetOAuthRequestQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Single use. Must be sent from the web app (Origin checked) as application/json. On success navigate the browser to redirectTo (window.location.assign): the client's redirect URI with ?code=… or ?error=access_denied. Scopes the user's role cannot use are dropped; scopes lists what was granted (empty when denied).
+ * @summary Approve or deny a pending connector sign-in request
+ */
+export const getDecideOAuthRequestUrl = (id: string) => {
+  return `/api/oauth/requests/${id}/decision`;
+};
+
+export const decideOAuthRequest = async (
+  id: string,
+  oAuthDecisionBody: OAuthDecisionBody,
+  options?: RequestInit,
+): Promise<OAuthDecisionResult> => {
+  return customFetch<OAuthDecisionResult>(getDecideOAuthRequestUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(oAuthDecisionBody),
+  });
+};
+
+export const getDecideOAuthRequestMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof decideOAuthRequest>>,
+    TError,
+    { id: string; data: BodyType<OAuthDecisionBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof decideOAuthRequest>>,
+  TError,
+  { id: string; data: BodyType<OAuthDecisionBody> },
+  TContext
+> => {
+  const mutationKey = ["decideOAuthRequest"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof decideOAuthRequest>>,
+    { id: string; data: BodyType<OAuthDecisionBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return decideOAuthRequest(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DecideOAuthRequestMutationResult = NonNullable<
+  Awaited<ReturnType<typeof decideOAuthRequest>>
+>;
+export type DecideOAuthRequestMutationBody = BodyType<OAuthDecisionBody>;
+export type DecideOAuthRequestMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Approve or deny a pending connector sign-in request
+ */
+export const useDecideOAuthRequest = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof decideOAuthRequest>>,
+    TError,
+    { id: string; data: BodyType<OAuthDecisionBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof decideOAuthRequest>>,
+  TError,
+  { id: string; data: BodyType<OAuthDecisionBody> },
+  TContext
+> => {
+  return useMutation(getDecideOAuthRequestMutationOptions(options));
+};
+
+/**
+ * The caller's own active connections, newest first. all=1 (super_admin only, else 403) lists everyone's.
+ * @summary Active connector connections
+ */
+export const getListOAuthGrantsUrl = (params?: ListOAuthGrantsParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/oauth/grants?${stringifiedParams}`
+    : `/api/oauth/grants`;
+};
+
+export const listOAuthGrants = async (
+  params?: ListOAuthGrantsParams,
+  options?: RequestInit,
+): Promise<OAuthGrant[]> => {
+  return customFetch<OAuthGrant[]>(getListOAuthGrantsUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListOAuthGrantsQueryKey = (params?: ListOAuthGrantsParams) => {
+  return [`/api/oauth/grants`, ...(params ? [params] : [])] as const;
+};
+
+export const getListOAuthGrantsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listOAuthGrants>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  params?: ListOAuthGrantsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listOAuthGrants>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListOAuthGrantsQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listOAuthGrants>>> = ({
+    signal,
+  }) => listOAuthGrants(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listOAuthGrants>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListOAuthGrantsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listOAuthGrants>>
+>;
+export type ListOAuthGrantsQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Active connector connections
+ */
+
+export function useListOAuthGrants<
+  TData = Awaited<ReturnType<typeof listOAuthGrants>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  params?: ListOAuthGrantsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listOAuthGrants>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListOAuthGrantsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Revokes every token of the connection at once. Own grants, or anyone's for super_admin; any other id answers 404. Must be sent from the web app (Origin checked).
+ * @summary Disconnect a connector
+ */
+export const getRevokeOAuthGrantUrl = (id: number) => {
+  return `/api/oauth/grants/${id}`;
+};
+
+export const revokeOAuthGrant = async (
+  id: number,
+  options?: RequestInit,
+): Promise<void> => {
+  return customFetch<void>(getRevokeOAuthGrantUrl(id), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getRevokeOAuthGrantMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof revokeOAuthGrant>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof revokeOAuthGrant>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  const mutationKey = ["revokeOAuthGrant"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof revokeOAuthGrant>>,
+    { id: number }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return revokeOAuthGrant(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RevokeOAuthGrantMutationResult = NonNullable<
+  Awaited<ReturnType<typeof revokeOAuthGrant>>
+>;
+
+export type RevokeOAuthGrantMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Disconnect a connector
+ */
+export const useRevokeOAuthGrant = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof revokeOAuthGrant>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof revokeOAuthGrant>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  return useMutation(getRevokeOAuthGrantMutationOptions(options));
+};
