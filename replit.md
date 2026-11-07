@@ -98,6 +98,28 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 - API: `GET /api/assistant/status`, `POST /api/assistant/chat` (SSE: `text`, `tool`, `error`, `done`), `GET|DELETE /api/assistant/conversations[/:id]`.
 - Setup: add secret `ANTHROPIC_API_KEY`, run `pnpm install` and `pnpm --filter @workspace/db run push` (creates `assistant_conversations`). Optional env: `ASSISTANT_MODEL`, `ASSISTANT_EFFORT` (low|medium|high|xhigh|max, default medium), `ASSISTANT_DAILY_LIMIT` (questions per user per 24h, default 100, 0 = unlimited).
 
+### Security / deployment
+Code: `artifacts/api-server/src/lib/security.ts` (config + headers), `lib/rateLimit.ts` (login limiter), `lib/passwordPolicy.ts`, wired up in `app.ts` and `routes/auth.ts`.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `SESSION_SECRET` | dev: random per process (warning logged, sessions lost on restart) | **Required when `NODE_ENV=production`** — the server exits at startup without it (or if it is the old `tax-cms-secret-key`). Use `openssl rand -hex 32`. |
+| `COOKIE_SECURE` | `true` in production, else `false` | Secure flag of the session cookie (`connect.sid`, always `HttpOnly`, `SameSite=Lax`, `Path=/`, 7 days). With `true` the cookie is only set over HTTPS (needs `trust proxy` behind a proxy). |
+| `TRUST_PROXY` | `1` in production, else off | `app.set("trust proxy", …)`: Replit terminates TLS at a proxy, so `req.ip`/`req.secure` come from `X-Forwarded-*`. `false` disables, a number sets the hop count. Only enable when a proxy really sits in front (otherwise clients can spoof their IP for the rate limiter). |
+| `ALLOWED_ORIGINS` | empty | Comma-separated origins allowed to call the API cross-origin with credentials. Empty = no CORS headers at all (the web app is same-origin). |
+| `SEED_DEMO_ACCOUNTS` | on outside production, off in production | CONTRACT: `GET /api/auth/config` (no auth) → `{ "demoAccounts": boolean }`; true when `SEED_DEMO_ACCOUNTS=true`, or `NODE_ENV!=production` and `SEED_DEMO_ACCOUNTS!=false`. The 4 demo users are seeded (on an empty users table) only when true. Production + `true` logs a loud warning. Turning it off does **not** delete demo users already in a database: delete or re-password them. |
+| `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | unset | When demo accounts are off and the users table is empty, creates the first `super_admin` at startup. Remove the password afterwards. |
+| `LOGIN_MAX_FAILURES_PER_EMAIL` | `5` | Failed logins per (IP, email) per window before 429. |
+| `LOGIN_MAX_FAILURES_PER_IP` | `50` | Failed logins per IP per window before 429 (blocks that IP's logins, even correct ones). |
+| `LOGIN_FAILURE_WINDOW_MINUTES` | `15` | Window length (starts at the first failure). |
+
+- **Login** (`POST /api/auth/login`): email trimmed + lower-cased (matched case-insensitively); unknown emails are compared against a dummy bcrypt hash so timing does not reveal accounts; same `401 Invalid credentials` either way. On success the session is **regenerated** (new id, old one destroyed — session fixation) and saved before the response. Logout destroys the session row and clears the cookie.
+- **Rate limit**: in-memory (per process, cleared on restart). Each attempt is counted up front and a correct password takes it back, so successful logins never count and parallel guesses cannot race past the check; success also clears that (IP, email) counter. Blocked → `429` with `Retry-After` (seconds) and `{ error, retryAfter }`.
+- **Passwords**: `POST /users` and `PATCH /users/:id` require at least 8 characters (`400 { error: "Password must be at least 8 characters" }`). Existing shorter passwords keep working until changed.
+- **Headers** on every `/api` response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`; JSON routes also `X-Frame-Options: DENY`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Cache-Control: no-store`. `GET /api/documents/:id/content` is exempt from those three (it sets its own `Content-Type`/`Content-Disposition`/`Cache-Control`; the viewer embeds it via a blob URL). `X-Powered-By` is off. JSON/urlencoded bodies are capped at 1 MB (`413`). Errors are returned as JSON `{ error }` (no HTML stack traces).
+- **Deploying**: set `SESSION_SECRET` as a deployment secret; leave `SEED_DEMO_ACCOUNTS` unset (or `false`); set `BOOTSTRAP_ADMIN_*` once on a fresh database.
+- **Tests**: `tests/api/security.test.mjs` (same env/guard as `authz.test.mjs`, also resets the fixture). Start the API with `TRUST_PROXY=1` and run the test with `TRUST_PROXY=1` too: every rate-limit scenario then uses its own fake `X-Forwarded-For` IP and never locks out localhost (without it the per-IP cases are skipped and the other failures count against the real IP). If the server uses non-default `LOGIN_*` limits or `ALLOWED_ORIGINS`, export the same values for the test.
+
 ## Key Commands
 
 - `pnpm run typecheck` — full typecheck across all packages

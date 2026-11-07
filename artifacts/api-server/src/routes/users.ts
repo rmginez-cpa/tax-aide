@@ -11,6 +11,7 @@ import {
 } from "@workspace/db";
 import { requireAuth, requireRole, isClientRole, isStaffRole } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
+import { passwordPolicyError } from "../lib/passwordPolicy";
 
 const router = Router();
 
@@ -87,8 +88,9 @@ router.post("/users", requireRole("super_admin"), async (req, res): Promise<void
     res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(", ")}` });
     return;
   }
-  if (typeof password !== "string" || password.length < 6) {
-    res.status(400).json({ error: "Password must be at least 6 characters" });
+  const passwordError = passwordPolicyError(password);
+  if (passwordError) {
+    res.status(400).json({ error: passwordError });
     return;
   }
 
@@ -170,8 +172,9 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
   }
 
   if (password != null) {
-    if (typeof password !== "string" || password.length < 6) {
-      res.status(400).json({ error: "Password must be at least 6 characters" }); return;
+    const passwordError = passwordPolicyError(password);
+    if (passwordError) {
+      res.status(400).json({ error: passwordError }); return;
     }
     updates.passwordHash = await bcrypt.hash(password, 10);
   }
