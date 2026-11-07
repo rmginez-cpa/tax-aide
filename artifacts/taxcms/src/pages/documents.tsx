@@ -3,6 +3,7 @@ import { useListDocuments, useDeleteDocument, getListDocumentsQueryKey } from "@
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
+import { can } from "@/lib/permissions";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -184,7 +185,7 @@ export default function Documents() {
           <p className="text-muted-foreground">Tax documents across all clients and engagements.</p>
         </div>
         <div className="flex gap-2">
-          {user?.role === "manager" && (
+          {can(user, "seedSamples") && (
             <Button
               variant="outline"
               size="sm"
@@ -196,7 +197,7 @@ export default function Documents() {
               {seeding ? "Creating..." : "Create Sample Files"}
             </Button>
           )}
-          {user?.role !== "viewer" && (
+          {can(user, "uploadDocuments") && (
             <>
             <Button
               variant="outline"
@@ -294,9 +295,9 @@ export default function Documents() {
             <FileText className="h-10 w-10 mx-auto mb-3 opacity-30" />
             <p className="font-medium">No documents found</p>
             <p className="text-sm mt-1">
-              {user?.role === "manager"
+              {can(user, "seedSamples")
                 ? 'Upload a file or click "Create Sample Files" to add test documents.'
-                : "Upload a file to get started."}
+                : can(user, "uploadDocuments") ? "Upload a file to get started." : null}
             </p>
           </CardContent>
         </Card>
@@ -349,7 +350,7 @@ export default function Documents() {
                       >
                         <Download className="h-4 w-4" />
                       </Button>
-                      {user?.role !== "viewer" && (
+                      {can(user, "deleteDocuments") && (
                         <Button
                           variant="ghost"
                           size="icon"

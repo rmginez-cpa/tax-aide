@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "wouter";
 import {
-  useGetEngagement, useUpdateEngagement, useApproveEngagement,
+  useGetEngagement, useUpdateEngagement,
   useListChecklistItems, useCreateChecklistItem, useUpdateChecklistItem, useDeleteChecklistItem,
   useListDocuments, useUploadDocument,
   useListComments, useCreateComment,
@@ -10,6 +10,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
+import { can, isManager } from "@/lib/permissions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import {
-  ArrowLeft, CheckSquare, FileText, MessageSquare, ThumbsUp, ThumbsDown,
+  ArrowLeft, CheckSquare, FileText, MessageSquare, ThumbsUp,
   Plus, Trash2, User2, Calendar, Eye
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
@@ -54,7 +55,6 @@ export default function EngagementDetail() {
   const { data: comments } = useListComments({ engagementId: id }, { query: { enabled: !!id, queryKey: getListCommentsQueryKey({ engagementId: id }) } });
 
   const updateEngagement = useUpdateEngagement();
-  const approveEngagement = useApproveEngagement();
   const createChecklistItem = useCreateChecklistItem();
   const updateChecklistItem = useUpdateChecklistItem();
   const deleteChecklistItem = useDeleteChecklistItem();
@@ -63,8 +63,6 @@ export default function EngagementDetail() {
 
   const [newChecklistLabel, setNewChecklistLabel] = useState("");
   const [newComment, setNewComment] = useState("");
-  const [approvalNotes, setApprovalNotes] = useState("");
-  const [approvalOpen, setApprovalOpen] = useState(false);
   const [docForm, setDocForm] = useState({ originalName: "", description: "" });
   const [docOpen, setDocOpen] = useState(false);
   const [statusUpdate, setStatusUpdate] = useState("");
@@ -105,23 +103,11 @@ export default function EngagementDetail() {
     });
   };
 
-  const handleApprove = (approved: boolean) => {
-    approveEngagement.mutate({ id, data: { approved, notes: approvalNotes || null } }, {
-      onSuccess: () => {
-        setApprovalOpen(false);
-        setApprovalNotes("");
-        invalidateEngagement();
-        toast({ title: approved ? "Engagement approved" : "Returned for revision" });
-      },
-      onError: () => toast({ title: "Action failed", variant: "destructive" }),
-    });
-  };
-
   const handleStatusUpdate = () => {
     if (!statusUpdate) return;
     updateEngagement.mutate({ id, data: { status: statusUpdate as any } }, {
       onSuccess: () => { invalidateEngagement(); setStatusUpdate(""); toast({ title: "Status updated" }); },
-      onError: () => toast({ title: "Failed to update status", variant: "destructive" }),
+      onError: (e: any) => toast({ title: e?.data?.error || "Failed to update status", variant: "destructive" }),
     });
   };
 
@@ -177,12 +163,14 @@ export default function EngagementDetail() {
           <p className="text-muted-foreground text-sm">{engagement.clientName} • {engagement.taxType} • {engagement.period}</p>
         </div>
 
-        {user?.role !== "viewer" && (
+        {/* Status overrides are manager-only on the server */}
+        {isManager(user?.role) && (
           <div className="flex items-center gap-2">
             <Select value={statusUpdate} onValueChange={setStatusUpdate}>
               <SelectTrigger className="w-40 text-xs"><SelectValue placeholder="Update status" /></SelectTrigger>
               <SelectContent>
-                {Object.entries(STATUS_STYLES).map(([k, v]) => (
+                {/* "completed" is reached only by approving the workflow stages */}
+                {Object.entries(STATUS_STYLES).filter(([k]) => k !== "completed").map(([k, v]) => (
                   <SelectItem key={k} value={k}>{v.label}</SelectItem>
                 ))}
               </SelectContent>
@@ -191,31 +179,6 @@ export default function EngagementDetail() {
           </div>
         )}
 
-        {user?.role === "manager" && engagement.status === "for_review" && (
-          <Dialog open={approvalOpen} onOpenChange={setApprovalOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700">Review & Approve</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>Manager Review</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
-                <p className="text-sm text-muted-foreground">Approve or return this engagement for revision.</p>
-                <div className="space-y-1.5">
-                  <Label>Notes (optional)</Label>
-                  <Textarea value={approvalNotes} onChange={e => setApprovalNotes(e.target.value)} placeholder="Add review notes..." rows={3} />
-                </div>
-              </div>
-              <div className="flex gap-2 justify-end">
-                <Button variant="outline" onClick={() => handleApprove(false)} disabled={approveEngagement.isPending} className="gap-2">
-                  <ThumbsDown className="h-4 w-4" />Return for Revision
-                </Button>
-                <Button onClick={() => handleApprove(true)} disabled={approveEngagement.isPending} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
-                  <ThumbsUp className="h-4 w-4" />Approve
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-        )}
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
@@ -273,7 +236,7 @@ export default function EngagementDetail() {
         <CardContent className="space-y-2">
           {checklistItems?.map(item => (
             <div key={item.id} className="flex items-center gap-3 p-2 rounded-md border">
-              <Select value={item.status} onValueChange={v => handleChecklistStatusChange(item.id, v)}>
+              <Select value={item.status} onValueChange={v => handleChecklistStatusChange(item.id, v)} disabled={!can(user, "editFilings")}>
                 <SelectTrigger className="w-32 h-7 text-xs">
                   <SelectValue />
                 </SelectTrigger>
@@ -285,14 +248,14 @@ export default function EngagementDetail() {
               </Select>
               <span className={`flex-1 text-sm ${item.status !== "pending" ? "line-through text-muted-foreground" : ""}`}>{item.label}</span>
               {item.completedByName && <span className="text-xs text-muted-foreground">{item.completedByName}</span>}
-              {user?.role !== "viewer" && (
+              {can(user, "editFilings") && (
                 <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteChecklist(item.id)}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               )}
             </div>
           ))}
-          {user?.role !== "viewer" && (
+          {can(user, "editFilings") && (
             <div className="flex gap-2 pt-2">
               <Input value={newChecklistLabel} onChange={e => setNewChecklistLabel(e.target.value)} placeholder="Add checklist item..." className="text-sm" onKeyDown={e => e.key === "Enter" && handleAddChecklist()} />
               <Button size="sm" onClick={handleAddChecklist} disabled={!newChecklistLabel.trim()}>
@@ -308,7 +271,7 @@ export default function EngagementDetail() {
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base flex items-center gap-2"><FileText className="h-4 w-4" />Documents</CardTitle>
-            {user?.role !== "viewer" && (
+            {can(user, "uploadDocuments") && (
               <Dialog open={docOpen} onOpenChange={setDocOpen}>
                 <DialogTrigger asChild>
                   <Button size="sm" variant="outline"><Plus className="h-4 w-4 mr-1" />Upload</Button>
@@ -382,7 +345,7 @@ export default function EngagementDetail() {
           ) : (
             <p className="text-sm text-muted-foreground">No comments yet.</p>
           )}
-          {user?.role !== "viewer" && (
+          {can(user, "comment") && (
             <div className="space-y-2 pt-2">
               <Separator />
               <Textarea value={newComment} onChange={e => setNewComment(e.target.value)} placeholder="Add a comment..." rows={2} />

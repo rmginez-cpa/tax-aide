@@ -52,7 +52,7 @@ export default function AuditLog() {
             </div>
           ) : (
             <div className="space-y-1">
-              {[...logs].reverse().map((log, idx) => {
+              {logs.map((log, idx) => {
                 const actionStyle = ACTION_STYLES[log.action] || "bg-gray-100 text-gray-700";
                 return (
                   <div key={log.id} className={`flex items-start gap-4 py-3 ${idx < logs.length - 1 ? "border-b" : ""}`}>

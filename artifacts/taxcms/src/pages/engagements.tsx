@@ -2,11 +2,13 @@ import { useState } from "react";
 import { Link } from "wouter";
 import {
   useListEngagements, useCreateEngagement, useListClients, useListUsers, useListDocuments,
-  useListDeadlines, getListEngagementsQueryKey, getListDocumentsQueryKey
+  useListDeadlines, getListEngagementsQueryKey, getListDocumentsQueryKey,
+  getListClientsQueryKey, getListUsersQueryKey, getListDeadlinesQueryKey
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
+import { can, isStaff } from "@/lib/permissions";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -159,10 +161,12 @@ interface WorkflowTarget {
 
 export default function Engagements() {
   const { user } = useAuth();
+  const staff = isStaff(user?.role);
   const { data: engagements, isLoading } = useListEngagements();
-  const { data: clients } = useListClients();
-  const { data: users } = useListUsers();
-  const { data: deadlines } = useListDeadlines();
+  // Clients/users/deadlines are only needed for staff actions (create dialog, starting workflows).
+  const { data: clients } = useListClients({ query: { enabled: staff, queryKey: getListClientsQueryKey() } });
+  const { data: users } = useListUsers({ query: { enabled: staff, queryKey: getListUsersQueryKey() } });
+  const { data: deadlines } = useListDeadlines(undefined, { query: { enabled: staff, queryKey: getListDeadlinesQueryKey() } });
   const createEngagement = useCreateEngagement();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -234,7 +238,7 @@ export default function Engagements() {
           <h2 className="text-2xl font-bold tracking-tight">Engagements</h2>
           <p className="text-muted-foreground">Track all tax filing engagements across clients.</p>
         </div>
-        {user?.role !== "viewer" && (
+        {can(user, "editFilings") && (
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button><Plus className="h-4 w-4 mr-2" />New Engagement</Button>
@@ -285,7 +289,7 @@ export default function Engagements() {
                   <Select value={form.assignedTo} onValueChange={v => setForm(f => ({ ...f, assignedTo: v }))}>
                     <SelectTrigger><SelectValue placeholder="Unassigned" /></SelectTrigger>
                     <SelectContent>
-                      {users?.filter(u => u.role === "accountant").map(u => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
+                      {users?.filter(u => (u.role as string) === "accountant" || (u.role as string) === "maker").map(u => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>

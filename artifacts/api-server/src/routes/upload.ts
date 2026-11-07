@@ -3,8 +3,8 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { eq } from "drizzle-orm";
-import { db, documentsTable } from "@workspace/db";
-import { requireAuth } from "../middlewares/auth";
+import { db, documentsTable, engagementsTable, clientsTable } from "@workspace/db";
+import { requireStaff, requireManager } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
 import { saveFileToStorage } from "../lib/fileStore";
 
@@ -13,7 +13,59 @@ export const UPLOADS_DIR = process.env.UPLOADS_DIR || path.resolve(process.cwd()
 // Ensure uploads dir exists
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-function makeStoredFilename(originalname: string): string {
+export const DOCUMENT_STAGES = ["source_collection", "draft_return", "confirmation", "payment"] as const;
+export type DocumentStage = (typeof DOCUMENT_STAGES)[number];
+
+export function isDocumentStage(value: unknown): value is DocumentStage {
+  return typeof value === "string" && (DOCUMENT_STAGES as readonly string[]).includes(value);
+}
+
+/** The workflow status of one stage of an engagement. */
+export function stageStatusOf(
+  eng: typeof engagementsTable.$inferSelect,
+  stage: string | null | undefined,
+): string | null {
+  switch (stage) {
+    case "source_collection": return eng.sourceCollectionStatus;
+    case "draft_return": return eng.draftReturnStatus;
+    case "confirmation": return eng.confirmationStatus;
+    case "payment": return eng.paymentStatus;
+    default: return null;
+  }
+}
+
+/**
+ * Documents in a stage that is awaiting review or already approved are frozen,
+ * as is everything in a completed filing. Returns the error to send (403), or
+ * null when the stage may be changed.
+ */
+export function uploadLockError(
+  eng: typeof engagementsTable.$inferSelect,
+  stage: string | null | undefined,
+): string | null {
+  const stageStatus = stageStatusOf(eng, stage);
+  if (stageStatus === "for_review") {
+    return "Cannot upload documents to a stage that is pending manager approval.";
+  }
+  if (stageStatus === "approved") {
+    return "Cannot upload documents to an approved stage. The manager must undo the approval first.";
+  }
+  if (eng.status === "completed") {
+    return "Cannot upload documents to a completed filing. Amend the filing instead.";
+  }
+  return null;
+}
+
+/** Parses an optional positive integer form field. undefined = absent, NaN = invalid. */
+function parseOptionalId(value: unknown): number | undefined {
+  if (value == null || value === "" || value === "null") return undefined;
+  const s = String(value).trim();
+  if (!/^\d+$/.test(s)) return NaN;
+  const n = Number(s);
+  return n > 0 && Number.isSafeInteger(n) ? n : NaN;
+}
+
+export function makeStoredFilename(originalname: string): string {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const ext = path.extname(originalname);
   return `${unique}${ext}`;
@@ -50,16 +102,60 @@ const upload = multer({
 const router = Router();
 
 // ── POST /api/documents/upload ──────────────────────────────────────────────
-router.post("/documents/upload", requireAuth, upload.single("file"), async (req, res): Promise<void> => {
+router.post("/documents/upload", requireStaff, upload.single("file"), async (req, res): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ error: "No file provided" });
     return;
   }
 
-  const engagementId = req.body.engagementId ? parseInt(req.body.engagementId) : null;
-  const clientId = req.body.clientId ? parseInt(req.body.clientId) : null;
-  const description = req.body.description?.trim() || null;
-  const stage = req.body.stage?.trim() || null;
+  // ── Validate everything before any bytes reach storage ──────────────────
+  const rawEngagementId = parseOptionalId(req.body.engagementId);
+  const rawClientId = parseOptionalId(req.body.clientId);
+  if (Number.isNaN(rawEngagementId)) {
+    res.status(400).json({ error: "Invalid engagementId" });
+    return;
+  }
+  if (Number.isNaN(rawClientId)) {
+    res.status(400).json({ error: "Invalid clientId" });
+    return;
+  }
+
+  const description = typeof req.body.description === "string" ? req.body.description.trim() || null : null;
+  const stageInput = typeof req.body.stage === "string" ? req.body.stage.trim() : "";
+  const stage = stageInput || null;
+  if (stage !== null && !isDocumentStage(stage)) {
+    res.status(400).json({ error: `Invalid stage. Must be one of: ${DOCUMENT_STAGES.join(", ")}` });
+    return;
+  }
+
+  let engagementId: number | null = null;
+  let clientId: number | null = null;
+
+  if (rawEngagementId !== undefined) {
+    const [eng] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, rawEngagementId));
+    if (!eng) {
+      res.status(400).json({ error: "Engagement not found" });
+      return;
+    }
+    if (rawClientId !== undefined && rawClientId !== eng.clientId) {
+      res.status(400).json({ error: "clientId does not match the engagement's client" });
+      return;
+    }
+    const lockError = uploadLockError(eng, stage);
+    if (lockError) {
+      res.status(403).json({ error: lockError });
+      return;
+    }
+    engagementId = eng.id;
+    clientId = eng.clientId;
+  } else if (rawClientId !== undefined) {
+    const [client] = await db.select({ id: clientsTable.id }).from(clientsTable).where(eq(clientsTable.id, rawClientId));
+    if (!client) {
+      res.status(400).json({ error: "Client not found" });
+      return;
+    }
+    clientId = client.id;
+  }
 
   const storedFilename = makeStoredFilename(req.file.originalname);
 
@@ -89,7 +185,7 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
     uploadedBy: req.session.userId!,
     version: 1,
     stage,
-  } as any).returning();
+  }).returning();
 
   // Update fileUrl now that we have the real ID
   const [updated] = await db.update(documentsTable)
@@ -117,6 +213,7 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
     clientId: updated.clientId,
     version: updated.version,
     uploadedBy: updated.uploadedBy,
+    stage: updated.stage ?? null,
     createdAt: updated.createdAt.toISOString(),
     updatedAt: updated.updatedAt.toISOString(),
   });
@@ -124,7 +221,7 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
 
 // ── POST /api/documents/seed-samples ─────────────────────────────────────────
 // Creates sample PDF, Excel, and Word files in the database for testing.
-router.post("/documents/seed-samples", requireAuth, async (req, res): Promise<void> => {
+router.post("/documents/seed-samples", requireManager, async (req, res): Promise<void> => {
   const userId = req.session.userId!;
   const created: string[] = [];
 

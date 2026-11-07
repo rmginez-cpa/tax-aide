@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/lib/auth";
+import { can } from "@/lib/permissions";
 import { Plus, Search, Building2, Phone, Mail, Trash2, ExternalLink, Clock, Eye, AlertTriangle } from "lucide-react";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -147,7 +148,7 @@ export default function Clients() {
         queryClient.invalidateQueries({ queryKey: getListClientsQueryKey() });
         toast({ title: "Client deleted" });
       },
-      onError: () => toast({ title: "Failed to delete client", variant: "destructive" }),
+      onError: (e: any) => toast({ title: e?.data?.error || "Failed to delete client", variant: "destructive" }),
     });
   };
 
@@ -158,7 +159,7 @@ export default function Clients() {
           <h2 className="text-2xl font-bold tracking-tight">Clients</h2>
           <p className="text-muted-foreground">Manage your tax clients and their BIR 2303 registration details.</p>
         </div>
-        {user?.role !== "viewer" && (
+        {can(user, "manageClients") && (
           <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setForm(initialForm); setTab("basic"); } }}>
             <DialogTrigger asChild>
               <Button><Plus className="h-4 w-4 mr-2" />Add Client</Button>
@@ -452,7 +453,7 @@ export default function Clients() {
                       <ExternalLink className="h-3.5 w-3.5" />View & Compliance
                     </Button>
                   </Link>
-                  {user?.role === "manager" && (
+                  {can(user, "deleteClients") && (
                     <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(client.id, client.name)}>
                       <Trash2 className="h-4 w-4" />
                     </Button>

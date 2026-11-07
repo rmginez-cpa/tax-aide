@@ -15,7 +15,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, Calendar, CheckCircle2, AlertTriangle, Clock, Trash2, Check, GitBranch } from "lucide-react";
-import { format, parseISO, isPast, isToday, differenceInDays } from "date-fns";
+import { format, parseISO } from "date-fns";
+import { isOverdue, daysUntil } from "@/lib/dates";
+import { can } from "@/lib/permissions";
 import { FilingWorkflowDialog } from "@/components/FilingWorkflowDialog";
 
 const PRIORITY_STYLES = {
@@ -63,8 +65,8 @@ export default function Deadlines() {
   const filtered = deadlines?.filter(d => {
     const matchSearch = d.title.toLowerCase().includes(search.toLowerCase()) || (d.clientName ?? "").toLowerCase().includes(search.toLowerCase());
     if (!matchSearch) return false;
-    if (filter === "overdue") return isPast(parseISO(d.dueDate)) && d.status === "pending";
-    if (filter === "upcoming") return !isPast(parseISO(d.dueDate)) && d.status === "pending";
+    if (filter === "overdue") return isOverdue(d.dueDate, d.status) && d.status === "pending";
+    if (filter === "upcoming") return !isOverdue(d.dueDate, d.status) && d.status === "pending";
     if (filter === "completed") return d.status === "completed";
     return true;
   }) ?? [];
@@ -108,14 +110,14 @@ export default function Deadlines() {
 
   const getDeadlineStatus = (d: typeof filtered[0]) => {
     if (d.status === "completed") return { label: "Completed", icon: CheckCircle2, className: "text-emerald-600" };
-    if (isPast(parseISO(d.dueDate)) && !isToday(parseISO(d.dueDate))) return { label: "Overdue", icon: AlertTriangle, className: "text-red-600" };
-    const days = differenceInDays(parseISO(d.dueDate), new Date());
+    if (isOverdue(d.dueDate, d.status)) return { label: "Overdue", icon: AlertTriangle, className: "text-red-600" };
+    const days = daysUntil(d.dueDate);
     if (days <= 3) return { label: `${days}d left`, icon: AlertTriangle, className: "text-amber-600" };
     return { label: `${days}d left`, icon: Clock, className: "text-muted-foreground" };
   };
 
-  const pending = deadlines?.filter(d => d.status === "pending" && isPast(parseISO(d.dueDate))).length ?? 0;
-  const upcoming = deadlines?.filter(d => d.status === "pending" && !isPast(parseISO(d.dueDate))).length ?? 0;
+  const pending = deadlines?.filter(d => d.status === "pending" && isOverdue(d.dueDate, d.status)).length ?? 0;
+  const upcoming = deadlines?.filter(d => d.status === "pending" && !isOverdue(d.dueDate, d.status)).length ?? 0;
   const completed = deadlines?.filter(d => d.status === "completed").length ?? 0;
 
   return (
@@ -125,7 +127,7 @@ export default function Deadlines() {
           <h2 className="text-2xl font-bold tracking-tight">Deadlines</h2>
           <p className="text-muted-foreground">Track all BIR filing deadlines across engagements.</p>
         </div>
-        {user?.role !== "viewer" && (
+        {can(user, "manageDeadlines") && (
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button><Plus className="h-4 w-4 mr-2" />Add Deadline</Button>
@@ -245,13 +247,13 @@ export default function Deadlines() {
                       </div>
                     </div>
                     <span className={`text-xs font-semibold ${status.className}`}>{status.label}</span>
-                    {user?.role !== "viewer" && d.status !== "completed" && !hasWorkflow && (
+                    {can(user, "manageDeadlines") && d.status !== "completed" && !hasWorkflow && !d.engagementId && (
                       <Button variant="outline" size="icon" className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
                         onClick={e => { e.stopPropagation(); handleMarkDone(d.id); }}>
                         <Check className="h-4 w-4" />
                       </Button>
                     )}
-                    {user?.role === "manager" && (
+                    {can(user, "deleteDeadlines") && (
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
                         onClick={e => { e.stopPropagation(); handleDelete(d.id, d.title); }}>
                         <Trash2 className="h-3.5 w-3.5" />

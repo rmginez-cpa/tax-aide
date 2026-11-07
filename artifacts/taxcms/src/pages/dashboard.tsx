@@ -4,11 +4,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Users, Briefcase, Calendar, AlertCircle, CheckCircle2, Clock } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend } from "recharts";
+import { useAuth } from "@/lib/auth";
+import { can } from "@/lib/permissions";
 
 export default function Dashboard() {
   const { data: summary, isLoading: isLoadingSummary } = useGetDashboardSummary({ query: { queryKey: ["dashboard-summary"] } });
   const { data: deadlines, isLoading: isLoadingDeadlines } = useGetUpcomingDeadlines({ query: { queryKey: ["dashboard-deadlines"] } });
-  const { data: activity, isLoading: isLoadingActivity } = useGetRecentActivity({ query: { queryKey: ["dashboard-activity"] } });
+  const { user } = useAuth();
+  // Recent activity is the audit trail: managers and super admins only.
+  const showActivity = can(user, "viewAuditLog");
+  const { data: activity, isLoading: isLoadingActivity } = useGetRecentActivity({ query: { queryKey: ["dashboard-activity"], enabled: showActivity } });
   const { data: breakdown, isLoading: isLoadingBreakdown } = useGetEngagementStatusBreakdown({ query: { queryKey: ["dashboard-breakdown"] } });
 
   const STATUS_COLORS: Record<string, string> = {
@@ -150,7 +155,8 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Activity Feed */}
+      {/* Activity Feed (managers and super admins only) */}
+      {showActivity && (
       <Card>
         <CardHeader>
           <CardTitle>Recent Activity</CardTitle>
@@ -188,6 +194,7 @@ export default function Dashboard() {
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }

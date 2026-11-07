@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { eq, and, gte, lt } from "drizzle-orm";
-import { db, clientsTable, deadlinesTable, engagementsTable } from "@workspace/db";
+import { eq, and, ne, or, inArray, notInArray, isNull, count } from "drizzle-orm";
+import { db, clientsTable, deadlinesTable, engagementsTable, documentsTable } from "@workspace/db";
 import {
   CreateClientBody,
   UpdateClientBody,
@@ -12,8 +12,10 @@ import {
   GetClientComplianceParams,
   GetClientComplianceQueryParams,
 } from "@workspace/api-zod";
-import { requireAuth, requireRole } from "../middlewares/auth";
+import { requireAuth, requireStaff, requireManager, clientScope, canAccessClient } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
+import { manilaToday, manilaYear, addDays } from "../lib/dates";
+import { openDeadlines } from "../lib/openDeadlines";
 
 const router = Router();
 
@@ -85,10 +87,45 @@ interface GeneratedDeadline {
   category: string;
 }
 
+/**
+ * The client's fiscal year as months (1-12). The end month is derived from the
+ * start month so the two can never disagree; fiscalYearEnd is only used when
+ * no start month is recorded.
+ */
+function fiscalYearMonths(client: typeof clientsTable.$inferSelect): { fyStart: number; fyEnd: number } {
+  const fyStart = client.fiscalYearStart
+    ? monthIndex(client.fiscalYearStart)
+    : client.fiscalYearEnd
+      ? (monthIndex(client.fiscalYearEnd) % 12) + 1
+      : 1;
+  return { fyStart, fyEnd: fyStart === 1 ? 12 : fyStart - 1 };
+}
+
+/**
+ * The BIR filings of tax year `year`.
+ *
+ * Tax year Y means:
+ * - income tax (1702Q/1701Q, annual 1702/1701 + AFS), VAT (2550Q, SLS/SLP),
+ *   percentage tax (2551Q) and the inventory list: the client's taxable year
+ *   that STARTS in Y (the calendar year Y for calendar-year clients). Its
+ *   quarters are the fiscal quarters, and the annual return of that same
+ *   fiscal year is due the 15th of the 4th month after it ends.
+ * - withholding taxes (1601C, 0619E/1601EQ, 0619F/1601FQ, QAP, 1604C/E/F,
+ *   2316, Annex C/F), DST (2000), eSales and the lessee statement: always the
+ *   calendar year Y with calendar quarters, whatever the client's fiscal year.
+ * Every title therefore carries Y in its period label.
+ */
 export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, year: number): GeneratedDeadline[] {
   const deadlines: GeneratedDeadline[] = [];
-  const fyStartMonth = client.fiscalYearStart ? monthIndex(client.fiscalYearStart) : 1;
-  const calYear = fyStartMonth === 1; // calendar year taxpayer
+  const { fyStart: fyStartMonth, fyEnd: fyEndMonth } = fiscalYearMonths(client);
+  // The fiscal year that starts in `year` ends in fyEndMonth of fyEndYear.
+  const fyEndYear = fyStartMonth === 1 ? year : year + 1;
+  const fyLabel = fyStartMonth === 1
+    ? `calendar year ${year}`
+    : `fiscal year ${MONTHS[fyStartMonth - 1]} ${year} – ${MONTHS[fyEndMonth - 1]} ${fyEndYear}`;
+  // Annual ITR / AFS: 15th of the 4th month after the fiscal year ends.
+  const annualDueMonth = ((fyEndMonth + 3) % 12) + 1;
+  const annualDueYear = fyEndMonth + 4 > 12 ? fyEndYear + 1 : fyEndYear;
 
   // NOTE: BIR Form 0605 is a voluntary payment form — not auto-generated.
   // Accountants can upload 0605 documents manually in the client's document section.
@@ -130,36 +167,12 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
   // ── QUARTERLY FORMS ────────────────────────────────────────────────────
 
   const quarters = fiscalQuarterMonths(fyStartMonth);
+  // Withholding returns always follow calendar quarters.
+  const calendarQuarters = fiscalQuarterMonths(1);
 
-  quarters.forEach(([endMonth, yOff], qIdx) => {
+  calendarQuarters.forEach(([endMonth, yOff], qIdx) => {
     const qYear = year + yOff;
     const qLabel = `Q${qIdx + 1} ${year}`;
-
-    // 2550Q: Quarterly VAT — due 25th of following month after quarter end
-    if (client.vatRegistered) {
-      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
-      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
-      deadlines.push({
-        title: `BIR Form 2550Q — ${qLabel}`,
-        description: `Quarterly VAT Return for ${qLabel}. Due 25th of the month following quarter end.`,
-        dueDate: isoDate(dueYear, dueMonth, 25),
-        priority: "high",
-        category: "VAT",
-      });
-    }
-
-    // 2551Q: Quarterly Percentage Tax — due 25th of following month after quarter
-    if (client.percentageTaxRegistered) {
-      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
-      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
-      deadlines.push({
-        title: `BIR Form 2551Q — ${qLabel}`,
-        description: `Quarterly Percentage Tax Return for ${qLabel}.`,
-        dueDate: isoDate(dueYear, dueMonth, 25),
-        priority: "medium",
-        category: "Percentage Tax",
-      });
-    }
 
     // 0619E: Monthly EWT for non-quarter-end months — due 10th of following month
     if (client.withholdsEwt) {
@@ -215,6 +228,37 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
         category: "Withholding Tax",
       });
     }
+  });
+
+  quarters.forEach(([endMonth, yOff], qIdx) => {
+    const qYear = year + yOff;
+    const qLabel = `Q${qIdx + 1} ${year}`;
+
+    // 2550Q: Quarterly VAT — due 25th of following month after quarter end
+    if (client.vatRegistered) {
+      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
+      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
+      deadlines.push({
+        title: `BIR Form 2550Q — ${qLabel}`,
+        description: `Quarterly VAT Return for ${qLabel}. Due 25th of the month following quarter end.`,
+        dueDate: isoDate(dueYear, dueMonth, 25),
+        priority: "high",
+        category: "VAT",
+      });
+    }
+
+    // 2551Q: Quarterly Percentage Tax — due 25th of following month after quarter
+    if (client.percentageTaxRegistered) {
+      const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
+      const dueYear = endMonth === 12 ? qYear + 1 : qYear;
+      deadlines.push({
+        title: `BIR Form 2551Q — ${qLabel}`,
+        description: `Quarterly Percentage Tax Return for ${qLabel}.`,
+        dueDate: isoDate(dueYear, dueMonth, 25),
+        priority: "medium",
+        category: "Percentage Tax",
+      });
+    }
 
     // 1702Q: Quarterly Corporate ITR — 60 days after quarter end
     if (client.incomeTaxType === "corporate") {
@@ -256,15 +300,13 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
 
   // ── ANNUAL FORMS ───────────────────────────────────────────────────────
 
-  // 1702: Annual Corporate ITR — 15th of 4th month after FY end
+  // 1702: Annual Corporate ITR — 15th of 4th month after the end of the fiscal
+  // year that starts in `year` (April 15 of year + 1 for calendar-year clients).
   if (client.incomeTaxType === "corporate") {
-    const fyEnd = client.fiscalYearEnd ? monthIndex(client.fiscalYearEnd) : 12;
-    const dueMonth = ((fyEnd + 3) % 12) + 1 || 12;
-    const dueYear = fyEnd + 3 > 12 ? year + 1 : year;
     deadlines.push({
       title: `BIR Form 1702 (Annual Corporate ITR) — FY ${year}`,
-      description: `Annual Income Tax Return for Corporations for Fiscal Year ${year}. Due 15th of the 4th month after fiscal year end.`,
-      dueDate: isoDate(dueYear, dueMonth, 15),
+      description: `Annual Income Tax Return for Corporations for ${fyLabel}. Due 15th of the 4th month after the fiscal year ends.`,
+      dueDate: isoDate(annualDueYear, annualDueMonth, 15),
       priority: "high",
       category: "Income Tax",
     });
@@ -272,22 +314,20 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     // 1702RT/EX/MX attachment
     deadlines.push({
       title: `Audited Financial Statements — FY ${year}`,
-      description: `AFS must be submitted with the Annual ITR. Ensure statements are audited and signed by a CPA.`,
-      dueDate: isoDate(dueYear, dueMonth, 15),
+      description: `AFS for ${fyLabel}, submitted with the Annual ITR. Ensure statements are audited and signed by a CPA.`,
+      dueDate: isoDate(annualDueYear, annualDueMonth, 15),
       priority: "high",
       category: "Income Tax",
     });
   }
 
-  // 1701: Annual Individual ITR — April 15 for calendar year, or 15th of 4th month after FY end
+  // 1701: Annual Individual ITR — April 15 of year + 1 for calendar-year
+  // taxpayers, otherwise 15th of the 4th month after the fiscal year ends.
   if (client.incomeTaxType === "individual") {
-    const fyEnd = client.fiscalYearEnd ? monthIndex(client.fiscalYearEnd) : 12;
-    const dueMonth = calYear ? 4 : (((fyEnd + 3) % 12) + 1 || 12);
-    const dueYear = !calYear && fyEnd + 3 > 12 ? year + 1 : year;
     deadlines.push({
       title: `BIR Form 1701 (Annual Individual ITR) — FY ${year}`,
-      description: `Annual Income Tax Return for Individuals for Fiscal Year ${year}. Due April 15 (calendar year) or 15th of 4th month after fiscal year end.`,
-      dueDate: isoDate(dueYear, dueMonth, 15),
+      description: `Annual Income Tax Return for Individuals for ${fyLabel}. Due 15th of the 4th month after the year ends (April 15 for calendar-year taxpayers).`,
+      dueDate: isoDate(annualDueYear, annualDueMonth, 15),
       priority: "high",
       category: "Income Tax",
     });
@@ -371,9 +411,9 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
     });
   }
 
-  // ── Quarterly Alphalist of Payees (QAP) — for EWT filers ─────────────────
+  // ── Quarterly Alphalist of Payees (QAP) — for EWT filers (calendar quarters) ─
   if (client.withholdsEwt) {
-    quarters.forEach(([endMonth, yOff], qIdx) => {
+    calendarQuarters.forEach(([endMonth, yOff], qIdx) => {
       const qYear = year + yOff;
       const qLabel = `Q${qIdx + 1} ${year}`;
       const dueMonth = endMonth === 12 ? 1 : endMonth + 1;
@@ -435,8 +475,8 @@ export function generateBIRDeadlines(client: typeof clientsTable.$inferSelect, y
   if (client.hasInventory) {
     deadlines.push({
       title: `Annual Inventory List — FY ${year}`,
-      description: `Annual list of inventory at the end of the taxable year, submitted to the RDO on or before January 30 of the following year.`,
-      dueDate: isoDate(year + 1, 1, 30),
+      description: `Annual list of inventory at the end of ${fyLabel}, submitted to the RDO within 30 days after the year ends (January 30 for calendar-year clients).`,
+      dueDate: addDays(isoDate(fyEndYear, fyEndMonth + 1, 0), 30),
       priority: "medium",
       category: "Other",
     });
@@ -554,6 +594,31 @@ function extractPeriod(title: string): string {
   return title;
 }
 
+type DeadlineRow = typeof deadlinesTable.$inferSelect;
+
+/**
+ * Picks, for each title, the saved deadline that best represents the filing.
+ * Deadline titles embed the period/tax year, so a title identifies one filing.
+ * When several rows share a title (duplicates from older generate runs) prefer
+ * a completed row, then one linked to an engagement, then the oldest (lowest id).
+ */
+function pickDeadlinesByTitle(rows: DeadlineRow[]): Map<string, DeadlineRow> {
+  const rank = (d: DeadlineRow): number =>
+    (d.status === "completed" ? 2 : 0) + (d.engagementId != null ? 1 : 0);
+  const byTitle = new Map<string, DeadlineRow>();
+  for (const row of rows) {
+    const current = byTitle.get(row.title);
+    if (
+      !current ||
+      rank(row) > rank(current) ||
+      (rank(row) === rank(current) && row.id < current.id)
+    ) {
+      byTitle.set(row.title, row);
+    }
+  }
+  return byTitle;
+}
+
 export async function buildComplianceItems(
   client: typeof clientsTable.$inferSelect,
   year: number
@@ -561,48 +626,44 @@ export async function buildComplianceItems(
   const required = generateBIRDeadlines(client, year);
   if (required.length === 0) return [];
 
-  // Fetch existing deadlines for this client/year
-  const yearStart = isoDate(year, 1, 1);
-  const yearEnd = isoDate(year + 1, 1, 1);
+  // Match saved deadlines by title, whatever their due date: many filings for a
+  // tax year fall due in the following calendar year (December monthlies, Q4
+  // quarterlies, annual returns), and fiscal-year clients shift further.
+  const titles = [...new Set(required.map(r => r.title))];
   const existing = await db
     .select()
     .from(deadlinesTable)
-    .where(
-      and(
-        eq(deadlinesTable.clientId, client.id),
-        gte(deadlinesTable.dueDate, yearStart),
-        lt(deadlinesTable.dueDate, yearEnd)
-      )
-    );
+    .where(and(eq(deadlinesTable.clientId, client.id), inArray(deadlinesTable.title, titles)));
+  const byTitle = pickDeadlinesByTitle(existing);
 
-  const now = new Date();
-
-  // Fetch engagements for all matched deadlines (those that have an engagementId)
-  const deadlineEngagementIds = existing
-    .map(e => e.engagementId)
-    .filter((eid): eid is number => eid !== null && eid !== undefined);
-
+  const engagementIds = [
+    ...new Set(
+      [...byTitle.values()]
+        .map(d => d.engagementId)
+        .filter((eid): eid is number => eid !== null && eid !== undefined),
+    ),
+  ];
   const engagementsMap = new Map<number, typeof engagementsTable.$inferSelect>();
-  if (deadlineEngagementIds.length > 0) {
-    const engagements = await db.select().from(engagementsTable);
-    for (const eng of engagements) {
-      if (deadlineEngagementIds.includes(eng.id)) {
-        engagementsMap.set(eng.id, eng);
-      }
-    }
+  if (engagementIds.length > 0) {
+    const engagements = await db
+      .select()
+      .from(engagementsTable)
+      .where(inArray(engagementsTable.id, engagementIds));
+    for (const eng of engagements) engagementsMap.set(eng.id, eng);
   }
+
+  const today = manilaToday();
 
   return required.map(req => {
     const formNumber = extractFormNumber(req.title);
     const period = extractPeriod(req.title);
     const frequency = FREQUENCY_MAP[formNumber] || "annual";
 
-    // Match to existing deadline by title similarity
-    const matched = existing.find(e => e.title === req.title);
+    const matched = byTitle.get(req.title);
     let status: "pending" | "filed" | "overdue" = "pending";
     if (matched?.status === "completed") {
       status = "filed";
-    } else if (new Date(req.dueDate) < now) {
+    } else if (req.dueDate < today) {
       status = "overdue";
     }
 
@@ -643,43 +704,71 @@ export async function buildComplianceItems(
 // ──────────────────────────────────────────────────────────────────────────
 
 router.get("/clients", requireAuth, async (req, res): Promise<void> => {
-  const clients = await db.select().from(clientsTable).orderBy(clientsTable.name);
+  // Staff see every client; a client account sees only its linked client
+  // (an unlinked client account has scope 0 and sees nothing).
+  const scope = clientScope(req);
+  if (scope === 0) {
+    res.json([]);
+    return;
+  }
 
-  // Count workflow statuses using the same scope as the default compliance view:
-  // - Only deadline records in the current calendar year
-  // - In-progress / for-review derived from the engagement linked to each deadline
-  //   (matches how workflowStatus is computed in buildComplianceItems)
-  // - Overdue: dueDate < today AND deadline.status !== "completed"
-  const currentYear = new Date().getFullYear();
-  const yearStart = isoDate(currentYear, 1, 1);
-  const yearEnd = isoDate(currentYear + 1, 1, 1);
-  const today = new Date().toISOString().slice(0, 10);
+  const clients = await db
+    .select()
+    .from(clientsTable)
+    .where(scope === null ? undefined : eq(clientsTable.id, scope))
+    .orderBy(clientsTable.name);
+  if (clients.length === 0) {
+    res.json([]);
+    return;
+  }
 
-  const deadlineRows = await db
-    .select({
-      clientId: deadlinesTable.clientId,
-      deadlineStatus: deadlinesTable.status,
-      dueDate: deadlinesTable.dueDate,
-      engagementStatus: engagementsTable.status,
-    })
-    .from(deadlinesTable)
-    .leftJoin(engagementsTable, eq(deadlinesTable.engagementId, engagementsTable.id))
-    .where(and(gte(deadlinesTable.dueDate, yearStart), lt(deadlinesTable.dueDate, yearEnd)));
+  const today = manilaToday();
 
+  // Overdue: the client's open deadlines already past due (any tax year), one
+  // per filing (duplicate copies of a filing count once; a filed one not at all).
+  const overdueMap = new Map<number, number>();
+  for (const d of await openDeadlines(scope === null ? undefined : eq(deadlinesTable.clientId, scope))) {
+    if (d.clientId == null || d.dueDate >= today) continue;
+    overdueMap.set(d.clientId, (overdueMap.get(d.clientId) ?? 0) + 1);
+  }
+
+  // In progress / for review: the same items the client page lists for the
+  // current tax year (?wf=in_progress / ?wf=for_review), i.e. this year's
+  // filings whose linked engagement is in progress / has a stage for review.
+  const year = manilaYear();
+  const titlesByClient = new Map(clients.map(c => [c.id, new Set(generateBIRDeadlines(c, year).map(d => d.title))]));
+  const allTitles = [...new Set([...titlesByClient.values()].flatMap(t => [...t]))];
+  const yearRows = allTitles.length === 0
+    ? []
+    : await db
+        .select()
+        .from(deadlinesTable)
+        .where(and(inArray(deadlinesTable.clientId, clients.map(c => c.id)), inArray(deadlinesTable.title, allTitles)));
+  const linkedByClient = new Map<number, number[]>();
+  for (const c of clients) {
+    const titles = titlesByClient.get(c.id)!;
+    const picked = pickDeadlinesByTitle(yearRows.filter(d => d.clientId === c.id && titles.has(d.title)));
+    linkedByClient.set(
+      c.id,
+      [...picked.values()].map(d => d.engagementId).filter((id): id is number => id != null),
+    );
+  }
+  const engagementIds = [...new Set([...linkedByClient.values()].flat())];
+  const engagementById = new Map(
+    (engagementIds.length === 0
+      ? []
+      : await db.select().from(engagementsTable).where(inArray(engagementsTable.id, engagementIds))
+    ).map(e => [e.id, e]),
+  );
   const inProgressMap = new Map<number, number>();
   const forReviewMap = new Map<number, number>();
-  const overdueMap = new Map<number, number>();
-
-  for (const row of deadlineRows) {
-    if (row.clientId == null) continue;
-    if (row.engagementStatus === "in_progress") {
-      inProgressMap.set(row.clientId, (inProgressMap.get(row.clientId) ?? 0) + 1);
-    }
-    if (row.engagementStatus === "for_review") {
-      forReviewMap.set(row.clientId, (forReviewMap.get(row.clientId) ?? 0) + 1);
-    }
-    if (row.dueDate < today && row.deadlineStatus !== "completed") {
-      overdueMap.set(row.clientId, (overdueMap.get(row.clientId) ?? 0) + 1);
+  for (const [clientId, ids] of linkedByClient) {
+    for (const id of ids) {
+      const e = engagementById.get(id);
+      if (!e) continue;
+      if (e.status === "in_progress") inProgressMap.set(clientId, (inProgressMap.get(clientId) ?? 0) + 1);
+      const stages = [e.sourceCollectionStatus, e.draftReturnStatus, e.confirmationStatus, e.paymentStatus];
+      if (stages.includes("for_review")) forReviewMap.set(clientId, (forReviewMap.get(clientId) ?? 0) + 1);
     }
   }
 
@@ -693,7 +782,7 @@ router.get("/clients", requireAuth, async (req, res): Promise<void> => {
   })));
 });
 
-router.post("/clients", requireAuth, async (req, res): Promise<void> => {
+router.post("/clients", requireStaff, async (req, res): Promise<void> => {
   const parsed = CreateClientBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -720,6 +809,12 @@ router.get("/clients/:id", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
+  // Outside a client account's scope: 404, so existence is not leaked.
+  if (!canAccessClient(req, params.data.id)) {
+    res.status(404).json({ error: "Client not found" });
+    return;
+  }
+
   const [client] = await db.select().from(clientsTable).where(eq(clientsTable.id, params.data.id));
   if (!client) {
     res.status(404).json({ error: "Client not found" });
@@ -729,7 +824,7 @@ router.get("/clients/:id", requireAuth, async (req, res): Promise<void> => {
   res.json(serializeClient(client));
 });
 
-router.patch("/clients/:id", requireAuth, async (req, res): Promise<void> => {
+router.patch("/clients/:id", requireStaff, async (req, res): Promise<void> => {
   const params = UpdateClientParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -784,16 +879,47 @@ router.patch("/clients/:id", requireAuth, async (req, res): Promise<void> => {
   res.json(serializeClient(client));
 });
 
-router.delete("/clients/:id", requireAuth, async (req, res): Promise<void> => {
+router.delete("/clients/:id", requireManager, async (req, res): Promise<void> => {
   const params = DeleteClientParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
   }
+  const clientId = params.data.id;
 
-  const [client] = await db.delete(clientsTable).where(eq(clientsTable.id, params.data.id)).returning();
-  if (!client) {
+  // A client with filings or documents keeps its history: deactivate it instead.
+  // Otherwise remove its deadlines and the client together.
+  const result = await db.transaction(async (tx) => {
+    const [client] = await tx.select().from(clientsTable).where(eq(clientsTable.id, clientId));
+    if (!client) return { kind: "not_found" as const };
+
+    const [eng] = await tx
+      .select({ n: count() })
+      .from(engagementsTable)
+      .where(eq(engagementsTable.clientId, clientId));
+    const [doc] = await tx
+      .select({ n: count() })
+      .from(documentsTable)
+      .where(eq(documentsTable.clientId, clientId));
+    const engagements = Number(eng?.n ?? 0);
+    const documents = Number(doc?.n ?? 0);
+    if (engagements > 0 || documents > 0) {
+      return { kind: "in_use" as const, engagements, documents };
+    }
+
+    await tx.delete(deadlinesTable).where(eq(deadlinesTable.clientId, clientId));
+    await tx.delete(clientsTable).where(eq(clientsTable.id, clientId));
+    return { kind: "deleted" as const, client };
+  });
+
+  if (result.kind === "not_found") {
     res.status(404).json({ error: "Client not found" });
+    return;
+  }
+  if (result.kind === "in_use") {
+    res.status(409).json({
+      error: `This client has ${result.engagements} filing(s) and ${result.documents} document(s) and cannot be deleted. Set the client to inactive instead.`,
+    });
     return;
   }
 
@@ -801,15 +927,15 @@ router.delete("/clients/:id", requireAuth, async (req, res): Promise<void> => {
     userId: req.session.userId,
     action: "delete",
     entityType: "client",
-    entityId: params.data.id,
-    description: `Deleted client ${client.name}`,
+    entityId: clientId,
+    description: `Deleted client ${result.client.name}`,
   });
 
   res.sendStatus(204);
 });
 
 // POST /clients/:id/generate-deadlines
-router.post("/clients/:id/generate-deadlines", requireAuth, requireRole("accountant", "manager"), async (req, res): Promise<void> => {
+router.post("/clients/:id/generate-deadlines", requireStaff, async (req, res): Promise<void> => {
   const params = GenerateClientDeadlinesParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -822,60 +948,196 @@ router.post("/clients/:id/generate-deadlines", requireAuth, requireRole("account
     return;
   }
 
+  const year = parsed.data.year;
+  if (!Number.isInteger(year) || year < 1900 || year > 9999) {
+    res.status(400).json({ error: "year must be a four-digit tax year" });
+    return;
+  }
+  const overwrite = parsed.data.overwrite ?? false;
+
   const [client] = await db.select().from(clientsTable).where(eq(clientsTable.id, params.data.id));
   if (!client) {
     res.status(404).json({ error: "Client not found" });
     return;
   }
 
-  const year = parsed.data.year;
-  const overwrite = parsed.data.overwrite ?? false;
+  // Deadline titles embed the period, so a title identifies one filing of this
+  // tax year. One row per title (first occurrence wins if the generator repeats one).
+  const required = new Map<string, GeneratedDeadline>();
+  for (const d of generateBIRDeadlines(client, year)) {
+    if (!required.has(d.title)) required.set(d.title, d);
+  }
+  const titles = [...required.keys()];
 
-  if (overwrite) {
-    // Delete existing auto-generated deadlines for this client/year
-    const yearStart = isoDate(year, 1, 1);
-    const yearEnd = isoDate(year + 1, 1, 1);
-    await db
-      .delete(deadlinesTable)
-      .where(
-        and(
-          eq(deadlinesTable.clientId, client.id),
-          gte(deadlinesTable.dueDate, yearStart),
-          lt(deadlinesTable.dueDate, yearEnd)
+  // Titles that only exist in other tax years must never be removed by this
+  // year's clean-up of legacy rows (see below).
+  const neighbourTitles = new Set([
+    ...generateBIRDeadlines(client, year - 1).map(d => d.title),
+    ...generateBIRDeadlines(client, year + 1).map(d => d.title),
+  ]);
+  // Every title the generator could produce for this year, whatever the
+  // client's registrations: a legacy row with such a title that is no longer
+  // required (e.g. VAT was dropped) is a stale generated deadline.
+  const generatableTitles = generateBIRDeadlines(
+    {
+      ...client,
+      vatRegistered: true,
+      percentageTaxRegistered: true,
+      withholdsCompensation: true,
+      withholdsEwt: true,
+      subjectToDst: true,
+      withholdsFinal: true,
+      hasInventory: true,
+      isLessor: true,
+      isEsalesRequired: true,
+      incomeTaxType: "corporate",
+    },
+    year,
+  )
+    .concat(generateBIRDeadlines({ ...client, incomeTaxType: "individual" }, year))
+    .map(d => d.title)
+    .filter(t => !required.has(t) && !neighbourTitles.has(t));
+
+  const outcome = await db.transaction(async (tx) => {
+    // Serialize generate runs per client (READ COMMITTED would otherwise let two
+    // concurrent runs both see no rows and both insert the full set).
+    await tx.select({ id: clientsTable.id }).from(clientsTable).where(eq(clientsTable.id, client.id)).for("update");
+
+    const found = titles.length === 0
+      ? []
+      : await tx
+          .select()
+          .from(deadlinesTable)
+          .where(and(eq(deadlinesTable.clientId, client.id), inArray(deadlinesTable.title, titles)));
+
+    // Merge duplicate rows of one filing (left by older runs): keep the row the
+    // compliance view shows (completed, then engagement-linked, then lowest id)
+    // and drop the other copies that are unlinked and not completed.
+    const kept = pickDeadlinesByTitle(found);
+    const keptIds = new Set([...kept.values()].map(d => d.id));
+    const duplicateIds = found
+      .filter(d => !keptIds.has(d.id) && d.engagementId == null && d.status !== "completed")
+      .map(d => d.id);
+    if (duplicateIds.length > 0) {
+      await tx.delete(deadlinesTable).where(inArray(deadlinesTable.id, duplicateIds));
+    }
+    const duplicateSet = new Set(duplicateIds);
+    const existing = found.filter(d => !duplicateSet.has(d.id));
+    const existingTitles = new Set(existing.map(d => d.title));
+
+    // Legacy rows (generated before tax_year existed) of this year's filings
+    // belong to this tax year.
+    const untagged = existing.filter(d => d.taxYear == null).map(d => d.id);
+    if (untagged.length > 0) {
+      await tx.update(deadlinesTable).set({ taxYear: year }).where(inArray(deadlinesTable.id, untagged));
+      for (const d of existing) if (d.taxYear == null) d.taxYear = year;
+    }
+
+    // New filings: insert only what is missing. Existing rows (and their status
+    // and engagement links) are left alone.
+    const missing = titles.filter(t => !existingTitles.has(t));
+    const inserted = missing.length === 0
+      ? []
+      : await tx
+          .insert(deadlinesTable)
+          .values(
+            missing.map(t => {
+              const d = required.get(t)!;
+              return {
+                clientId: client.id,
+                engagementId: null,
+                title: d.title,
+                description: d.description,
+                dueDate: d.dueDate,
+                priority: d.priority,
+                status: "pending",
+                taxYear: year,
+              };
+            }),
+          )
+          .returning({ id: deadlinesTable.id });
+
+    let updated = 0;
+    let removed = duplicateIds.length;
+    if (overwrite) {
+      // Refresh the schedule fields of existing rows. Never touch status or engagementId.
+      for (const row of existing) {
+        const d = required.get(row.title);
+        if (!d) continue;
+        if (
+          row.dueDate === d.dueDate &&
+          (row.description ?? null) === d.description &&
+          row.priority === d.priority &&
+          row.taxYear === year
+        ) {
+          continue;
+        }
+        await tx
+          .update(deadlinesTable)
+          .set({ dueDate: d.dueDate, description: d.description, priority: d.priority, taxYear: year })
+          .where(eq(deadlinesTable.id, row.id));
+        updated++;
+      }
+
+      // Remove this tax year's generated deadlines that no longer apply (e.g. a
+      // registration was dropped). Engagement-linked and completed rows, and rows
+      // of other tax years, are kept. Legacy rows (no tax year) are matched by a
+      // title the generator produces only for this year.
+      const thisYearsRows = generatableTitles.length === 0
+        ? eq(deadlinesTable.taxYear, year)
+        : or(
+            eq(deadlinesTable.taxYear, year),
+            and(isNull(deadlinesTable.taxYear), inArray(deadlinesTable.title, generatableTitles)),
+          );
+      const deleted = await tx
+        .delete(deadlinesTable)
+        .where(
+          and(
+            eq(deadlinesTable.clientId, client.id),
+            thisYearsRows,
+            isNull(deadlinesTable.engagementId),
+            ne(deadlinesTable.status, "completed"),
+            titles.length === 0 ? undefined : notInArray(deadlinesTable.title, titles),
+          ),
         )
-      );
+        .returning({ id: deadlinesTable.id });
+      removed += deleted.length;
+    }
+
+    return { created: inserted.length, updated, removed, alreadyExisted: existingTitles.size };
+  });
+
+  const { created, updated, removed, alreadyExisted } = outcome;
+
+  if (created > 0 || updated > 0 || removed > 0) {
+    await logAudit({
+      userId: req.session.userId,
+      action: "create",
+      entityType: "deadline",
+      entityId: client.id,
+      description:
+        `Generated BIR deadlines for ${client.name} (tax year ${year}): ` +
+        `${created} created, ${updated} updated, ${removed} removed, ${alreadyExisted} already existed`,
+    });
   }
 
-  const deadlines = generateBIRDeadlines(client, year);
-
-  if (deadlines.length === 0) {
-    res.json({ created: 0, message: "No tax types registered. Please update the client's BIR 2303 information first." });
+  if (titles.length === 0) {
+    res.json({
+      created: 0,
+      message:
+        "No tax types registered. Please update the client's BIR 2303 information first." +
+        (removed > 0 ? ` Removed ${removed} deadline(s) for ${year} that no longer apply.` : ""),
+    });
     return;
   }
 
-  const inserted = await db.insert(deadlinesTable).values(
-    deadlines.map(d => ({
-      clientId: client.id,
-      engagementId: null,
-      title: d.title,
-      description: d.description,
-      dueDate: d.dueDate,
-      priority: d.priority,
-      status: "pending",
-    }))
-  ).returning();
-
-  await logAudit({
-    userId: req.session.userId,
-    action: "create",
-    entityType: "deadline",
-    entityId: client.id,
-    description: `Auto-generated ${inserted.length} BIR deadlines for ${client.name} (FY ${year})`,
-  });
-
+  const parts = [`${created} created`];
+  if (overwrite) parts.push(`${updated} updated`);
+  if (overwrite || removed > 0) parts.push(`${removed} removed`);
+  parts.push(`${alreadyExisted} already existed`);
   res.json({
-    created: inserted.length,
-    message: `Successfully generated ${inserted.length} BIR deadline entries for FY ${year}.`,
+    created,
+    message: `BIR deadlines for tax year ${year}: ${parts.join(", ")}.`,
   });
 });
 
@@ -887,8 +1149,14 @@ router.get("/clients/:id/compliance", requireAuth, async (req, res): Promise<voi
     return;
   }
 
+  // Outside a client account's scope: 404, so existence is not leaked.
+  if (!canAccessClient(req, params.data.id)) {
+    res.status(404).json({ error: "Client not found" });
+    return;
+  }
+
   const qParams = GetClientComplianceQueryParams.safeParse(req.query);
-  const year = qParams.success && qParams.data.year ? qParams.data.year : new Date().getFullYear();
+  const year = qParams.success && qParams.data.year ? qParams.data.year : manilaYear();
 
   const [client] = await db.select().from(clientsTable).where(eq(clientsTable.id, params.data.id));
   if (!client) {

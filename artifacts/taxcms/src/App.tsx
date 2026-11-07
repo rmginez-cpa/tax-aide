@@ -6,6 +6,7 @@ import NotFound from "@/pages/not-found";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { Layout } from "@/components/layout";
 import { AssistantProvider } from "@/lib/assistant";
+import { roleMatches } from "@/lib/permissions";
 
 // Pages
 import Login from "@/pages/login";
@@ -30,21 +31,6 @@ const queryClient = new QueryClient({
     }
   }
 });
-
-// Expand roles to handle equivalent roles
-function roleMatches(userRole: string, allowedRoles: string[]): boolean {
-  if (!userRole) return false;
-  // super_admin bypasses all restrictions
-  if (userRole === "super_admin") return true;
-  // maker is equivalent to accountant
-  const expanded = new Set(allowedRoles);
-  if (expanded.has("accountant")) expanded.add("maker");
-  if (expanded.has("maker")) expanded.add("accountant");
-  // viewer can access anything client can
-  if (expanded.has("client")) expanded.add("viewer");
-  if (expanded.has("viewer")) expanded.add("client");
-  return expanded.has(userRole);
-}
 
 function ProtectedRoute({ component: Component, roles }: { component: React.ComponentType; roles?: string[] }) {
   const { user, isLoading } = useAuth();

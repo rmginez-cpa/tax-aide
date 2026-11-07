@@ -1,8 +1,15 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
-import { db, usersTable } from "@workspace/db";
-import { requireAuth, requireRole } from "../middlewares/auth";
+import {
+  db,
+  usersTable,
+  clientsTable,
+  engagementsTable,
+  notificationsTable,
+  assistantConversationsTable,
+} from "@workspace/db";
+import { requireAuth, requireRole, isClientRole, isStaffRole } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
 
 const router = Router();
@@ -11,6 +18,21 @@ const VALID_ROLES = ["super_admin", "manager", "maker", "accountant", "client", 
 
 function isValidRole(r: string): boolean {
   return (VALID_ROLES as readonly string[]).includes(r);
+}
+
+/**
+ * Parses a clientId from a request body and checks that the client exists.
+ * Returns { clientId } (null = unlinked) or { error } for a 400.
+ */
+async function resolveClientId(value: unknown): Promise<{ clientId: number | null } | { error: string }> {
+  if (value == null || value === "" || value === "none") return { clientId: null };
+  const s = String(value).trim();
+  if (!/^\d+$/.test(s)) return { error: "clientId must be a positive integer" };
+  const n = Number(s);
+  if (!Number.isSafeInteger(n) || n <= 0) return { error: "clientId must be a positive integer" };
+  const [client] = await db.select({ id: clientsTable.id }).from(clientsTable).where(eq(clientsTable.id, n));
+  if (!client) return { error: "Client not found" };
+  return { clientId: client.id };
 }
 
 function serializeUser(user: typeof usersTable.$inferSelect) {
@@ -26,7 +48,9 @@ function serializeUser(user: typeof usersTable.$inferSelect) {
 }
 
 // ── GET /api/users ─────────────────────────────────────────────────────────
-// Super admin sees all users; others see staff only (for dropdowns)
+// Super admin sees all users. Other staff see the firm's staff (for assignee
+// dropdowns). Client accounts only get their own record: the staff names they
+// need already come with their engagements and comments.
 router.get("/users", requireAuth, async (req, res): Promise<void> => {
   const role = req.session.userRole || "";
   const users = await db.select().from(usersTable).orderBy(usersTable.name);
@@ -36,8 +60,14 @@ router.get("/users", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
-  // For non-admins: only expose staff accounts
-  const staff = users.filter(u => !["client", "super_admin"].includes(u.role));
+  if (isClientRole(role)) {
+    res.json(users.filter((u) => u.id === req.session.userId).map(serializeUser));
+    return;
+  }
+
+  // Other staff: only staff accounts, never client accounts or super admins.
+  const staff = users.filter((u) => isStaffRole(u.role) && u.role !== "super_admin");
+
   res.json(staff.map(serializeUser));
 });
 
@@ -69,8 +99,14 @@ router.post("/users", requireRole("super_admin"), async (req, res): Promise<void
     return;
   }
 
+  const resolved = await resolveClientId(clientId);
+  if ("error" in resolved) {
+    res.status(400).json({ error: resolved.error });
+    return;
+  }
+  const parsedClientId = resolved.clientId;
+
   const passwordHash = await bcrypt.hash(password, 10);
-  const parsedClientId = clientId != null && clientId !== "" ? parseInt(String(clientId)) : null;
 
   const [user] = await db
     .insert(usersTable)
@@ -93,8 +129,18 @@ router.get("/users/:id", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(String(req.params.id), 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
+  const callerId = req.session.userId!;
+  const callerRole = req.session.userRole || "";
+
   const [user] = await db.select().from(usersTable).where(eq(usersTable.id, id));
-  if (!user) { res.status(404).json({ error: "User not found" }); return; }
+  // Self always; super_admin anyone; other staff may view staff accounts.
+  // Everything else answers 404 so account existence is not leaked.
+  const visible =
+    user != null &&
+    (user.id === callerId ||
+      callerRole === "super_admin" ||
+      (isStaffRole(callerRole) && isStaffRole(user.role)));
+  if (!visible) { res.status(404).json({ error: "User not found" }); return; }
 
   res.json(serializeUser(user));
 });
@@ -139,9 +185,11 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
       updates.role = role;
     }
     if ("clientId" in req.body) {
-      const parsed = clientId != null && clientId !== "" && clientId !== "none"
-        ? parseInt(String(clientId)) : null;
-      updates.clientId = parsed;
+      const resolved = await resolveClientId(clientId);
+      if ("error" in resolved) {
+        res.status(400).json({ error: resolved.error }); return;
+      }
+      updates.clientId = resolved.clientId;
     }
   }
 
@@ -150,11 +198,25 @@ router.patch("/users/:id", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
-  const [user] = await db
-    .update(usersTable)
-    .set(updates)
-    .where(eq(usersTable.id, id))
-    .returning();
+  const user = await db.transaction(async (tx) => {
+    const [before] = await tx.select().from(usersTable).where(eq(usersTable.id, id));
+    if (!before) return null;
+    const [after] = await tx.update(usersTable).set(updates).where(eq(usersTable.id, id)).returning();
+
+    // Data the account saw under its old scope must not follow it to the new one.
+    const scopeChanged = before.role !== after.role || (before.clientId ?? null) !== (after.clientId ?? null);
+    if (scopeChanged) {
+      // Stored assistant conversations replay earlier tool results to the model.
+      await tx.delete(assistantConversationsTable).where(eq(assistantConversationsTable.userId, id));
+    }
+    if (isStaffRole(before.role) && !isStaffRole(after.role)) {
+      // A former staff member keeps no filings assigned to them and none of the
+      // notifications about other clients' filings they received as staff.
+      await tx.update(engagementsTable).set({ assignedTo: null }).where(eq(engagementsTable.assignedTo, id));
+      await tx.delete(notificationsTable).where(eq(notificationsTable.userId, id));
+    }
+    return after;
+  });
 
   if (!user) { res.status(404).json({ error: "User not found" }); return; }
 

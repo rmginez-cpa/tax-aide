@@ -1,50 +1,55 @@
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
 import { db, auditLogsTable, usersTable } from "@workspace/db";
 import { ListAuditLogsQueryParams } from "@workspace/api-zod";
-import { requireAuth } from "../middlewares/auth";
+import { requireManager } from "../middlewares/auth";
 
 const router = Router();
 
-router.get("/audit-logs", requireAuth, async (req, res): Promise<void> => {
-  const queryParams = ListAuditLogsQueryParams.safeParse(req.query);
-  const limit = (queryParams.success && queryParams.data.limit) ? queryParams.data.limit : 100;
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 1000;
 
-  let logs = await db
+// The audit trail is for managers and super admins only.
+router.get("/audit-logs", requireManager, async (req, res): Promise<void> => {
+  const queryParams = ListAuditLogsQueryParams.safeParse(req.query);
+  const query = queryParams.success ? queryParams.data : undefined;
+
+  const requested = query?.limit != null ? Math.floor(Number(query.limit)) : DEFAULT_LIMIT;
+  const limit = Number.isFinite(requested) && requested > 0 ? Math.min(requested, MAX_LIMIT) : DEFAULT_LIMIT;
+
+  // Filters go into the query so the limit applies to the filtered rows.
+  const conditions: SQL[] = [];
+  if (query?.engagementId != null) {
+    conditions.push(eq(auditLogsTable.entityType, "engagement"), eq(auditLogsTable.entityId, query.engagementId));
+  }
+  if (query?.clientId != null) {
+    conditions.push(eq(auditLogsTable.entityType, "client"), eq(auditLogsTable.entityId, query.clientId));
+  }
+
+  const logs = await db
     .select()
     .from(auditLogsTable)
-    .orderBy(auditLogsTable.createdAt)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(auditLogsTable.createdAt), desc(auditLogsTable.id))
     .limit(limit);
 
-  if (queryParams.success && queryParams.data.engagementId != null) {
-    logs = logs.filter((l) => l.entityType === "engagement" && l.entityId === queryParams.data.engagementId);
-  }
-  if (queryParams.success && queryParams.data.clientId != null) {
-    logs = logs.filter((l) => l.entityType === "client" && l.entityId === queryParams.data.clientId);
-  }
+  const userIds = [...new Set(logs.map((l) => l.userId).filter((id): id is number => id != null))];
+  const users = userIds.length
+    ? await db.select({ id: usersTable.id, name: usersTable.name }).from(usersTable).where(inArray(usersTable.id, userIds))
+    : [];
+  const userNames = new Map(users.map((u) => [u.id, u.name]));
 
-  const serialized = await Promise.all(
-    logs.map(async (log) => {
-      let userName: string | null = null;
-      if (log.userId) {
-        const [user] = await db.select().from(usersTable).where(eq(usersTable.id, log.userId));
-        userName = user?.name ?? null;
-      }
-      return {
-        id: log.id,
-        userId: log.userId ?? null,
-        userName,
-        action: log.action,
-        entityType: log.entityType,
-        entityId: log.entityId ?? null,
-        description: log.description,
-        metadata: log.metadata ?? null,
-        createdAt: log.createdAt.toISOString(),
-      };
-    })
-  );
-
-  res.json(serialized);
+  res.json(logs.map((log) => ({
+    id: log.id,
+    userId: log.userId ?? null,
+    userName: log.userId != null ? userNames.get(log.userId) ?? null : null,
+    action: log.action,
+    entityType: log.entityType,
+    entityId: log.entityId ?? null,
+    description: log.description,
+    metadata: log.metadata ?? null,
+    createdAt: log.createdAt.toISOString(),
+  })));
 });
 
 export default router;

@@ -5,6 +5,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
+import { can } from "@/lib/permissions";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,8 +18,11 @@ import { Plus, Search, Users, Trash2, ShieldCheck, Briefcase, Eye } from "lucide
 import { format, parseISO } from "date-fns";
 
 const ROLE_INFO: Record<string, { label: string; icon: React.ElementType; variant: "default" | "secondary" | "outline" }> = {
+  super_admin: { label: "Super Admin", icon: ShieldCheck, variant: "default" },
   manager: { label: "Manager", icon: ShieldCheck, variant: "default" },
+  maker: { label: "Maker", icon: Briefcase, variant: "secondary" },
   accountant: { label: "Accountant", icon: Briefcase, variant: "secondary" },
+  client: { label: "Client", icon: Eye, variant: "outline" },
   viewer: { label: "Client Viewer", icon: Eye, variant: "outline" },
 };
 
@@ -85,6 +89,8 @@ export default function UsersPage() {
           <h2 className="text-2xl font-bold tracking-tight">User Management</h2>
           <p className="text-muted-foreground">Manage firm users and their access levels.</p>
         </div>
+        {/* Creating/deleting accounts is super_admin-only on the server */}
+        {can(currentUser, "manageUsers") && (
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button><Plus className="h-4 w-4 mr-2" />Add User</Button>
@@ -124,6 +130,7 @@ export default function UsersPage() {
             </div>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
       <div className="relative">
@@ -166,6 +173,7 @@ export default function UsersPage() {
                     <span className="text-xs text-muted-foreground shrink-0 hidden sm:block">
                       Joined {format(parseISO(u.createdAt), 'MMM d, yyyy')}
                     </span>
+                    {can(currentUser, "manageUsers") && (
                     <Button
                       variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive shrink-0"
                       onClick={() => handleDelete(u.id, u.name)}
@@ -173,6 +181,7 @@ export default function UsersPage() {
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>

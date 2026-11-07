@@ -25,7 +25,9 @@ import {
   FileCheck, ChevronDown, ChevronUp, PlayCircle, Search, X,
   Inbox, PenLine, Receipt, CreditCard, MinusCircle
 } from "lucide-react";
-import { format, parseISO, isPast } from "date-fns";
+import { format, parseISO } from "date-fns";
+import { can } from "@/lib/permissions";
+import { manilaToday } from "@/lib/dates";
 import { FilingWorkflowDialog } from "@/components/FilingWorkflowDialog";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -107,7 +109,8 @@ export default function ClientDetail() {
   const search = useSearch();
   const initialWf = new URLSearchParams(search).get("wf") ?? "";
 
-  const [complianceYear, setComplianceYear] = useState(new Date().getFullYear());
+  // The tax year shown by default is the current Manila year, as on the server.
+  const [complianceYear, setComplianceYear] = useState(() => Number(manilaToday().slice(0, 4)));
   const [complianceFilter, setComplianceFilter] = useState<"all" | "monthly" | "quarterly" | "annual">("all");
   const [complianceSearch, setComplianceSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
@@ -250,11 +253,12 @@ export default function ClientDetail() {
     if (dateTo && item.dueDate > dateTo) return false;
     if (wfFilter === "overdue" && item.status !== "overdue") return false;
     if (wfFilter === "in_progress" && (item as any).workflowStatus !== "in_progress") return false;
-    if (wfFilter === "for_review" && (item as any).workflowStatus !== "for_review") return false;
+    // Engagement status never becomes "for_review": a stage does (matches the client-list badge).
+    if (wfFilter === "for_review" && !Object.values((item as any).stageStatuses ?? {}).includes("for_review")) return false;
     return true;
   }) ?? [];
 
-  const currentYear = new Date().getFullYear();
+  const currentYear = Number(manilaToday().slice(0, 4));
   const yearOptions = [currentYear - 1, currentYear, currentYear + 1];
 
   return (
@@ -272,7 +276,7 @@ export default function ClientDetail() {
           </div>
           <p className="text-muted-foreground text-sm font-mono">TIN: {client.tin} {client.rdoCode && `• RDO: ${client.rdoCode}`}</p>
         </div>
-        {user?.role !== "viewer" && (
+        {can(user, "manageClients") && (
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={openEdit}><Edit2 className="h-4 w-4 mr-1.5" />Edit</Button>
           </div>
@@ -322,7 +326,7 @@ export default function ClientDetail() {
               </>
             )}
 
-            {!hasBir2303 && user?.role !== "viewer" && (
+            {!hasBir2303 && can(user, "manageClients") && (
               <div className="mt-3 p-3 rounded-md bg-amber-50 border border-amber-200 text-sm text-amber-800 flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
                 <span>BIR 2303 details are missing. <button onClick={openEdit} className="underline font-medium">Add registration data</button> to enable automatic deadline generation.</span>
@@ -364,7 +368,7 @@ export default function ClientDetail() {
                   {yearOptions.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}
                 </SelectContent>
               </Select>
-              {user?.role !== "viewer" && (
+              {can(user, "manageDeadlines") && (
                 <Dialog open={generateOpen} onOpenChange={setGenerateOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm" className="gap-1.5 h-8 text-xs" disabled={!hasBir2303}>
@@ -506,7 +510,7 @@ export default function ClientDetail() {
               <FileCheck className="h-10 w-10 mx-auto mb-3 opacity-30" />
               <p className="font-medium">No BIR 2303 data</p>
               <p className="text-sm mt-1">Add the client's registered tax types to see their compliance checklist.</p>
-              {user?.role !== "viewer" && <Button variant="outline" size="sm" className="mt-3" onClick={openEdit}>Add BIR 2303 Data</Button>}
+              {can(user, "manageClients") && <Button variant="outline" size="sm" className="mt-3" onClick={openEdit}>Add BIR 2303 Data</Button>}
             </div>
           ) : loadingCompliance ? (
             <div className="space-y-2">{[1,2,3,4].map(i => <Skeleton key={i} className="h-12" />)}</div>

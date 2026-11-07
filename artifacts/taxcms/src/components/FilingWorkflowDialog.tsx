@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useListDocuments, getListDocumentsQueryKey } from "@workspace/api-client-react";
 import { useAuth } from "@/lib/auth";
+import { can } from "@/lib/permissions";
 import { useToast } from "@/hooks/use-toast";
 import { MergePDFDialog } from "@/components/MergePDFDialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -456,8 +457,9 @@ export function FilingWorkflowDialog({
   };
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const isManager = user?.role === "manager";
-  const isViewer = user?.role === "viewer";
+  // isManager includes super_admin; isViewer = any read-only (client) account.
+  const isManager = can(user, "approveStages");
+  const isViewer = !can(user, "editFilings");
   const isCompleted = engagement?.status === "completed";
   const isStarted = !!engagementId && !!engagement;
 
@@ -858,8 +860,8 @@ export function FilingWorkflowDialog({
                         </div>
                       )}
 
-                      {/* Maker: Submit button */}
-                      {!isViewer && !isManager && isStageEditable && !isCompleted && (
+                      {/* Staff (makers and above): Submit button */}
+                      {!isViewer && isStageEditable && !isCompleted && (
                         <div className="pt-1 border-t">
                           <Button
                             size="sm"
@@ -873,8 +875,8 @@ export function FilingWorkflowDialog({
                         </div>
                       )}
 
-                      {/* Maker: Recall button — when stage is pending approval */}
-                      {!isViewer && !isManager && isStageForReview && !isCompleted && (
+                      {/* Staff (makers and above): Recall button — when stage is pending approval */}
+                      {!isViewer && isStageForReview && !isCompleted && (
                         <div className="pt-2 border-t flex items-center justify-between gap-3">
                           <div className="flex items-center gap-1.5 text-amber-700">
                             <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ animationPlayState: "paused" }} />

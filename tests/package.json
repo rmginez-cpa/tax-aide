@@ -6,7 +6,8 @@
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "test:ui": "playwright test --ui"
+    "test:ui": "playwright test --ui",
+    "test:api": "node api/authz.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.47.0",

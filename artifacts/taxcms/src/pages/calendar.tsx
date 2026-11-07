@@ -16,9 +16,9 @@ import {
   subMonths,
   startOfWeek,
   endOfWeek,
-  isPast,
   isToday,
 } from "date-fns";
+import { isOverdue } from "@/lib/dates";
 import { ChevronLeft, ChevronRight, CalendarDays } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -42,14 +42,14 @@ type DeadlineItem = {
 
 function deadlineDotClass(d: DeadlineItem) {
   if (d.status === "completed") return "bg-emerald-500";
-  if (isPast(parseISO(d.dueDate)) && !isToday(parseISO(d.dueDate))) return "bg-red-500";
+  if (isOverdue(d.dueDate, d.status)) return "bg-red-500";
   if (d.priority === "high") return "bg-amber-500";
   return "bg-primary";
 }
 
 function deadlinePillClass(d: DeadlineItem) {
   if (d.status === "completed") return "bg-emerald-100 text-emerald-800 border-emerald-200 line-through opacity-70";
-  if (isPast(parseISO(d.dueDate)) && !isToday(parseISO(d.dueDate))) return "bg-red-50 text-red-700 border-red-200";
+  if (isOverdue(d.dueDate, d.status)) return "bg-red-50 text-red-700 border-red-200";
   if (d.priority === "high") return "bg-amber-50 text-amber-800 border-amber-200";
   return "bg-primary/5 text-primary border-primary/20";
 }

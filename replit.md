@@ -57,7 +57,7 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 
 ### BIR 2303 Features
 - Client schema has BIR 2303 fields: tradeName, rdoCode, registrationDate, lineOfBusiness, incomeTaxType (individual/corporate), vatRegistered, percentageTaxRegistered, withholdsCompensation, withholdsEwt, subjectToDst, fiscalYearStart, fiscalYearEnd, hasInventory, isLessor, isEsalesRequired
-- `POST /api/clients/:id/generate-deadlines` — auto-generates all required BIR deadlines for a tax year
+- `POST /api/clients/:id/generate-deadlines` — auto-generates all required BIR deadlines for a tax year. Tax year Y = the client's taxable year starting in Y for income tax, VAT, percentage tax and the inventory list (annual ITR/AFS due the 15th of the 4th month after that fiscal year ends); withholding, DST, eSales and lessee forms always follow calendar year Y
 - `GET /api/clients/:id/compliance?year=YYYY` — computed compliance checklist with filed/pending/overdue status; each item includes `engagementId`, `workflowStage`, `workflowStatus` for filing workflow integration
 - BIR forms/submissions covered: 2550M, 2550Q, 2551Q, 1601C, 1601EQ, 1604CF, 1604E, 1702, 1702Q, 1701, 1701Q, 2000, AFS, Alphalist (employees), 2316 (substituted filing), Annex C, Annex F, QAP (quarterly alphalist of payees), SLS, SLP, eSales, Annual Inventory List, Lessee Information Statement
 - File uploads: PDF, Excel, Word, images, CSV, DAT (SLS/SLP data files)
@@ -76,7 +76,7 @@ Full-stack BIR Tax Compliance Management System for Philippine accounting firms 
 - **Filing progress**: "X / 4 stages approved" progress bar shown at top of dialog
 - **Amended Returns**: "File Amendment" button on completed filing banner. Creates new engagement (isAmendment=true) with all 4 stages reset to `not_started`.
 - "Filing History" dropdown shows original + all amendments; click to switch views
-- **API routes**: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage` (body: {stage}), `recall-stage` (body: {stage}, maker only — retracts from for_review → in_progress), `approve-stage` (body: {stage, notes?}), `reject-stage` (body: {stage, notes}), `void-stage` (body: {stage, notes?}), `amend`
+- **API routes**: `POST /api/deadlines/:id/start-workflow`, `POST /api/engagements/:id/submit-stage` (body: {stage}), `recall-stage` (body: {stage}, makers and above — retracts from for_review → in_progress), `approve-stage` (body: {stage, notes?}), `reject-stage` (body: {stage, notes}), `void-stage` (body: {stage, notes?}), `amend`
 - `GET /api/engagements/:id/amendments` — returns original + all amendments
 - Engagement serialization includes `stageStatuses: Record<stage, status>` and `stagesForReview: number`
 - Schema: `source_collection_status`, `draft_return_status`, `confirmation_status`, `payment_status` columns on engagements table
