@@ -28,7 +28,22 @@ export const LoginResponse = zod.object({
     id: zod.number(),
     email: zod.string(),
     name: zod.string(),
-    role: zod.enum(["accountant", "manager", "viewer"]),
+    role: zod
+      .enum([
+        "super_admin",
+        "manager",
+        "maker",
+        "accountant",
+        "client",
+        "viewer",
+      ])
+      .describe(
+        "maker and accountant are equivalent; viewer is a legacy alias of client.",
+      ),
+    clientId: zod
+      .number()
+      .nullish()
+      .describe("Linked client for client\/viewer accounts (null for staff)."),
     createdAt: zod.string(),
     updatedAt: zod.string(),
   }),
@@ -49,7 +64,15 @@ export const GetMeResponse = zod.object({
   id: zod.number(),
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (null for staff)."),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -61,7 +84,15 @@ export const ListUsersResponseItem = zod.object({
   id: zod.number(),
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (null for staff)."),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -73,8 +104,16 @@ export const ListUsersResponse = zod.array(ListUsersResponseItem);
 export const CreateUserBody = zod.object({
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
   password: zod.string(),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts."),
 });
 
 /**
@@ -88,7 +127,15 @@ export const GetUserResponse = zod.object({
   id: zod.number(),
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (null for staff)."),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -102,15 +149,37 @@ export const UpdateUserParams = zod.object({
 
 export const UpdateUserBody = zod.object({
   name: zod.string().nullish(),
-  role: zod.enum(["accountant", "manager", "viewer", "null"]).nullish(),
+  role: zod
+    .union([
+      zod.literal("super_admin"),
+      zod.literal("manager"),
+      zod.literal("maker"),
+      zod.literal("accountant"),
+      zod.literal("client"),
+      zod.literal("viewer"),
+      zod.literal(null),
+    ])
+    .nullish(),
   password: zod.string().nullish(),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (super_admin only)."),
 });
 
 export const UpdateUserResponse = zod.object({
   id: zod.number(),
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (null for staff)."),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });

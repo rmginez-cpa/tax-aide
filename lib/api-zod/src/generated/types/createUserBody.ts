@@ -5,11 +5,16 @@
  * BIR Tax Client Management System API
  * OpenAPI spec version: 0.1.0
  */
-import type { CreateUserBodyRole } from "./createUserBodyRole";
+import type { UserRole } from "./userRole";
 
 export interface CreateUserBody {
   email: string;
   name: string;
-  role: CreateUserBodyRole;
+  role: UserRole;
   password: string;
+  /**
+   * Linked client for client/viewer accounts.
+   * @nullable
+   */
+  clientId?: number | null;
 }

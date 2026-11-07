@@ -6,10 +6,16 @@
  * OpenAPI spec version: 0.1.0
  */
 
+/**
+ * maker and accountant are equivalent; viewer is a legacy alias of client.
+ */
 export type UserRole = (typeof UserRole)[keyof typeof UserRole];
 
 export const UserRole = {
-  accountant: "accountant",
+  super_admin: "super_admin",
   manager: "manager",
+  maker: "maker",
+  accountant: "accountant",
+  client: "client",
   viewer: "viewer",
 } as const;

@@ -1040,6 +1040,11 @@ components:
         - user
         - message
 
+    UserRole:
+      type: string
+      enum: [super_admin, manager, maker, accountant, client, viewer]
+      description: maker and accountant are equivalent; viewer is a legacy alias of client.
+
     User:
       type: object
       properties:
@@ -1050,8 +1055,10 @@ components:
         name:
           type: string
         role:
-          type: string
-          enum: [accountant, manager, viewer]
+          $ref: "#/components/schemas/UserRole"
+        clientId:
+          type: ["integer", "null"]
+          description: Linked client for client/viewer accounts (null for staff).
         createdAt:
           type: string
         updatedAt:
@@ -1072,10 +1079,12 @@ components:
         name:
           type: string
         role:
-          type: string
-          enum: [accountant, manager, viewer]
+          $ref: "#/components/schemas/UserRole"
         password:
           type: string
+        clientId:
+          type: ["integer", "null"]
+          description: Linked client for client/viewer accounts.
       required:
         - email
         - name
@@ -1089,9 +1098,12 @@ components:
           type: ["string", "null"]
         role:
           type: ["string", "null"]
-          enum: [accountant, manager, viewer, "null"]
+          enum: [super_admin, manager, maker, accountant, client, viewer, null]
         password:
           type: ["string", "null"]
+        clientId:
+          type: ["integer", "null"]
+          description: Linked client for client/viewer accounts (super_admin only).
 
     Client:
       type: object

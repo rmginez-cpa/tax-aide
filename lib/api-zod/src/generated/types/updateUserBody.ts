@@ -14,4 +14,9 @@ export interface UpdateUserBody {
   role?: UpdateUserBodyRole;
   /** @nullable */
   password?: string | null;
+  /**
+   * Linked client for client/viewer accounts (super_admin only).
+   * @nullable
+   */
+  clientId?: number | null;
 }
