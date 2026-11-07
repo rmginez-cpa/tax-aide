@@ -22,11 +22,17 @@ export interface LoginBody {
   password: string;
 }
 
+/**
+ * maker and accountant are equivalent; viewer is a legacy alias of client.
+ */
 export type UserRole = (typeof UserRole)[keyof typeof UserRole];
 
 export const UserRole = {
-  accountant: "accountant",
+  super_admin: "super_admin",
   manager: "manager",
+  maker: "maker",
+  accountant: "accountant",
+  client: "client",
   viewer: "viewer",
 } as const;
 
@@ -35,6 +41,11 @@ export interface User {
   email: string;
   name: string;
   role: UserRole;
+  /**
+   * Linked client for client/viewer accounts (null for staff).
+   * @nullable
+   */
+  clientId?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -44,20 +55,16 @@ export interface AuthResponse {
   message: string;
 }
 
-export type CreateUserBodyRole =
-  (typeof CreateUserBodyRole)[keyof typeof CreateUserBodyRole];
-
-export const CreateUserBodyRole = {
-  accountant: "accountant",
-  manager: "manager",
-  viewer: "viewer",
-} as const;
-
 export interface CreateUserBody {
   email: string;
   name: string;
-  role: CreateUserBodyRole;
+  role: UserRole;
   password: string;
+  /**
+   * Linked client for client/viewer accounts.
+   * @nullable
+   */
+  clientId?: number | null;
 }
 
 /**
@@ -68,10 +75,12 @@ export type UpdateUserBodyRole =
   | null;
 
 export const UpdateUserBodyRole = {
-  accountant: "accountant",
+  super_admin: "super_admin",
   manager: "manager",
+  maker: "maker",
+  accountant: "accountant",
+  client: "client",
   viewer: "viewer",
-  null: "null",
 } as const;
 
 export interface UpdateUserBody {
@@ -81,6 +90,11 @@ export interface UpdateUserBody {
   role?: UpdateUserBodyRole;
   /** @nullable */
   password?: string | null;
+  /**
+   * Linked client for client/viewer accounts (super_admin only).
+   * @nullable
+   */
+  clientId?: number | null;
 }
 
 export type ClientStatus = (typeof ClientStatus)[keyof typeof ClientStatus];

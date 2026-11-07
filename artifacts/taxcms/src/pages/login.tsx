@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import { useLocation } from "wouter";
-import { useAuth } from "@/lib/auth";
+import { useAuth, useAuthConfig } from "@/lib/auth";
+import { errorMessage } from "@/lib/api";
+import { roleBadgeClass, roleLabel } from "@/lib/status";
 import { useLogin } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { useForm } from "react-hook-form";
@@ -25,18 +27,20 @@ const formSchema = z.object({
   password: z.string().min(1, { message: "Password is required." }),
 });
 
+// Seeded only when the server reports demoAccounts: true (GET /api/auth/config).
 const DEMO_ACCOUNTS = [
-  { label: "Super Admin", role: "super_admin", email: "admin@firm.ph", password: "admin123", badgeClass: "bg-violet-100 text-violet-800 border-violet-200" },
-  { label: "Manager", role: "manager", email: "manager@firm.ph", password: "manager123", badgeClass: "bg-blue-100 text-blue-800 border-blue-200" },
-  { label: "Maker", role: "maker", email: "accountant@firm.ph", password: "accountant123", badgeClass: "bg-emerald-100 text-emerald-800 border-emerald-200" },
-  { label: "Client", role: "client", email: "client@example.com", password: "client123", badgeClass: "bg-amber-100 text-amber-800 border-amber-200" },
+  { role: "super_admin", email: "admin@firm.ph", password: "admin123" },
+  { role: "manager", email: "manager@firm.ph", password: "manager123" },
+  { role: "maker", email: "accountant@firm.ph", password: "accountant123" },
+  { role: "client", email: "client@example.com", password: "client123" },
 ];
 
 export default function Login() {
-  const [_, setLocation] = useLocation();
+  const [, setLocation] = useLocation();
   const { toast } = useToast();
   const loginMutation = useLogin();
-  const { user } = useAuth();
+  const { user, signIn } = useAuth();
+  const { config } = useAuthConfig();
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -46,22 +50,25 @@ export default function Login() {
     },
   });
 
-  // If already logged in, redirect to dashboard
-  if (user) {
-    setLocation("/dashboard");
-    return null;
-  }
+  // Signed in (already, or just now): go to the dashboard. setLocation is relative to the
+  // router base, so this also works when the app is served under a sub-path.
+  useEffect(() => {
+    if (user) setLocation("/dashboard", { replace: true });
+  }, [user, setLocation]);
+
+  if (user) return null;
 
   function onSubmit(values: z.infer<typeof formSchema>) {
     loginMutation.mutate({ data: values }, {
-      onSuccess: () => {
+      onSuccess: (res) => {
+        // Put the user in the /auth/me cache so ProtectedRoute sees them; the effect above navigates.
+        signIn(res.user);
         toast({ title: "Welcome back", description: "Successfully logged in." });
-        window.location.href = "/dashboard";
       },
-      onError: (error: any) => {
-        toast({ 
-          title: "Login failed", 
-          description: error.message || "Invalid credentials. Please try again.",
+      onError: (error) => {
+        toast({
+          title: "Login failed",
+          description: errorMessage(error, "Invalid credentials. Please try again."),
           variant: "destructive"
         });
       }
@@ -130,7 +137,7 @@ export default function Login() {
               </form>
             </Form>
           </CardContent>
-          <CardFooter className="flex-col items-start gap-3 border-t bg-muted/50 p-5">
+          {config.demoAccounts && <CardFooter className="flex-col items-start gap-3 border-t bg-muted/50 p-5">
             <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <Key className="h-4 w-4" /> Demo Credentials
             </div>
@@ -144,14 +151,14 @@ export default function Login() {
                   className="flex items-center justify-between w-full p-2.5 rounded-lg border hover:bg-background text-left transition-colors group"
                 >
                   <div className="flex items-center gap-2.5">
-                    <Badge variant="outline" className={`text-xs ${acct.badgeClass}`}>{acct.label}</Badge>
+                    <Badge variant="outline" className={`text-xs ${roleBadgeClass(acct.role)}`}>{roleLabel(acct.role)}</Badge>
                     <code className="text-xs text-muted-foreground font-mono">{acct.email}</code>
                   </div>
                   <span className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">Click to fill</span>
                 </button>
               ))}
             </div>
-          </CardFooter>
+          </CardFooter>}
         </Card>
       </div>
     </div>

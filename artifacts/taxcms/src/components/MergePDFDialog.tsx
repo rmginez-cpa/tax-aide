@@ -10,15 +10,8 @@ import {
   Loader2, Merge, GripVertical, CheckCircle2
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
-function apiUrl(path: string) { return `${BASE}/api${path}`; }
-
-function formatFileSize(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { apiFetch, errorMessage } from "@/lib/api";
+import { formatBytes as formatFileSize } from "@/lib/format";
 
 interface MergePDFDialogProps {
   open: boolean;
@@ -180,22 +173,11 @@ export function MergePDFDialog({
       if (clientId) fd.append("clientId", String(clientId));
       if (stageId) fd.append("stage", stageId);
 
-      const res = await fetch(apiUrl("/documents/upload"), {
-        method: "POST",
-        credentials: "include",
-        body: fd,
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Upload failed" }));
-        throw new Error(err.error || "Upload failed");
-      }
-
-      const doc = await res.json();
+      const doc = await apiFetch("/documents/upload", { method: "POST", body: fd });
       setStep("done");
       onUploaded?.(doc);
-    } catch (e: any) {
-      toast({ title: e.message || "Merge and upload failed", variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Merge and upload failed", description: errorMessage(e), variant: "destructive" });
       setStep("reorder");
     } finally {
       setMerging(false);

@@ -12,6 +12,11 @@ export interface User {
   email: string;
   name: string;
   role: UserRole;
+  /**
+   * Linked client for client/viewer accounts (null for staff).
+   * @nullable
+   */
+  clientId?: number | null;
   createdAt: string;
   updatedAt: string;
 }

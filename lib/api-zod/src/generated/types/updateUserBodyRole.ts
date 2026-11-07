@@ -14,8 +14,10 @@ export type UpdateUserBodyRole =
   | null;
 
 export const UpdateUserBodyRole = {
-  accountant: "accountant",
+  super_admin: "super_admin",
   manager: "manager",
+  maker: "maker",
+  accountant: "accountant",
+  client: "client",
   viewer: "viewer",
-  null: "null",
 } as const;

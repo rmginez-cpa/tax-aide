@@ -22,24 +22,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import { AssistantPanel } from "@/components/assistant/AssistantPanel";
-
-const ROLE_LABELS: Record<string, string> = {
-  super_admin: "Super Admin",
-  manager: "Manager",
-  maker: "Maker",
-  accountant: "Maker",
-  client: "Client",
-  viewer: "Viewer",
-};
-
-const ROLE_BADGE_STYLES: Record<string, string> = {
-  super_admin: "bg-violet-100 text-violet-800 border-violet-200",
-  manager: "bg-blue-100 text-blue-800 border-blue-200",
-  maker: "bg-emerald-100 text-emerald-800 border-emerald-200",
-  accountant: "bg-emerald-100 text-emerald-800 border-emerald-200",
-  client: "bg-amber-100 text-amber-800 border-amber-200",
-  viewer: "bg-gray-100 text-gray-700 border-gray-200",
-};
+import { roleLabel as getRoleLabel, roleBadgeClass } from "@/lib/status";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout: clearAuth } = useAuth();
@@ -76,8 +59,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const allowedNav = navigation.filter(item => item.roles.includes(role));
 
-  const roleLabel = ROLE_LABELS[role] ?? role;
-  const roleBadgeStyle = ROLE_BADGE_STYLES[role] ?? "bg-gray-100 text-gray-700";
+  const roleLabel = getRoleLabel(role);
+  const roleBadgeStyle = roleBadgeClass(role);
 
   const NavLinks = ({ onNavigate }: { onNavigate?: () => void }) => (
     <>
