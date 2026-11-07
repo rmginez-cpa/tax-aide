@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -71,38 +71,88 @@ export function makeStoredFilename(originalname: string): string {
   return `${unique}${ext}`;
 }
 
+/** Most bytes one uploaded file may have. */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+
+/** MIME types accepted by /documents/upload (plus .csv/.dat by extension, whatever their reported type). */
+export const ALLOWED_UPLOAD_MIME_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "text/plain",
+  "text/csv",
+  "application/octet-stream", // .dat files often come through as octet-stream
+] as const;
+const ALWAYS_ALLOWED_EXTENSIONS = ["dat", "csv"];
+/** Human-readable list of accepted files, used in the 400 message. */
+export const ALLOWED_UPLOAD_DESCRIPTION = "PDF, Excel (.xlsx, .xls), Word (.docx, .doc), images (PNG, JPEG, GIF, WebP), text (.txt), CSV and DAT files";
+
+/** Rejection raised by the file filter; answered as 400 by handleUpload. */
+class UnsupportedFileTypeError extends Error {
+  constructor(mimeType: string) {
+    super(`Unsupported file type${mimeType ? ` (${mimeType})` : ""}. Allowed: ${ALLOWED_UPLOAD_DESCRIPTION}.`);
+    this.name = "UnsupportedFileTypeError";
+  }
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+  limits: { fileSize: MAX_UPLOAD_BYTES },
   fileFilter: (_req, file, cb) => {
-    const allowed = [
-      "application/pdf",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/msword",
-      "image/png",
-      "image/jpeg",
-      "image/gif",
-      "image/webp",
-      "text/plain",
-      "text/csv",
-      "application/octet-stream", // .dat files often come through as octet-stream
-    ];
     // Also allow by extension for .dat and .csv files regardless of reported MIME
     const ext = (file.originalname.split(".").pop() || "").toLowerCase();
-    if (allowed.includes(file.mimetype) || ext === "dat" || ext === "csv") {
+    if ((ALLOWED_UPLOAD_MIME_TYPES as readonly string[]).includes(file.mimetype) || ALWAYS_ALLOWED_EXTENSIONS.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error(`Unsupported file type: ${file.mimetype}`));
+      cb(new UnsupportedFileTypeError(file.mimetype));
     }
   },
 });
 
+/**
+ * multer's single("file") with upload errors answered as JSON client errors:
+ * unsupported type -> 400 (listing the allowed types), too large -> 413, other
+ * malformed multipart input -> 400.
+ */
+const handleUpload: RequestHandler = (req, res, next) => {
+  upload.single("file")(req, res, (err: unknown) => {
+    if (!err) {
+      next();
+      return;
+    }
+    if (err instanceof UnsupportedFileTypeError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({ error: `File is too large. The maximum size is ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.` });
+        return;
+      }
+      if (err.code === "LIMIT_UNEXPECTED_FILE") {
+        res.status(400).json({ error: 'Upload exactly one file in the "file" field.' });
+        return;
+      }
+      res.status(400).json({ error: err.message || "Invalid upload" });
+      return;
+    }
+    // Memory storage cannot fail on its own, so anything else is a malformed
+    // multipart body from busboy ("Unexpected end of form", missing boundary...).
+    const message = err instanceof Error && err.message ? err.message : "Malformed upload";
+    res.status(400).json({ error: `Invalid upload: ${message}` });
+  });
+};
+
 const router = Router();
 
 // ── POST /api/documents/upload ──────────────────────────────────────────────
-router.post("/documents/upload", requireStaff, upload.single("file"), async (req, res): Promise<void> => {
+router.post("/documents/upload", requireStaff, handleUpload, async (req, res): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ error: "No file provided" });
     return;

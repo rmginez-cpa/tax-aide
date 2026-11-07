@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { and, asc, eq, inArray, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or, type SQL } from "drizzle-orm";
 import fs from "fs";
 import { db, documentsTable, usersTable, clientsTable, engagementsTable } from "@workspace/db";
 import {
@@ -13,7 +13,14 @@ import {
 import { requireAuth, requireStaff, clientScope, canAccessClient } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
 import { getStoredFile, deleteStoredFile } from "../lib/fileStore";
-import { UPLOADS_DIR, stageStatusOf, uploadLockError, makeStoredFilename } from "./upload";
+import {
+  UPLOADS_DIR,
+  DOCUMENT_STAGES,
+  isDocumentStage,
+  stageStatusOf,
+  uploadLockError,
+  makeStoredFilename,
+} from "./upload";
 
 const router = Router();
 
@@ -78,6 +85,36 @@ async function serializeDocument(doc: DocumentRow) {
   return serialized;
 }
 
+/** Escapes LIKE/ILIKE wildcards so user text matches literally. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/** Parses an optional non-negative integer query value. undefined = absent, NaN = invalid. */
+function parseOptionalInt(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return NaN;
+  const n = Number(value.trim());
+  return Number.isSafeInteger(n) ? n : NaN;
+}
+
+/** The first value of a query parameter given once or repeated (?a=1&a=2). */
+function firstQueryValue(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** Most documents one page may ask for. */
+const MAX_DOCUMENT_PAGE = 200;
+
+// GET /api/documents
+//   engagementId, clientId   exact filters (as before)
+//   q                        original file name contains (case-insensitive)
+//   stage                    one of DOCUMENT_STAGES, or "none" for documents not linked to a stage
+//   mimeType                 MIME type prefix ("image/", "application/pdf"); comma-separated = any of
+//   order                    "asc" (default, oldest first) | "desc" (newest first)
+//   limit, offset            pagination (limit 1-200). The body stays a plain array; the
+//                            X-Total-Count header carries the number of matches before paging.
+// Client accounts are always restricted to their own client, whatever filters they pass.
 router.get("/documents", requireAuth, async (req, res): Promise<void> => {
   const queryParams = ListDocumentsQueryParams.safeParse(req.query);
   const conditions: SQL[] = [];
@@ -89,23 +126,85 @@ router.get("/documents", requireAuth, async (req, res): Promise<void> => {
     conditions.push(eq(documentsTable.clientId, queryParams.data.clientId));
   }
 
+  const q = firstQueryValue(req.query.q);
+  if (typeof q === "string" && q.trim()) {
+    if (q.length > 200) {
+      res.status(400).json({ error: "q must be at most 200 characters" });
+      return;
+    }
+    conditions.push(ilike(documentsTable.originalName, `%${escapeLike(q.trim())}%`));
+  }
+
+  const stage = firstQueryValue(req.query.stage);
+  if (stage != null && stage !== "") {
+    if (stage === "none") {
+      conditions.push(isNull(documentsTable.stage));
+    } else if (isDocumentStage(stage)) {
+      conditions.push(eq(documentsTable.stage, stage));
+    } else {
+      res.status(400).json({ error: `Invalid stage. Must be one of: ${DOCUMENT_STAGES.join(", ")}, none` });
+      return;
+    }
+  }
+
+  const mimeType = firstQueryValue(req.query.mimeType);
+  if (typeof mimeType === "string" && mimeType.trim()) {
+    const prefixes = mimeType.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean);
+    if (prefixes.length > 10 || prefixes.some((p) => p.length > 100 || !/^[a-z0-9!#$&^_.+\/-]+$/.test(p))) {
+      res.status(400).json({ error: "Invalid mimeType filter" });
+      return;
+    }
+    const matches = prefixes.map((p) => ilike(documentsTable.mimeType, `${escapeLike(p)}%`));
+    conditions.push(matches.length === 1 ? matches[0] : or(...matches)!);
+  }
+
+  const order = firstQueryValue(req.query.order);
+  if (order != null && order !== "" && order !== "asc" && order !== "desc") {
+    res.status(400).json({ error: "order must be asc or desc" });
+    return;
+  }
+
+  const limit = parseOptionalInt(firstQueryValue(req.query.limit));
+  const offset = parseOptionalInt(firstQueryValue(req.query.offset));
+  if (Number.isNaN(limit) || (limit !== undefined && (limit < 1 || limit > MAX_DOCUMENT_PAGE))) {
+    res.status(400).json({ error: `limit must be an integer between 1 and ${MAX_DOCUMENT_PAGE}` });
+    return;
+  }
+  if (Number.isNaN(offset)) {
+    res.status(400).json({ error: "offset must be a non-negative integer" });
+    return;
+  }
+
   // Client accounts only ever see their own client's documents. An unlinked
   // client account has scope 0, which matches nothing.
   const scope = clientScope(req);
   if (scope !== null) {
     if (scope <= 0) {
+      res.setHeader("X-Total-Count", "0");
       res.json([]);
       return;
     }
     conditions.push(eq(documentsTable.clientId, scope));
   }
 
-  const docs = await db
+  const where = conditions.length ? and(...conditions) : undefined;
+  const direction = order === "desc" ? desc : asc;
+  let query = db
     .select()
     .from(documentsTable)
-    .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(asc(documentsTable.createdAt), asc(documentsTable.id));
+    .where(where)
+    .orderBy(direction(documentsTable.createdAt), direction(documentsTable.id))
+    .$dynamic();
+  if (limit !== undefined) query = query.limit(limit);
+  if (offset) query = query.offset(offset);
+  const docs = await query;
 
+  let total = docs.length;
+  if (limit !== undefined || offset) {
+    const [row] = await db.select({ n: count() }).from(documentsTable).where(where);
+    total = Number(row?.n ?? 0);
+  }
+  res.setHeader("X-Total-Count", String(total));
   res.json(await serializeDocuments(docs));
 });
 
