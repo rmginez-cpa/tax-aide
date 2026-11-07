@@ -7,13 +7,13 @@
  */
 
 /**
- * Aggregate filing workflow counts across all engagements for this client (present on list responses).
+ * Filing workflow badge counts (GET /clients only): the same items the client page lists for the current tax year, plus every overdue open deadline.
  */
 export type ClientWorkflowCounts = {
-  /** Number of engagements currently in progress */
+  /** This tax year's filings whose linked engagement is in progress */
   inProgress: number;
-  /** Number of engagements awaiting manager review */
+  /** This tax year's filings with at least one stage awaiting manager review */
   forReview: number;
-  /** Number of overdue deadline entries not yet filed */
+  /** Open deadlines past due (any tax year), one per filing */
   overdue: number;
 };

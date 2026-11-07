@@ -5,6 +5,7 @@
  * BIR Tax Client Management System API
  * OpenAPI spec version: 0.1.0
  */
+import type { DocumentStage } from "./documentStage";
 
 export interface Document {
   id: number;
@@ -25,6 +26,8 @@ export interface Document {
   uploadedBy: number;
   /** @nullable */
   uploadedByName?: string | null;
+  /** Filing workflow stage the document belongs to (null = general) */
+  stage?: DocumentStage | null;
   createdAt: string;
   updatedAt: string;
 }

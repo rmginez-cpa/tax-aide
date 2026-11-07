@@ -1,8 +1,20 @@
 import { useState, useRef, useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { useListDocuments, getListDocumentsQueryKey } from "@workspace/api-client-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useListDocuments, getListDocumentsQueryKey,
+  useGetEngagement, getGetEngagementQueryKey,
+  useListComments, getListCommentsQueryKey,
+  type Engagement,
+} from "@workspace/api-client-react";
 import { useAuth } from "@/lib/auth";
+import { can } from "@/lib/permissions";
+import { apiFetch, errorMessage } from "@/lib/api";
+import { formatBytes, formatDate, formatDateTime, formatPeso } from "@/lib/format";
+import { FILING_STAGES, getEngagementStatus, getStageStatus, type FilingStageKey } from "@/lib/status";
+import { invalidateFilingData } from "@/lib/queries";
 import { useToast } from "@/hooks/use-toast";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { ErrorState } from "@/components/ErrorState";
 import { MergePDFDialog } from "@/components/MergePDFDialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -20,7 +32,6 @@ import {
   Inbox, PenLine, Receipt, CreditCard, RotateCcw, Trash2,
   ChevronDown, FilePlus, History, Lock, Send, Merge
 } from "lucide-react";
-import { format, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -33,32 +44,7 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type StageKey = "source_collection" | "draft_return" | "confirmation" | "payment";
-
-interface Engagement {
-  id: number;
-  status: string;
-  workflowStage: string | null;
-  title: string;
-  notes: string | null;
-  approvalNotes: string | null;
-  assignedTo: number | null;
-  assignedToName: string | null;
-  isAmendment?: boolean;
-  amendedEngagementId?: number | null;
-  stageStatuses: Record<StageKey, string>;
-  stagesForReview: number;
-  taxPayable: number | null;
-}
-
-interface Comment {
-  id: number;
-  content: string;
-  isApproval: boolean;
-  userId: number;
-  userName?: string;
-  createdAt: string;
-}
+type StageKey = FilingStageKey;
 
 interface Props {
   open: boolean;
@@ -67,69 +53,48 @@ interface Props {
   engagementId: number | null;
   clientId: number;
   formNumber: string;
+  /** Subtitle: the client name (every caller passes it). */
   description: string;
   period: string;
   dueDate: string;
-  onUpdate: () => void;
+  /** Called after every successful change (filing data is already invalidated app-wide). */
+  onUpdate?: () => void;
 }
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
+// Names come from lib/status FILING_STAGES; the icon and hint are workflow-specific.
 
-const STAGES: Array<{
-  id: StageKey;
-  label: string;
-  shortLabel: string;
-  icon: React.ElementType;
-  hint: string;
-}> = [
-  {
-    id: "source_collection",
-    label: "Source Documents",
-    shortLabel: "Sources",
+const STAGE_DETAILS: Record<StageKey, { icon: React.ElementType; hint: string }> = {
+  source_collection: {
     icon: Inbox,
     hint: "Collect all taxpayer source documents (BIR alphalists, receipts, ledgers, etc.)",
   },
-  {
-    id: "draft_return",
-    label: "Draft Tax Return",
-    shortLabel: "Draft",
+  draft_return: {
     icon: PenLine,
     hint: "Prepare and upload the draft BIR tax return.",
   },
-  {
-    id: "confirmation",
-    label: "Confirmation Receipt",
-    shortLabel: "Confirmation",
+  confirmation: {
     icon: Receipt,
     hint: "Upload the eFiling or BIR confirmation receipt after successful submission.",
   },
-  {
-    id: "payment",
-    label: "Payment Confirmation",
-    shortLabel: "Payment",
+  payment: {
     icon: CreditCard,
     hint: "Upload payment proof (bank receipt, GCash, or BIR payment confirmation).",
   },
-];
+};
+
+const STAGES = (Object.keys(FILING_STAGES) as StageKey[]).map(id => ({
+  id,
+  label: FILING_STAGES[id].label,
+  shortLabel: FILING_STAGES[id].shortLabel,
+  ...STAGE_DETAILS[id],
+}));
+
+const stageLabel = (id: StageKey) => FILING_STAGES[id].label;
+
+const UPLOAD_ACCEPT = ".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.dat";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
-function apiUrl(path: string) { return `${BASE}/api${path}`; }
-
-async function apiCall(method: string, path: string, body?: object) {
-  const res = await fetch(apiUrl(path), {
-    method,
-    credentials: "include",
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Request failed" }));
-    throw new Error(err.error || "Request failed");
-  }
-  return res.json();
-}
 
 function FileIcon({ mimeType, name }: { mimeType: string; name?: string }) {
   const ext = (name?.split(".").pop() || "").toLowerCase();
@@ -142,19 +107,12 @@ function FileIcon({ mimeType, name }: { mimeType: string; name?: string }) {
   return <FileText className="h-4 w-4 text-muted-foreground" />;
 }
 
-function formatBytes(b: number) {
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+/** Copy of `obj` without `key` (per-stage form state). */
+function without<T extends object>(obj: T, key: keyof T): T {
+  const next = { ...obj };
+  delete next[key];
+  return next;
 }
-
-const STAGE_STATUS_STYLES: Record<string, { label: string; className: string }> = {
-  not_started: { label: "Not Started", className: "bg-gray-100 text-gray-600 border-gray-200" },
-  in_progress: { label: "In Progress", className: "bg-blue-100 text-blue-700 border-blue-200" },
-  for_review: { label: "Pending Approval", className: "bg-amber-100 text-amber-700 border-amber-200" },
-  approved: { label: "Approved", className: "bg-green-100 text-green-700 border-green-200" },
-  not_applicable: { label: "Not Applicable", className: "bg-slate-100 text-slate-500 border-slate-200" },
-};
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
@@ -172,16 +130,12 @@ export function FilingWorkflowDialog({
 }: Props) {
   const { user } = useAuth();
   const { toast } = useToast();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
 
   const [engagementId, setEngagementId] = useState<number | null>(initialEngagementId);
-  const [engagement, setEngagement] = useState<Engagement | null>(null);
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [amending, setAmending] = useState(false);
-
-  const [allFilings, setAllFilings] = useState<Engagement[]>([]);
 
   // Per-stage upload state
   const [stageFiles, setStageFiles] = useState<Partial<Record<StageKey, File>>>({});
@@ -204,71 +158,60 @@ export function FilingWorkflowDialog({
   const [viewerDoc, setViewerDoc] = useState<any>(null);
   const [mergePDFStage, setMergePDFStage] = useState<StageKey | null>(null);
 
-  const { data: allDocs } = useListDocuments();
-  const engagementDocs = (allDocs ?? []).filter(d => d.engagementId === engagementId);
-
   // Sync engagementId from prop
   useEffect(() => {
     setEngagementId(initialEngagementId);
   }, [initialEngagementId]);
 
-  // Load engagement data
-  useEffect(() => {
-    if (!engagementId) { setEngagement(null); return; }
-    setLoading(true);
-    apiCall("GET", `/engagements/${engagementId}`)
-      .then(data => setEngagement(data))
-      .catch(() => toast({ title: "Failed to load workflow", variant: "destructive" }))
-      .finally(() => setLoading(false));
-  }, [engagementId, open]);
+  // ── Data (react-query, so invalidateFilingData refreshes it everywhere) ────
+  const enabled = open && !!engagementId;
+  const engId = engagementId ?? 0;
 
-  // Load amendments list
-  useEffect(() => {
-    if (!engagementId) { setAllFilings([]); return; }
-    apiCall("GET", `/engagements/${engagementId}/amendments`)
-      .then(data => setAllFilings(Array.isArray(data) ? data : []))
-      .catch(() => {});
-  }, [engagementId, open, engagement?.status]);
+  const engagementQuery = useGetEngagement(engId, {
+    query: { enabled, queryKey: getGetEngagementQueryKey(engId) },
+  });
+  const engagement = enabled ? engagementQuery.data ?? null : null;
 
-  // Load comments
-  useEffect(() => {
-    if (!engagementId) { setComments([]); return; }
-    apiCall("GET", `/comments?engagementId=${engagementId}`)
-      .then(data => setComments(Array.isArray(data) ? data : []))
-      .catch(() => {});
-  }, [engagementId, open, engagement?.stageStatuses]);
+  const { data: amendments } = useQuery({
+    queryKey: [`/api/engagements/${engId}/amendments`],
+    queryFn: ({ signal }) => apiFetch<Engagement[]>(`/engagements/${engId}/amendments`, { signal }),
+    enabled,
+  });
+  const allFilings = enabled && Array.isArray(amendments) ? amendments : [];
 
-  const refreshEngagement = async () => {
-    if (!engagementId) return;
-    const data = await apiCall("GET", `/engagements/${engagementId}`);
-    setEngagement(data);
-    return data;
+  const { data: commentsData } = useListComments(
+    { engagementId: engId },
+    { query: { enabled, queryKey: getListCommentsQueryKey({ engagementId: engId }) } },
+  );
+  const comments = enabled ? commentsData ?? [] : [];
+
+  const { data: docsData } = useListDocuments(
+    { engagementId: engId },
+    { query: { enabled, queryKey: getListDocumentsQueryKey({ engagementId: engId }) } },
+  );
+  const engagementDocs = enabled ? docsData ?? [] : [];
+
+  /** After any change: refetch all filing data (deadlines, compliance, lists...) and tell the parent. */
+  const afterMutation = async () => {
+    await invalidateFilingData(queryClient);
+    onUpdate?.();
   };
 
-  const refreshAll = async () => {
-    const data = await refreshEngagement();
-    queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
-    // Also refresh comments
-    if (engagementId) {
-      apiCall("GET", `/comments?engagementId=${engagementId}`)
-        .then(c => setComments(Array.isArray(c) ? c : []))
-        .catch(() => {});
-    }
-    onUpdate();
-    return data;
-  };
+  const failToast = (err: unknown, fallback: string) =>
+    toast({ title: fallback, description: errorMessage(err), variant: "destructive" });
 
   // ── Start workflow ─────────────────────────────────────────────────────────
   const handleStart = async () => {
     if (!deadlineId) return;
     setStarting(true);
     try {
-      const eng = await apiCall("POST", `/deadlines/${deadlineId}/start-workflow`);
+      const eng = await apiFetch<Engagement>(`/deadlines/${deadlineId}/start-workflow`, { method: "POST" });
+      queryClient.setQueryData(getGetEngagementQueryKey(eng.id), eng);
       setEngagementId(eng.id);
       toast({ title: "Filing workflow started" });
-      onUpdate();
-    } catch (e: any) {
-      toast({ title: e.message || "Failed to start workflow", variant: "destructive" });
+      await afterMutation();
+    } catch (e) {
+      failToast(e, "Failed to start workflow");
     } finally {
       setStarting(false);
     }
@@ -288,48 +231,39 @@ export function FilingWorkflowDialog({
       const desc = stageDescs[stageId];
       if (desc?.trim()) fd.append("description", desc.trim());
 
-      const res = await fetch(apiUrl("/documents/upload"), {
-        method: "POST",
-        credentials: "include",
-        body: fd,
-      });
-      if (!res.ok) throw new Error("Upload failed");
+      await apiFetch("/documents/upload", { method: "POST", body: fd });
 
-      setStageFiles(prev => { const n = { ...prev }; delete n[stageId]; return n; });
-      setStageDescs(prev => { const n = { ...prev }; delete n[stageId]; return n; });
+      setStageFiles(prev => without(prev, stageId));
+      setStageDescs(prev => without(prev, stageId));
       const ref = fileInputRefs.current[stageId];
       if (ref) ref.value = "";
 
-      // Auto-advance stage to in_progress if it was not_started
-      if (engagement?.stageStatuses[stageId] === "not_started") {
-        await refreshEngagement();
-      }
-
-      queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
+      // Refresh the stage documents (and anything else showing this filing).
+      await afterMutation();
       toast({ title: "Document uploaded" });
-    } catch (e: any) {
-      toast({ title: e.message || "Upload failed", variant: "destructive" });
+    } catch (e) {
+      failToast(e, "Upload failed");
     } finally {
       setUploadingStage(null);
     }
   };
 
   // ── Delete document ────────────────────────────────────────────────────────
-  const handleDeleteDoc = async (docId: number) => {
+  const handleDeleteDoc = async (docId: number, name: string) => {
+    const ok = await confirm({
+      title: "Remove this document?",
+      description: `"${name}" will be permanently deleted from this filing.`,
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!ok) return;
     setDeletingDocId(docId);
     try {
-      const res = await fetch(apiUrl(`/documents/${docId}`), {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Delete failed" }));
-        throw new Error(err.error || "Delete failed");
-      }
-      queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
+      await apiFetch(`/documents/${docId}`, { method: "DELETE" });
+      await afterMutation();
       toast({ title: "Document removed" });
-    } catch (e: any) {
-      toast({ title: e.message || "Could not delete document", variant: "destructive" });
+    } catch (e) {
+      failToast(e, "Could not delete document");
     } finally {
       setDeletingDocId(null);
     }
@@ -340,11 +274,11 @@ export function FilingWorkflowDialog({
     if (!engagementId) return;
     setActionLoadingStage(stageId);
     try {
-      await apiCall("POST", `/engagements/${engagementId}/recall-stage`, { stage: stageId });
-      await refreshAll();
-      toast({ title: `${STAGES.find(s => s.id === stageId)?.label} submission recalled — you can now make changes` });
-    } catch (e: any) {
-      toast({ title: e.message || "Recall failed", variant: "destructive" });
+      await apiFetch(`/engagements/${engagementId}/recall-stage`, { method: "POST", json: { stage: stageId } });
+      await afterMutation();
+      toast({ title: `${stageLabel(stageId)} submission recalled — you can now make changes` });
+    } catch (e) {
+      failToast(e, "Recall failed");
     } finally {
       setActionLoadingStage(null);
     }
@@ -355,17 +289,17 @@ export function FilingWorkflowDialog({
     if (!engagementId) return;
     const val = taxPayableInput.trim();
     const parsed = val === "" ? null : parseFloat(val);
-    if (val !== "" && (isNaN(parsed!) || parsed! < 0)) {
+    if (parsed !== null && (isNaN(parsed) || parsed < 0)) {
       toast({ title: "Enter a valid non-negative amount", variant: "destructive" });
       return;
     }
     setSavingTaxPayable(true);
     try {
-      await apiCall("PATCH", `/engagements/${engagementId}`, { taxPayable: parsed });
-      await refreshAll();
+      await apiFetch(`/engagements/${engagementId}`, { method: "PATCH", json: { taxPayable: parsed } });
+      await afterMutation();
       toast({ title: parsed === 0 ? "No tax payable — Stage 4 marked Not Applicable" : "Tax payable saved" });
-    } catch (e: any) {
-      toast({ title: e.message || "Failed to save", variant: "destructive" });
+    } catch (e) {
+      failToast(e, "Failed to save");
     } finally {
       setSavingTaxPayable(false);
     }
@@ -376,11 +310,11 @@ export function FilingWorkflowDialog({
     if (!engagementId) return;
     setActionLoadingStage(stageId);
     try {
-      await apiCall("POST", `/engagements/${engagementId}/submit-stage`, { stage: stageId });
-      await refreshAll();
-      toast({ title: `${STAGES.find(s => s.id === stageId)?.label} submitted for approval` });
-    } catch (e: any) {
-      toast({ title: e.message || "Submit failed", variant: "destructive" });
+      await apiFetch(`/engagements/${engagementId}/submit-stage`, { method: "POST", json: { stage: stageId } });
+      await afterMutation();
+      toast({ title: `${stageLabel(stageId)} submitted for approval` });
+    } catch (e) {
+      failToast(e, "Submit failed");
     } finally {
       setActionLoadingStage(null);
     }
@@ -392,12 +326,15 @@ export function FilingWorkflowDialog({
     setActionLoadingStage(stageId);
     try {
       const notes = stageApprovalNotes[stageId]?.trim() || undefined;
-      const updated = await apiCall("POST", `/engagements/${engagementId}/approve-stage`, { stage: stageId, notes });
-      setStageApprovalNotes(prev => { const n = { ...prev }; delete n[stageId]; return n; });
-      await refreshAll();
-      toast({ title: updated.status === "completed" ? "All stages approved — filing complete!" : `${STAGES.find(s => s.id === stageId)?.label} approved` });
-    } catch (e: any) {
-      toast({ title: e.message || "Approve failed", variant: "destructive" });
+      const updated = await apiFetch<Engagement>(`/engagements/${engagementId}/approve-stage`, {
+        method: "POST",
+        json: { stage: stageId, notes },
+      });
+      setStageApprovalNotes(prev => without(prev, stageId));
+      await afterMutation();
+      toast({ title: updated?.status === "completed" ? "All stages approved — filing complete!" : `${stageLabel(stageId)} approved` });
+    } catch (e) {
+      failToast(e, "Approve failed");
     } finally {
       setActionLoadingStage(null);
     }
@@ -409,13 +346,13 @@ export function FilingWorkflowDialog({
     if (!engagementId || !reason) return;
     setActionLoadingStage(stageId);
     try {
-      await apiCall("POST", `/engagements/${engagementId}/reject-stage`, { stage: stageId, notes: reason });
-      setStageRejectReasons(prev => { const n = { ...prev }; delete n[stageId]; return n; });
-      setShowRejectForm(prev => { const n = { ...prev }; delete n[stageId]; return n; });
-      await refreshAll();
-      toast({ title: `${STAGES.find(s => s.id === stageId)?.label} returned for revision` });
-    } catch (e: any) {
-      toast({ title: e.message || "Return failed", variant: "destructive" });
+      await apiFetch(`/engagements/${engagementId}/reject-stage`, { method: "POST", json: { stage: stageId, notes: reason } });
+      setStageRejectReasons(prev => without(prev, stageId));
+      setShowRejectForm(prev => without(prev, stageId));
+      await afterMutation();
+      toast({ title: `${stageLabel(stageId)} returned for revision` });
+    } catch (e) {
+      failToast(e, "Return failed");
     } finally {
       setActionLoadingStage(null);
     }
@@ -427,13 +364,13 @@ export function FilingWorkflowDialog({
     setActionLoadingStage(stageId);
     try {
       const notes = voidReasons[stageId]?.trim() || undefined;
-      await apiCall("POST", `/engagements/${engagementId}/void-stage`, { stage: stageId, notes });
-      setVoidReasons(prev => { const n = { ...prev }; delete n[stageId]; return n; });
-      setShowVoidForm(prev => { const n = { ...prev }; delete n[stageId]; return n; });
-      await refreshAll();
-      toast({ title: `${STAGES.find(s => s.id === stageId)?.label} approval voided` });
-    } catch (e: any) {
-      toast({ title: e.message || "Void failed", variant: "destructive" });
+      await apiFetch(`/engagements/${engagementId}/void-stage`, { method: "POST", json: { stage: stageId, notes } });
+      setVoidReasons(prev => without(prev, stageId));
+      setShowVoidForm(prev => without(prev, stageId));
+      await afterMutation();
+      toast({ title: `${stageLabel(stageId)} approval voided` });
+    } catch (e) {
+      failToast(e, "Void failed");
     } finally {
       setActionLoadingStage(null);
     }
@@ -444,24 +381,27 @@ export function FilingWorkflowDialog({
     if (!engagementId) return;
     setAmending(true);
     try {
-      const amendment = await apiCall("POST", `/engagements/${engagementId}/amend`);
+      const amendment = await apiFetch<Engagement>(`/engagements/${engagementId}/amend`, { method: "POST" });
+      queryClient.setQueryData(getGetEngagementQueryKey(amendment.id), amendment);
       toast({ title: "Amendment filing started" });
       setEngagementId(amendment.id);
-      onUpdate();
-    } catch (e: any) {
-      toast({ title: e.message || "Could not create amendment", variant: "destructive" });
+      await afterMutation();
+    } catch (e) {
+      failToast(e, "Could not create amendment");
     } finally {
       setAmending(false);
     }
   };
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const isManager = user?.role === "manager";
-  const isViewer = user?.role === "viewer";
+  // isManager includes super_admin; isViewer = any read-only (client) account.
+  const isManager = can(user, "approveStages");
+  const isViewer = !can(user, "editFilings");
   const isCompleted = engagement?.status === "completed";
   const isStarted = !!engagementId && !!engagement;
+  const loading = !!engagementId && !engagement && !engagementQuery.isError;
 
-  const stageStatuses = engagement?.stageStatuses ?? {
+  const stageStatuses: Record<StageKey, string> = engagement?.stageStatuses ?? {
     source_collection: "not_started",
     draft_return: "not_started",
     confirmation: "not_started",
@@ -470,6 +410,10 @@ export function FilingWorkflowDialog({
 
   const taxPayable = engagement?.taxPayable ?? null;
   const isPaymentNA = taxPayable !== null && taxPayable === 0;
+  // The figure belongs to the draft return: once it is submitted or approved only a
+  // manager may change it (the server refuses a maker's change with 403).
+  const draftLocked = stageStatuses.draft_return === "for_review" || stageStatuses.draft_return === "approved";
+  const taxPayableLocked = isCompleted || (draftLocked && !isManager);
 
   // Sync tax payable input when engagement loads/changes
   const taxPayableRef = useRef<number | null>(null);
@@ -482,13 +426,70 @@ export function FilingWorkflowDialog({
   const approvedCount = Object.values(stageStatuses).filter(s => s === "approved").length;
 
   const stageDocs = (stageId: StageKey) =>
-    engagementDocs.filter(d => (d as any).stage === stageId);
+    engagementDocs.filter(d => d.stage === stageId);
 
   const activeFilingLabel = engagement?.isAmendment
     ? `${engagement.title.includes("Amendment") ? engagement.title.split("—")[1]?.trim() ?? "Amendment" : "Amendment"}`
     : "Original Filing";
 
   const hasMultipleFilings = allFilings.length > 1;
+
+  /** File picker + description + Upload, or a merged PDF (editable stages only: the server refuses uploads to a for_review or approved stage). */
+  const renderUploader = (stageId: StageKey) => {
+    const selectedFile = stageFiles[stageId];
+    const descValue = stageDescs[stageId] ?? "";
+    const isStageUploading = uploadingStage === stageId;
+    return (
+      <div className="space-y-2 pt-1 border-t">
+        {/* Option 1: single file */}
+        <div className="flex gap-2">
+          <Input
+            type="file"
+            aria-label={`Choose a file for ${stageLabel(stageId)}`}
+            ref={el => { if (el) fileInputRefs.current[stageId] = el; }}
+            accept={UPLOAD_ACCEPT}
+            onChange={e => {
+              const file = e.target.files?.[0] ?? undefined;
+              setStageFiles(prev => file ? { ...prev, [stageId]: file } : prev);
+            }}
+            className="text-sm flex-1 min-w-0"
+          />
+        </div>
+        {selectedFile && (
+          <div className="flex gap-2 items-start">
+            <Input
+              placeholder="Description (optional)"
+              aria-label="Document description (optional)"
+              value={descValue}
+              onChange={e => setStageDescs(prev => ({ ...prev, [stageId]: e.target.value }))}
+              className="text-sm flex-1 min-w-0"
+            />
+            <Button size="sm" onClick={() => handleUpload(stageId)} disabled={isStageUploading}>
+              {isStageUploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
+              Upload
+            </Button>
+          </div>
+        )}
+        {/* Divider */}
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-px bg-border" />
+          <span className="text-xs text-muted-foreground">or</span>
+          <div className="flex-1 h-px bg-border" />
+        </div>
+        {/* Option 2: merge PDFs */}
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-full gap-2 border-dashed"
+          onClick={() => setMergePDFStage(stageId)}
+        >
+          <Merge className="h-4 w-4" />
+          Upload Merged PDF
+          <span className="hidden sm:inline text-xs text-muted-foreground font-normal">(combine multiple PDFs into one)</span>
+        </Button>
+      </div>
+    );
+  };
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
@@ -505,7 +506,7 @@ export function FilingWorkflowDialog({
               </DialogTitle>
               <DialogDescription asChild>
                 <div className="text-sm text-muted-foreground mt-1">
-                  {description} · <span className="font-medium text-foreground">{period}</span> · Due {dueDate ? format(parseISO(dueDate), "MMM d, yyyy") : "—"}
+                  {description ? `${description} · ` : null}<span className="font-medium text-foreground">{period}</span> · Due {formatDate(dueDate)}
                 </div>
               </DialogDescription>
             </div>
@@ -513,7 +514,7 @@ export function FilingWorkflowDialog({
             {hasMultipleFilings && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="shrink-0 gap-1.5">
+                  <Button variant="outline" size="sm" className="shrink-0 gap-1.5" aria-label={`Filing history: ${activeFilingLabel}`}>
                     <History className="h-3.5 w-3.5" />
                     <span className="hidden sm:inline">{activeFilingLabel}</span>
                     <ChevronDown className="h-3.5 w-3.5" />
@@ -530,7 +531,7 @@ export function FilingWorkflowDialog({
                     >
                       <div className="flex-1 min-w-0">
                         <p className="text-sm truncate">{f.isAmendment ? `Amendment #${idx}` : "Original Filing"}</p>
-                        <p className="text-xs text-muted-foreground capitalize">{f.status.replace("_", " ")}</p>
+                        <p className="text-xs text-muted-foreground">{getEngagementStatus(f.status).label}</p>
                       </div>
                       {f.id === engagementId && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
                     </DropdownMenuItem>
@@ -568,13 +569,21 @@ export function FilingWorkflowDialog({
           )}
 
           {/* ── Workflow in progress ─────────────────────────────────────── */}
-          {isStarted && loading && (
+          {loading && (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-label="Loading workflow" />
             </div>
           )}
 
-          {isStarted && !loading && (
+          {!!engagementId && !engagement && engagementQuery.isError && (
+            <ErrorState
+              title="Failed to load workflow"
+              error={engagementQuery.error}
+              onRetry={() => engagementQuery.refetch()}
+            />
+          )}
+
+          {isStarted && (
             <>
               {/* Progress header */}
               <div className="space-y-2">
@@ -592,9 +601,9 @@ export function FilingWorkflowDialog({
 
               {/* Completed banner */}
               {isCompleted && (
-                <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-green-800">
+                <div className="flex flex-wrap items-center gap-3 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-green-800">
                   <Check className="h-5 w-5 flex-shrink-0" />
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-[12rem]">
                     <span className="font-medium">{isPaymentNA ? "All required stages approved — Filing Complete!" : "All 4 stages approved — Filing Complete!"}</span>
                     <span className="text-sm ml-1">The deadline has been marked as filed.</span>
                   </div>
@@ -617,7 +626,7 @@ export function FilingWorkflowDialog({
               <div className="space-y-3">
                 {STAGES.map((stage, idx) => {
                   const stageStatus = stageStatuses[stage.id] ?? "not_started";
-                  const statusStyle = STAGE_STATUS_STYLES[stageStatus] ?? STAGE_STATUS_STYLES.not_started;
+                  const statusStyle = getStageStatus(stageStatus);
                   const Icon = stage.icon;
                   const docs = stageDocs(stage.id);
 
@@ -626,16 +635,12 @@ export function FilingWorkflowDialog({
                   const isStageForReview = stageStatus === "for_review";
                   const isStageEditable = stageStatus === "not_started" || stageStatus === "in_progress";
                   const isStageLoading = actionLoadingStage === stage.id;
-                  const isStageUploading = uploadingStage === stage.id;
-
-                  const selectedFile = stageFiles[stage.id];
-                  const descValue = stageDescs[stage.id] ?? "";
 
                   // Stage 4: if not applicable, show a locked card
                   if (isStageNotApplicable) {
                     return (
                       <div key={stage.id} className="border rounded-lg p-4 border-slate-200 bg-slate-50/50 opacity-75">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <div className="rounded-full p-1.5 bg-slate-100">
                             <Icon className="h-3.5 w-3.5 text-slate-400" />
                           </div>
@@ -660,7 +665,7 @@ export function FilingWorkflowDialog({
                       )}
                     >
                       {/* Stage header */}
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <div className={cn(
                           "rounded-full p-1.5",
                           isStageApproved ? "bg-green-100" : isStageForReview ? "bg-amber-100" : "bg-muted"
@@ -687,29 +692,37 @@ export function FilingWorkflowDialog({
                       {/* Stage 2: Tax Payable input */}
                       {stage.id === "draft_return" && !isViewer && (
                         <div className="pt-1 border-t space-y-2">
-                          <Label className="text-xs font-medium text-muted-foreground">Tax Payable Amount (₱)</Label>
+                          <Label htmlFor={`tax-payable-${engId}`} className="text-xs font-medium text-muted-foreground">Tax Payable Amount (₱)</Label>
                           <div className="flex gap-2 items-center">
                             <Input
+                              id={`tax-payable-${engId}`}
                               type="number"
                               min="0"
                               step="0.01"
                               placeholder="e.g. 12500.00 — enter 0 if no tax due"
                               value={taxPayableInput}
                               onChange={e => setTaxPayableInput(e.target.value)}
-                              className="text-sm flex-1"
-                              disabled={isCompleted}
+                              className="text-sm flex-1 min-w-0"
+                              disabled={taxPayableLocked}
                             />
-                            {!isCompleted && (
+                            {!taxPayableLocked && (
                               <Button size="sm" variant="outline" onClick={handleSaveTaxPayable} disabled={savingTaxPayable}>
                                 {savingTaxPayable ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
                               </Button>
                             )}
                           </div>
+                          {!isCompleted && taxPayableLocked && (
+                            <p className="text-xs text-muted-foreground">
+                              {stageStatuses.draft_return === "approved"
+                                ? "Locked: the draft return is approved. A manager can undo that approval to change it."
+                                : "Locked while the draft return is pending approval. Recall the submission to change it."}
+                            </p>
+                          )}
                           {taxPayable !== null && (
                             <p className="text-xs text-muted-foreground">
                               {taxPayable === 0
                                 ? "✓ No tax payable — Stage 4 (Payment) is Not Applicable."
-                                : `✓ Tax payable: ₱${taxPayable.toLocaleString("en-PH", { minimumFractionDigits: 2 })} — Stage 4 required.`}
+                                : `✓ Tax payable: ${formatPeso(taxPayable)} — Stage 4 required.`}
                             </p>
                           )}
                         </div>
@@ -721,10 +734,12 @@ export function FilingWorkflowDialog({
                           {docs.map(doc => (
                             <div
                               key={doc.id}
-                              className="flex items-center gap-2 p-2 rounded-md bg-muted/50 hover:bg-muted group"
+                              className="flex items-center gap-2 p-2 rounded-md bg-muted/50 hover:bg-muted"
                             >
                               <button
-                                className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                                type="button"
+                                aria-label={`View ${doc.originalName}`}
+                                className="flex items-center gap-2 flex-1 min-w-0 text-left rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 onClick={() => setViewerDoc(doc)}
                               >
                                 <FileIcon mimeType={doc.mimeType} name={doc.originalName} />
@@ -740,10 +755,11 @@ export function FilingWorkflowDialog({
                                 <Button
                                   size="icon"
                                   variant="ghost"
-                                  className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                                  className="h-7 w-7 shrink-0 text-rose-500 hover:text-rose-700 hover:bg-rose-50"
                                   disabled={deletingDocId === doc.id}
-                                  onClick={() => handleDeleteDoc(doc.id)}
+                                  onClick={() => handleDeleteDoc(doc.id, doc.originalName)}
                                   title="Remove attachment"
+                                  aria-label={`Remove ${doc.originalName}`}
                                 >
                                   {deletingDocId === doc.id
                                     ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -752,7 +768,10 @@ export function FilingWorkflowDialog({
                                 </Button>
                               )}
                               {!isViewer && !isStageEditable && (
-                                <Lock className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0 opacity-0 group-hover:opacity-100" />
+                                <span className="shrink-0" title="Locked while the stage is pending approval or approved">
+                                  <Lock className="h-3.5 w-3.5 text-muted-foreground/50" aria-hidden="true" />
+                                  <span className="sr-only">Locked: documents cannot be removed while the stage is pending approval or approved</span>
+                                </span>
                               )}
                             </div>
                           ))}
@@ -760,106 +779,10 @@ export function FilingWorkflowDialog({
                       )}
 
                       {/* Upload — when stage is editable (not_started or in_progress) */}
-                      {!isViewer && isStageEditable && (
-                        <div className="space-y-2 pt-1 border-t">
-                          {/* Option 1: single file */}
-                          <div className="flex gap-2">
-                            <Input
-                              type="file"
-                              ref={el => { if (el) fileInputRefs.current[stage.id] = el; }}
-                              accept=".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.dat"
-                              onChange={e => {
-                                const file = e.target.files?.[0] ?? undefined;
-                                setStageFiles(prev => file ? { ...prev, [stage.id]: file } : prev);
-                              }}
-                              className="text-sm flex-1"
-                            />
-                          </div>
-                          {selectedFile && (
-                            <div className="flex gap-2 items-start">
-                              <Input
-                                placeholder="Description (optional)"
-                                value={descValue}
-                                onChange={e => setStageDescs(prev => ({ ...prev, [stage.id]: e.target.value }))}
-                                className="text-sm flex-1"
-                              />
-                              <Button size="sm" onClick={() => handleUpload(stage.id)} disabled={isStageUploading}>
-                                {isStageUploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
-                                Upload
-                              </Button>
-                            </div>
-                          )}
-                          {/* Divider */}
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 h-px bg-border" />
-                            <span className="text-xs text-muted-foreground">or</span>
-                            <div className="flex-1 h-px bg-border" />
-                          </div>
-                          {/* Option 2: merge PDFs */}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="w-full gap-2 border-dashed"
-                            onClick={() => setMergePDFStage(stage.id)}
-                          >
-                            <Merge className="h-4 w-4" />
-                            Upload Merged PDF
-                            <span className="text-xs text-muted-foreground font-normal">(combine multiple PDFs into one)</span>
-                          </Button>
-                        </div>
-                      )}
+                      {!isViewer && isStageEditable && renderUploader(stage.id)}
 
-                      {/* Manager can also upload when stage is for_review */}
-                      {isManager && isStageForReview && (
-                        <div className="space-y-2 pt-1 border-t">
-                          <p className="text-xs text-muted-foreground">Upload additional documents (optional)</p>
-                          <div className="flex gap-2">
-                            <Input
-                              type="file"
-                              ref={el => { if (el) fileInputRefs.current[stage.id] = el; }}
-                              accept=".pdf,.xlsx,.xls,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.dat"
-                              onChange={e => {
-                                const file = e.target.files?.[0] ?? undefined;
-                                setStageFiles(prev => file ? { ...prev, [stage.id]: file } : prev);
-                              }}
-                              className="text-sm flex-1"
-                            />
-                          </div>
-                          {selectedFile && (
-                            <div className="flex gap-2 items-start">
-                              <Input
-                                placeholder="Description (optional)"
-                                value={descValue}
-                                onChange={e => setStageDescs(prev => ({ ...prev, [stage.id]: e.target.value }))}
-                                className="text-sm flex-1"
-                              />
-                              <Button size="sm" onClick={() => handleUpload(stage.id)} disabled={isStageUploading}>
-                                {isStageUploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
-                                Upload
-                              </Button>
-                            </div>
-                          )}
-                          {/* Divider + Merge option */}
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 h-px bg-border" />
-                            <span className="text-xs text-muted-foreground">or</span>
-                            <div className="flex-1 h-px bg-border" />
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="w-full gap-2 border-dashed"
-                            onClick={() => setMergePDFStage(stage.id)}
-                          >
-                            <Merge className="h-4 w-4" />
-                            Upload Merged PDF
-                            <span className="text-xs text-muted-foreground font-normal">(combine multiple PDFs into one)</span>
-                          </Button>
-                        </div>
-                      )}
-
-                      {/* Maker: Submit button */}
-                      {!isViewer && !isManager && isStageEditable && !isCompleted && (
+                      {/* Staff (makers and above): Submit button */}
+                      {!isViewer && isStageEditable && !isCompleted && (
                         <div className="pt-1 border-t">
                           <Button
                             size="sm"
@@ -873,9 +796,9 @@ export function FilingWorkflowDialog({
                         </div>
                       )}
 
-                      {/* Maker: Recall button — when stage is pending approval */}
-                      {!isViewer && !isManager && isStageForReview && !isCompleted && (
-                        <div className="pt-2 border-t flex items-center justify-between gap-3">
+                      {/* Staff (makers and above): Recall button — when stage is pending approval */}
+                      {!isViewer && isStageForReview && !isCompleted && (
+                        <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-3">
                           <div className="flex items-center gap-1.5 text-amber-700">
                             <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ animationPlayState: "paused" }} />
                             <span className="text-xs font-medium">Awaiting manager approval</span>
@@ -903,11 +826,12 @@ export function FilingWorkflowDialog({
                             <div className="space-y-2">
                               <Input
                                 placeholder="Approval note (optional)"
+                                aria-label={`Approval note for ${stage.label} (optional)`}
                                 value={stageApprovalNotes[stage.id] ?? ""}
                                 onChange={e => setStageApprovalNotes(prev => ({ ...prev, [stage.id]: e.target.value }))}
                                 className="text-sm"
                               />
-                              <div className="flex gap-2">
+                              <div className="flex flex-wrap gap-2">
                                 <Button
                                   size="sm"
                                   className="bg-green-600 hover:bg-green-700 text-white"
@@ -930,8 +854,9 @@ export function FilingWorkflowDialog({
                             </div>
                           ) : (
                             <div className="space-y-2">
-                              <Label className="text-sm">Reason for returning (required)</Label>
+                              <Label htmlFor={`reject-${stage.id}`} className="text-sm">Reason for returning (required)</Label>
                               <Textarea
+                                id={`reject-${stage.id}`}
                                 rows={2}
                                 placeholder="Describe what needs to be corrected..."
                                 value={stageRejectReasons[stage.id] ?? ""}
@@ -952,8 +877,8 @@ export function FilingWorkflowDialog({
                                   size="sm"
                                   variant="outline"
                                   onClick={() => {
-                                    setShowRejectForm(prev => { const n = { ...prev }; delete n[stage.id]; return n; });
-                                    setStageRejectReasons(prev => { const n = { ...prev }; delete n[stage.id]; return n; });
+                                    setShowRejectForm(prev => without(prev, stage.id));
+                                    setStageRejectReasons(prev => without(prev, stage.id));
                                   }}
                                 >
                                   Cancel
@@ -991,18 +916,19 @@ export function FilingWorkflowDialog({
                               )}
                               <Input
                                 placeholder="Reason (optional)"
+                                aria-label={`Reason for undoing the ${stage.label} approval (optional)`}
                                 value={voidReasons[stage.id] ?? ""}
                                 onChange={e => setVoidReasons(prev => ({ ...prev, [stage.id]: e.target.value }))}
                                 className="text-sm bg-white"
                               />
-                              <div className="flex gap-2">
+                              <div className="flex flex-wrap gap-2">
                                 <Button size="sm" variant="destructive" onClick={() => handleVoidStage(stage.id)} disabled={isStageLoading}>
                                   {isStageLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RotateCcw className="h-4 w-4 mr-2" />}
                                   Confirm Undo
                                 </Button>
                                 <Button size="sm" variant="outline" onClick={() => {
-                                  setShowVoidForm(prev => { const n = { ...prev }; delete n[stage.id]; return n; });
-                                  setVoidReasons(prev => { const n = { ...prev }; delete n[stage.id]; return n; });
+                                  setShowVoidForm(prev => without(prev, stage.id));
+                                  setVoidReasons(prev => without(prev, stage.id));
                                 }}>Cancel</Button>
                               </div>
                             </div>
@@ -1027,7 +953,7 @@ export function FilingWorkflowDialog({
                       )}>
                         <p>{c.content}</p>
                         <p className="text-xs text-muted-foreground mt-1">
-                          {c.createdAt ? format(parseISO(c.createdAt), "MMM d, yyyy h:mm a") : ""}
+                          {c.createdAt ? formatDateTime(c.createdAt) : ""}
                         </p>
                       </div>
                     ))}
@@ -1056,9 +982,8 @@ export function FilingWorkflowDialog({
         stageId={mergePDFStage}
         onUploaded={() => {
           setMergePDFStage(null);
-          queryClient.invalidateQueries({ queryKey: getListDocumentsQueryKey() });
           toast({ title: "Merged PDF uploaded" });
-          refreshEngagement();
+          void afterMutation();
         }}
       />
     </Dialog>

@@ -5,6 +5,8 @@
  * BIR Tax Client Management System API
  * OpenAPI spec version: 0.1.0
  */
+import type { ListDocumentsOrder } from "./listDocumentsOrder";
+import type { ListDocumentsStage } from "./listDocumentsStage";
 
 export type ListDocumentsParams = {
   /**
@@ -15,4 +17,31 @@ export type ListDocumentsParams = {
    * @nullable
    */
   clientId?: number | null;
+  /**
+   * Original file name contains (case-insensitive, literal; at most 200 characters).
+   * @maxLength 200
+   */
+  q?: string;
+  /**
+   * Filing workflow stage of the document, or "none" for documents not linked to a stage.
+   */
+  stage?: ListDocumentsStage;
+  /**
+   * MIME type prefix ("image/", "application/pdf"); comma-separated = any of (at most 10).
+   */
+  mimeType?: string;
+  /**
+   * By upload time; "asc" (default, oldest first) or "desc" (newest first).
+   */
+  order?: ListDocumentsOrder;
+  /**
+   * Page size (1-200). Omit for every match.
+   * @minimum 1
+   * @maximum 200
+   */
+  limit?: number;
+  /**
+   * @minimum 0
+   */
+  offset?: number;
 };

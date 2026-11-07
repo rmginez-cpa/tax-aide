@@ -1,10 +1,10 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { eq } from "drizzle-orm";
-import { db, documentsTable } from "@workspace/db";
-import { requireAuth } from "../middlewares/auth";
+import { db, documentsTable, engagementsTable, clientsTable } from "@workspace/db";
+import { requireStaff, requireManager } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
 import { saveFileToStorage } from "../lib/fileStore";
 
@@ -13,53 +13,199 @@ export const UPLOADS_DIR = process.env.UPLOADS_DIR || path.resolve(process.cwd()
 // Ensure uploads dir exists
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-function makeStoredFilename(originalname: string): string {
+export const DOCUMENT_STAGES = ["source_collection", "draft_return", "confirmation", "payment"] as const;
+export type DocumentStage = (typeof DOCUMENT_STAGES)[number];
+
+export function isDocumentStage(value: unknown): value is DocumentStage {
+  return typeof value === "string" && (DOCUMENT_STAGES as readonly string[]).includes(value);
+}
+
+/** The workflow status of one stage of an engagement. */
+export function stageStatusOf(
+  eng: typeof engagementsTable.$inferSelect,
+  stage: string | null | undefined,
+): string | null {
+  switch (stage) {
+    case "source_collection": return eng.sourceCollectionStatus;
+    case "draft_return": return eng.draftReturnStatus;
+    case "confirmation": return eng.confirmationStatus;
+    case "payment": return eng.paymentStatus;
+    default: return null;
+  }
+}
+
+/**
+ * Documents in a stage that is awaiting review or already approved are frozen,
+ * as is everything in a completed filing. Returns the error to send (403), or
+ * null when the stage may be changed.
+ */
+export function uploadLockError(
+  eng: typeof engagementsTable.$inferSelect,
+  stage: string | null | undefined,
+): string | null {
+  const stageStatus = stageStatusOf(eng, stage);
+  if (stageStatus === "for_review") {
+    return "Cannot upload documents to a stage that is pending manager approval.";
+  }
+  if (stageStatus === "approved") {
+    return "Cannot upload documents to an approved stage. The manager must undo the approval first.";
+  }
+  if (eng.status === "completed") {
+    return "Cannot upload documents to a completed filing. Amend the filing instead.";
+  }
+  return null;
+}
+
+/** Parses an optional positive integer form field. undefined = absent, NaN = invalid. */
+function parseOptionalId(value: unknown): number | undefined {
+  if (value == null || value === "" || value === "null") return undefined;
+  const s = String(value).trim();
+  if (!/^\d+$/.test(s)) return NaN;
+  const n = Number(s);
+  return n > 0 && Number.isSafeInteger(n) ? n : NaN;
+}
+
+export function makeStoredFilename(originalname: string): string {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const ext = path.extname(originalname);
   return `${unique}${ext}`;
 }
 
+/** Most bytes one uploaded file may have. */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+
+/** MIME types accepted by /documents/upload (plus .csv/.dat by extension, whatever their reported type). */
+export const ALLOWED_UPLOAD_MIME_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "text/plain",
+  "text/csv",
+  "application/octet-stream", // .dat files often come through as octet-stream
+] as const;
+const ALWAYS_ALLOWED_EXTENSIONS = ["dat", "csv"];
+/** Human-readable list of accepted files, used in the 400 message. */
+export const ALLOWED_UPLOAD_DESCRIPTION = "PDF, Excel (.xlsx, .xls), Word (.docx, .doc), images (PNG, JPEG, GIF, WebP), text (.txt), CSV and DAT files";
+
+/** Rejection raised by the file filter; answered as 400 by handleUpload. */
+class UnsupportedFileTypeError extends Error {
+  constructor(mimeType: string) {
+    super(`Unsupported file type${mimeType ? ` (${mimeType})` : ""}. Allowed: ${ALLOWED_UPLOAD_DESCRIPTION}.`);
+    this.name = "UnsupportedFileTypeError";
+  }
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+  limits: { fileSize: MAX_UPLOAD_BYTES },
   fileFilter: (_req, file, cb) => {
-    const allowed = [
-      "application/pdf",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/msword",
-      "image/png",
-      "image/jpeg",
-      "image/gif",
-      "image/webp",
-      "text/plain",
-      "text/csv",
-      "application/octet-stream", // .dat files often come through as octet-stream
-    ];
     // Also allow by extension for .dat and .csv files regardless of reported MIME
     const ext = (file.originalname.split(".").pop() || "").toLowerCase();
-    if (allowed.includes(file.mimetype) || ext === "dat" || ext === "csv") {
+    if ((ALLOWED_UPLOAD_MIME_TYPES as readonly string[]).includes(file.mimetype) || ALWAYS_ALLOWED_EXTENSIONS.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error(`Unsupported file type: ${file.mimetype}`));
+      cb(new UnsupportedFileTypeError(file.mimetype));
     }
   },
 });
 
+/**
+ * multer's single("file") with upload errors answered as JSON client errors:
+ * unsupported type -> 400 (listing the allowed types), too large -> 413, other
+ * malformed multipart input -> 400.
+ */
+const handleUpload: RequestHandler = (req, res, next) => {
+  upload.single("file")(req, res, (err: unknown) => {
+    if (!err) {
+      next();
+      return;
+    }
+    if (err instanceof UnsupportedFileTypeError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({ error: `File is too large. The maximum size is ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.` });
+        return;
+      }
+      if (err.code === "LIMIT_UNEXPECTED_FILE") {
+        res.status(400).json({ error: 'Upload exactly one file in the "file" field.' });
+        return;
+      }
+      res.status(400).json({ error: err.message || "Invalid upload" });
+      return;
+    }
+    // Memory storage cannot fail on its own, so anything else is a malformed
+    // multipart body from busboy ("Unexpected end of form", missing boundary...).
+    const message = err instanceof Error && err.message ? err.message : "Malformed upload";
+    res.status(400).json({ error: `Invalid upload: ${message}` });
+  });
+};
+
 const router = Router();
 
 // ── POST /api/documents/upload ──────────────────────────────────────────────
-router.post("/documents/upload", requireAuth, upload.single("file"), async (req, res): Promise<void> => {
+router.post("/documents/upload", requireStaff, handleUpload, async (req, res): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ error: "No file provided" });
     return;
   }
 
-  const engagementId = req.body.engagementId ? parseInt(req.body.engagementId) : null;
-  const clientId = req.body.clientId ? parseInt(req.body.clientId) : null;
-  const description = req.body.description?.trim() || null;
-  const stage = req.body.stage?.trim() || null;
+  // ── Validate everything before any bytes reach storage ──────────────────
+  const rawEngagementId = parseOptionalId(req.body.engagementId);
+  const rawClientId = parseOptionalId(req.body.clientId);
+  if (Number.isNaN(rawEngagementId)) {
+    res.status(400).json({ error: "Invalid engagementId" });
+    return;
+  }
+  if (Number.isNaN(rawClientId)) {
+    res.status(400).json({ error: "Invalid clientId" });
+    return;
+  }
+
+  const description = typeof req.body.description === "string" ? req.body.description.trim() || null : null;
+  const stageInput = typeof req.body.stage === "string" ? req.body.stage.trim() : "";
+  const stage = stageInput || null;
+  if (stage !== null && !isDocumentStage(stage)) {
+    res.status(400).json({ error: `Invalid stage. Must be one of: ${DOCUMENT_STAGES.join(", ")}` });
+    return;
+  }
+
+  let engagementId: number | null = null;
+  let clientId: number | null = null;
+
+  if (rawEngagementId !== undefined) {
+    const [eng] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, rawEngagementId));
+    if (!eng) {
+      res.status(400).json({ error: "Engagement not found" });
+      return;
+    }
+    if (rawClientId !== undefined && rawClientId !== eng.clientId) {
+      res.status(400).json({ error: "clientId does not match the engagement's client" });
+      return;
+    }
+    const lockError = uploadLockError(eng, stage);
+    if (lockError) {
+      res.status(403).json({ error: lockError });
+      return;
+    }
+    engagementId = eng.id;
+    clientId = eng.clientId;
+  } else if (rawClientId !== undefined) {
+    const [client] = await db.select({ id: clientsTable.id }).from(clientsTable).where(eq(clientsTable.id, rawClientId));
+    if (!client) {
+      res.status(400).json({ error: "Client not found" });
+      return;
+    }
+    clientId = client.id;
+  }
 
   const storedFilename = makeStoredFilename(req.file.originalname);
 
@@ -89,7 +235,7 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
     uploadedBy: req.session.userId!,
     version: 1,
     stage,
-  } as any).returning();
+  }).returning();
 
   // Update fileUrl now that we have the real ID
   const [updated] = await db.update(documentsTable)
@@ -117,6 +263,7 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
     clientId: updated.clientId,
     version: updated.version,
     uploadedBy: updated.uploadedBy,
+    stage: updated.stage ?? null,
     createdAt: updated.createdAt.toISOString(),
     updatedAt: updated.updatedAt.toISOString(),
   });
@@ -124,7 +271,7 @@ router.post("/documents/upload", requireAuth, upload.single("file"), async (req,
 
 // ── POST /api/documents/seed-samples ─────────────────────────────────────────
 // Creates sample PDF, Excel, and Word files in the database for testing.
-router.post("/documents/seed-samples", requireAuth, async (req, res): Promise<void> => {
+router.post("/documents/seed-samples", requireManager, async (req, res): Promise<void> => {
   const userId = req.session.userId!;
   const created: string[] = [];
 
@@ -191,7 +338,7 @@ router.post("/documents/seed-samples", requireAuth, async (req, res): Promise<vo
     created.push(pdfDoc.originalName);
 
     // ── 2. Sample Excel ────────────────────────────────────────────────────
-    const { utils, write } = await import("xlsx");
+    const { Workbook } = await import("exceljs");
     const xlsxFilename = `sample-tax-calendar-${Date.now()}.xlsx`;
     const xlsxPath = path.join(UPLOADS_DIR, xlsxFilename);
 
@@ -209,10 +356,10 @@ router.post("/documents/seed-samples", requireAuth, async (req, res): Promise<vo
       ["BIR 2550M", "Monthly VAT Return", "April 2025", "May 20, 2025", "Pending"],
       ["BIR 1601C", "Withholding Tax - Compensation", "April 2025", "May 10, 2025", "Pending"],
     ];
-    const ws = utils.aoa_to_sheet(deadlinesData);
-    ws["!cols"] = [{ wch: 14 }, { wch: 36 }, { wch: 16 }, { wch: 22 }, { wch: 12 }];
-    const wb = utils.book_new();
-    utils.book_append_sheet(wb, ws, "BIR Tax Calendar");
+    const wb = new Workbook();
+    const ws = wb.addWorksheet("BIR Tax Calendar");
+    ws.addRows(deadlinesData);
+    [14, 36, 16, 22, 12].forEach((width, i) => { ws.getColumn(i + 1).width = width; });
 
     const summaryData = [
       ["Client", "TIN", "Total Filings", "Filed", "Pending", "Overdue"],
@@ -220,10 +367,10 @@ router.post("/documents/seed-samples", requireAuth, async (req, res): Promise<vo
       ["Santos Trading Co.", "987-654-321-000", 24, 18, 6, 0],
       ["Dela Cruz & Associates", "111-222-333-444", 12, 8, 4, 0],
     ];
-    const ws2 = utils.aoa_to_sheet(summaryData);
-    ws2["!cols"] = [{ wch: 28 }, { wch: 20 }, { wch: 14 }, { wch: 8 }, { wch: 10 }, { wch: 10 }];
-    utils.book_append_sheet(wb, ws2, "Client Summary");
-    const xlsxBuffer = write(wb, { type: "buffer", bookType: "xlsx" });
+    const ws2 = wb.addWorksheet("Client Summary");
+    ws2.addRows(summaryData);
+    [28, 20, 14, 8, 10, 10].forEach((width, i) => { ws2.getColumn(i + 1).width = width; });
+    const xlsxBuffer = Buffer.from(await wb.xlsx.writeBuffer());
     fs.writeFileSync(xlsxPath, xlsxBuffer);
     try { await saveFileToStorage(xlsxFilename, xlsxBuffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); } catch { /* local dev fallback */ }
 

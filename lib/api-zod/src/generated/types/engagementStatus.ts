@@ -6,14 +6,14 @@
  * OpenAPI spec version: 0.1.0
  */
 
+/**
+ * pending (no stage started), in_progress, completed (every required stage approved). Rows from before the stage workflow may still hold the retired for_review / approved / filed; show those as-is.
+ */
 export type EngagementStatus =
   (typeof EngagementStatus)[keyof typeof EngagementStatus];
 
 export const EngagementStatus = {
   pending: "pending",
   in_progress: "in_progress",
-  for_review: "for_review",
-  approved: "approved",
-  filed: "filed",
   completed: "completed",
 } as const;

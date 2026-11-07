@@ -6,7 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { EngagementStatus } from "./engagementStatus";
+import type { StageStatuses } from "./stageStatuses";
 
+/**
+ * stageStatuses, stagesForReview, workflowStage, isAmendment and amendedEngagementId are sent by the /engagements endpoints (not by GET /dashboard/overdue).
+ */
 export interface Engagement {
   id: number;
   clientId: number;
@@ -14,6 +18,8 @@ export interface Engagement {
   clientName?: string | null;
   title: string;
   taxType: string;
+  /** Short form code for headings ("1601C", "1702", "AnnexF"), derived on the server like the compliance checklist's. Sent by the /engagements endpoints. */
+  formNumber?: string;
   period: string;
   /** @nullable */
   fiscalYear?: string | null;
@@ -39,6 +45,20 @@ export interface Engagement {
    * @nullable
    */
   taxPayable?: number | null;
+  /**
+   * Legacy single-stage pointer (the stages are now independent)
+   * @nullable
+   */
+  workflowStage?: string | null;
+  stageStatuses?: StageStatuses;
+  /** Number of stages awaiting manager review */
+  stagesForReview?: number;
+  isAmendment?: boolean;
+  /**
+   * For an amendment: the filing it amends
+   * @nullable
+   */
+  amendedEngagementId?: number | null;
   createdAt: string;
   updatedAt: string;
 }

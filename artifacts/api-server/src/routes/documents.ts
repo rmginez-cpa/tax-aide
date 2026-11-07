@@ -1,6 +1,5 @@
-import { Router } from "express";
-import { eq } from "drizzle-orm";
-import path from "path";
+import { Router, type Response } from "express";
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or, type SQL } from "drizzle-orm";
 import fs from "fs";
 import { db, documentsTable, usersTable, clientsTable, engagementsTable } from "@workspace/db";
 import {
@@ -11,44 +10,61 @@ import {
   DeleteDocumentParams,
   ListDocumentsQueryParams,
 } from "@workspace/api-zod";
-import { requireAuth } from "../middlewares/auth";
+import { requireAuth, requireStaff, clientScope, canAccessClient } from "../middlewares/auth";
 import { logAudit } from "../lib/audit";
 import { getStoredFile, deleteStoredFile } from "../lib/fileStore";
-import { UPLOADS_DIR } from "./upload";
+import {
+  UPLOADS_DIR,
+  DOCUMENT_STAGES,
+  isDocumentStage,
+  stageStatusOf,
+  uploadLockError,
+  makeStoredFilename,
+} from "./upload";
 
 const router = Router();
 
-// Client-role users may only access documents belonging to their own client.
-// Returns true if access is denied (and the 404 response has been sent).
-function deniedForClientRole(
-  req: { session: { userRole?: string; userClientId?: number | null } },
-  res: { status: (code: number) => { json: (body: unknown) => unknown } },
-  doc: { clientId: number | null },
-): boolean {
-  if (req.session.userRole === "client" && doc.clientId !== req.session.userClientId) {
+type DocumentRow = typeof documentsTable.$inferSelect;
+
+/**
+ * Loads a document the session may see. Documents outside a client account's
+ * scope (including documents with no client at all) answer 404 so their
+ * existence is not leaked. Returns null once the response has been sent.
+ */
+async function loadVisibleDocument(
+  req: Parameters<typeof canAccessClient>[0],
+  res: Response,
+  id: number,
+): Promise<DocumentRow | null> {
+  const [doc] = await db.select().from(documentsTable).where(eq(documentsTable.id, id));
+  if (!doc || !canAccessClient(req, doc.clientId)) {
     res.status(404).json({ error: "Document not found" });
-    return true;
+    return null;
   }
-  return false;
+  return doc;
 }
 
-async function serializeDocument(doc: typeof documentsTable.$inferSelect) {
-  let uploadedByName: string | null = null;
-  let clientName: string | null = null;
+/** Serializes documents, loading uploader and client names in two queries. */
+async function serializeDocuments(docs: DocumentRow[]) {
+  const userIds = [...new Set(docs.map((d) => d.uploadedBy))];
+  const clientIds = [...new Set(docs.map((d) => d.clientId).filter((id): id is number => id != null))];
 
-  const [uploader] = await db.select().from(usersTable).where(eq(usersTable.id, doc.uploadedBy));
-  uploadedByName = uploader?.name ?? null;
+  const [users, clients] = await Promise.all([
+    userIds.length
+      ? db.select({ id: usersTable.id, name: usersTable.name }).from(usersTable).where(inArray(usersTable.id, userIds))
+      : Promise.resolve([]),
+    clientIds.length
+      ? db.select({ id: clientsTable.id, name: clientsTable.name }).from(clientsTable).where(inArray(clientsTable.id, clientIds))
+      : Promise.resolve([]),
+  ]);
+  const userNames = new Map(users.map((u) => [u.id, u.name]));
+  const clientNames = new Map(clients.map((c) => [c.id, c.name]));
 
-  if (doc.clientId) {
-    const [client] = await db.select().from(clientsTable).where(eq(clientsTable.id, doc.clientId));
-    clientName = client?.name ?? null;
-  }
-
-  return {
+  return docs.map((doc) => ({
     id: doc.id,
     engagementId: doc.engagementId ?? null,
     clientId: doc.clientId ?? null,
-    clientName,
+    clientName: doc.clientId != null ? clientNames.get(doc.clientId) ?? null : null,
     filename: doc.filename,
     originalName: doc.originalName,
     mimeType: doc.mimeType,
@@ -57,47 +73,207 @@ async function serializeDocument(doc: typeof documentsTable.$inferSelect) {
     version: doc.version,
     description: doc.description ?? null,
     uploadedBy: doc.uploadedBy,
-    uploadedByName,
+    uploadedByName: userNames.get(doc.uploadedBy) ?? null,
     stage: doc.stage ?? null,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
-  };
+  }));
 }
 
+async function serializeDocument(doc: DocumentRow) {
+  const [serialized] = await serializeDocuments([doc]);
+  return serialized;
+}
+
+/** Escapes LIKE/ILIKE wildcards so user text matches literally. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/** Parses an optional non-negative integer query value. undefined = absent, NaN = invalid. */
+function parseOptionalInt(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return NaN;
+  const n = Number(value.trim());
+  return Number.isSafeInteger(n) ? n : NaN;
+}
+
+/** The first value of a query parameter given once or repeated (?a=1&a=2). */
+function firstQueryValue(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** Most documents one page may ask for. */
+const MAX_DOCUMENT_PAGE = 200;
+
+// GET /api/documents
+//   engagementId, clientId   exact filters (as before)
+//   q                        original file name contains (case-insensitive)
+//   stage                    one of DOCUMENT_STAGES, or "none" for documents not linked to a stage
+//   mimeType                 MIME type prefix ("image/", "application/pdf"); comma-separated = any of
+//   order                    "asc" (default, oldest first) | "desc" (newest first)
+//   limit, offset            pagination (limit 1-200). The body stays a plain array; the
+//                            X-Total-Count header carries the number of matches before paging.
+// Client accounts are always restricted to their own client, whatever filters they pass.
 router.get("/documents", requireAuth, async (req, res): Promise<void> => {
-  const queryParams = ListDocumentsQueryParams.safeParse(req.query);
-  let docs = await db.select().from(documentsTable).orderBy(documentsTable.createdAt);
+  // Only the two id filters go through the generated schema: the other parameters are
+  // validated below with explicit 400s, and a value the schema rejects (e.g. "limit=")
+  // must not make the whole parse fail and silently drop the id filters.
+  const queryParams = ListDocumentsQueryParams.pick({ engagementId: true, clientId: true }).safeParse({
+    engagementId: req.query.engagementId,
+    clientId: req.query.clientId,
+  });
+  const conditions: SQL[] = [];
 
   if (queryParams.success && queryParams.data.engagementId != null) {
-    docs = docs.filter((d) => d.engagementId === queryParams.data.engagementId);
+    conditions.push(eq(documentsTable.engagementId, queryParams.data.engagementId));
   }
   if (queryParams.success && queryParams.data.clientId != null) {
-    docs = docs.filter((d) => d.clientId === queryParams.data.clientId);
+    conditions.push(eq(documentsTable.clientId, queryParams.data.clientId));
   }
 
-  // Client-role users: automatically scope to their client only
-  const userRole = req.session.userRole || "";
-  const userClientId = req.session.userClientId;
-  if (userRole === "client" && userClientId) {
-    docs = docs.filter((d) => d.clientId === userClientId);
+  const q = firstQueryValue(req.query.q);
+  if (typeof q === "string" && q.trim()) {
+    if (q.length > 200) {
+      res.status(400).json({ error: "q must be at most 200 characters" });
+      return;
+    }
+    conditions.push(ilike(documentsTable.originalName, `%${escapeLike(q.trim())}%`));
   }
 
-  const serialized = await Promise.all(docs.map(serializeDocument));
-  res.json(serialized);
+  const stage = firstQueryValue(req.query.stage);
+  if (stage != null && stage !== "") {
+    if (stage === "none") {
+      conditions.push(isNull(documentsTable.stage));
+    } else if (isDocumentStage(stage)) {
+      conditions.push(eq(documentsTable.stage, stage));
+    } else {
+      res.status(400).json({ error: `Invalid stage. Must be one of: ${DOCUMENT_STAGES.join(", ")}, none` });
+      return;
+    }
+  }
+
+  const mimeType = firstQueryValue(req.query.mimeType);
+  if (typeof mimeType === "string" && mimeType.trim()) {
+    const prefixes = mimeType.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean);
+    if (prefixes.length > 10 || prefixes.some((p) => p.length > 100 || !/^[a-z0-9!#$&^_.+\/-]+$/.test(p))) {
+      res.status(400).json({ error: "Invalid mimeType filter" });
+      return;
+    }
+    const matches = prefixes.map((p) => ilike(documentsTable.mimeType, `${escapeLike(p)}%`));
+    conditions.push(matches.length === 1 ? matches[0] : or(...matches)!);
+  }
+
+  const order = firstQueryValue(req.query.order);
+  if (order != null && order !== "" && order !== "asc" && order !== "desc") {
+    res.status(400).json({ error: "order must be asc or desc" });
+    return;
+  }
+
+  const limit = parseOptionalInt(firstQueryValue(req.query.limit));
+  const offset = parseOptionalInt(firstQueryValue(req.query.offset));
+  if (Number.isNaN(limit) || (limit !== undefined && (limit < 1 || limit > MAX_DOCUMENT_PAGE))) {
+    res.status(400).json({ error: `limit must be an integer between 1 and ${MAX_DOCUMENT_PAGE}` });
+    return;
+  }
+  if (Number.isNaN(offset)) {
+    res.status(400).json({ error: "offset must be a non-negative integer" });
+    return;
+  }
+
+  // Client accounts only ever see their own client's documents. An unlinked
+  // client account has scope 0, which matches nothing.
+  const scope = clientScope(req);
+  if (scope !== null) {
+    if (scope <= 0) {
+      res.setHeader("X-Total-Count", "0");
+      res.json([]);
+      return;
+    }
+    conditions.push(eq(documentsTable.clientId, scope));
+  }
+
+  const where = conditions.length ? and(...conditions) : undefined;
+  const direction = order === "desc" ? desc : asc;
+  let query = db
+    .select()
+    .from(documentsTable)
+    .where(where)
+    .orderBy(direction(documentsTable.createdAt), direction(documentsTable.id))
+    .$dynamic();
+  if (limit !== undefined) query = query.limit(limit);
+  if (offset) query = query.offset(offset);
+  const docs = await query;
+
+  let total = docs.length;
+  if (limit !== undefined || offset) {
+    const [row] = await db.select({ n: count() }).from(documentsTable).where(where);
+    total = Number(row?.n ?? 0);
+  }
+  res.setHeader("X-Total-Count", String(total));
+  res.json(await serializeDocuments(docs));
 });
 
-router.post("/documents", requireAuth, async (req, res): Promise<void> => {
+router.post("/documents", requireStaff, async (req, res): Promise<void> => {
   const parsed = UploadDocumentBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
 
-  const [doc] = await db.insert(documentsTable).values({
-    ...parsed.data,
+  let engagementId: number | null = null;
+  let clientId: number | null = null;
+  if (parsed.data.engagementId != null) {
+    const [eng] = await db
+      .select()
+      .from(engagementsTable)
+      .where(eq(engagementsTable.id, parsed.data.engagementId));
+    if (!eng) {
+      res.status(400).json({ error: "Engagement not found" });
+      return;
+    }
+    if (parsed.data.clientId != null && parsed.data.clientId !== eng.clientId) {
+      res.status(400).json({ error: "clientId does not match the engagement's client" });
+      return;
+    }
+    // Same lock rules as /documents/upload (this route never takes a stage).
+    const lockError = uploadLockError(eng, null);
+    if (lockError) {
+      res.status(403).json({ error: lockError });
+      return;
+    }
+    engagementId = eng.id;
+    clientId = eng.clientId;
+  } else if (parsed.data.clientId != null) {
+    const [client] = await db
+      .select({ id: clientsTable.id })
+      .from(clientsTable)
+      .where(eq(clientsTable.id, parsed.data.clientId));
+    if (!client) {
+      res.status(400).json({ error: "Client not found" });
+      return;
+    }
+    clientId = client.id;
+  }
+
+  // The stored filename and the content URL are always server-generated: a
+  // client-supplied filename could point outside the uploads directory or at
+  // another document's file (read via /content, unlinked on delete).
+  const { filename: _ignoredFilename, fileUrl: _ignoredFileUrl, ...metadata } = parsed.data;
+  const [inserted] = await db.insert(documentsTable).values({
+    ...metadata,
+    filename: makeStoredFilename(parsed.data.originalName),
+    fileUrl: "pending",
+    engagementId,
+    clientId,
     uploadedBy: req.session.userId!,
     version: 1,
   }).returning();
+  const [doc] = await db
+    .update(documentsTable)
+    .set({ fileUrl: `/api/documents/${inserted.id}/content` })
+    .where(eq(documentsTable.id, inserted.id))
+    .returning();
 
   await logAudit({
     userId: req.session.userId,
@@ -117,17 +293,13 @@ router.get("/documents/:id", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
-  const [doc] = await db.select().from(documentsTable).where(eq(documentsTable.id, params.data.id));
-  if (!doc) {
-    res.status(404).json({ error: "Document not found" });
-    return;
-  }
-  if (deniedForClientRole(req, res, doc)) return;
+  const doc = await loadVisibleDocument(req, res, params.data.id);
+  if (!doc) return;
 
   res.json(await serializeDocument(doc));
 });
 
-router.patch("/documents/:id", requireAuth, async (req, res): Promise<void> => {
+router.patch("/documents/:id", requireStaff, async (req, res): Promise<void> => {
   const params = UpdateDocumentParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -140,12 +312,11 @@ router.patch("/documents/:id", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
-  const [existing] = await db.select().from(documentsTable).where(eq(documentsTable.id, params.data.id));
+  const [existing] = await db.select({ id: documentsTable.id }).from(documentsTable).where(eq(documentsTable.id, params.data.id));
   if (!existing) {
     res.status(404).json({ error: "Document not found" });
     return;
   }
-  if (deniedForClientRole(req, res, existing)) return;
 
   const [doc] = await db
     .update(documentsTable)
@@ -156,7 +327,7 @@ router.patch("/documents/:id", requireAuth, async (req, res): Promise<void> => {
   res.json(await serializeDocument(doc));
 });
 
-router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => {
+router.delete("/documents/:id", requireStaff, async (req, res): Promise<void> => {
   const params = DeleteDocumentParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -169,20 +340,11 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
     res.status(404).json({ error: "Document not found" });
     return;
   }
-  if (deniedForClientRole(req, res, existingDoc)) return;
-
   // Guard: if the document's stage is locked (for_review or approved), block deletion
   if (existingDoc.engagementId) {
     const [eng] = await db.select().from(engagementsTable).where(eq(engagementsTable.id, existingDoc.engagementId));
     if (eng) {
-      const docStage = existingDoc.stage as string | null;
-      const stageStatusMap: Record<string, string> = {
-        source_collection: eng.sourceCollectionStatus,
-        draft_return: eng.draftReturnStatus,
-        confirmation: eng.confirmationStatus,
-        payment: eng.paymentStatus,
-      };
-      const stageStatus = docStage && stageStatusMap[docStage] ? stageStatusMap[docStage] : null;
+      const stageStatus = stageStatusOf(eng, existingDoc.stage);
 
       if (stageStatus === "for_review") {
         res.status(403).json({ error: "Cannot delete documents from a stage that is pending manager approval." });
@@ -220,6 +382,39 @@ router.delete("/documents/:id", requireAuth, async (req, res): Promise<void> => 
   res.sendStatus(204);
 });
 
+// Only types a browser renders without running scripts are shown inline; anything
+// else (HTML, SVG, XML, Office files, octet-stream, ...) is always downloaded.
+const INLINE_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "text/plain",
+  "text/csv",
+]);
+
+/** Lower-cased "type/subtype" without parameters; octet-stream when unusable. */
+function normalizeMimeType(raw: string | null | undefined): string {
+  const base = String(raw ?? "").split(";")[0].trim().toLowerCase();
+  return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(base) ? base : "application/octet-stream";
+}
+
+/** RFC 6266 Content-Disposition with an ASCII fallback and an RFC 5987 UTF-8 filename*. */
+function contentDisposition(type: "inline" | "attachment", filename: string): string {
+  const name = filename || "download";
+  const fallback = name
+    .normalize("NFKD")
+    .replace(/[^\x20-\x7e]/g, "")
+    .replace(/["\\]/g, "_")
+    .trim() || "download";
+  const encoded = encodeURIComponent(name).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `${type}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 // ── GET /api/documents/:id/content ─────────────────────────────────────────
 // Streams the actual file bytes, authenticated. Used by the file viewer.
 router.get("/documents/:id/content", requireAuth, async (req, res): Promise<void> => {
@@ -229,12 +424,8 @@ router.get("/documents/:id/content", requireAuth, async (req, res): Promise<void
     return;
   }
 
-  const [doc] = await db.select().from(documentsTable).where(eq(documentsTable.id, id));
-  if (!doc) {
-    res.status(404).json({ error: "Document not found" });
-    return;
-  }
-  if (deniedForClientRole(req, res, doc)) return;
+  const doc = await loadVisibleDocument(req, res, id);
+  if (!doc) return;
 
   const stored = await getStoredFile(doc.filename, UPLOADS_DIR);
   if (!stored) {
@@ -242,9 +433,14 @@ router.get("/documents/:id/content", requireAuth, async (req, res): Promise<void
     return;
   }
 
-  res.setHeader("Content-Type", doc.mimeType);
-  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(doc.originalName)}"`);
-  res.setHeader("Cache-Control", "private, max-age=3600");
+  const mimeType = normalizeMimeType(doc.mimeType);
+  const disposition = INLINE_MIME_TYPES.has(mimeType) ? "inline" : "attachment";
+  res.setHeader("Content-Type", mimeType);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Disposition", contentDisposition(disposition, doc.originalName));
+  // Tax files are per-user: never keep them in the browser cache, which is keyed by URL
+  // only (another user of the same browser, or a signed-out one, would get them back).
+  res.setHeader("Cache-Control", "private, no-store");
   if (stored.size != null) {
     res.setHeader("Content-Length", stored.size);
   }

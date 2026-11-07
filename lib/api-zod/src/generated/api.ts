@@ -28,11 +28,38 @@ export const LoginResponse = zod.object({
     id: zod.number(),
     email: zod.string(),
     name: zod.string(),
-    role: zod.enum(["accountant", "manager", "viewer"]),
+    role: zod
+      .enum([
+        "super_admin",
+        "manager",
+        "maker",
+        "accountant",
+        "client",
+        "viewer",
+      ])
+      .describe(
+        "maker and accountant are equivalent; viewer is a legacy alias of client.",
+      ),
+    clientId: zod
+      .number()
+      .nullish()
+      .describe("Linked client for client\/viewer accounts (null for staff)."),
     createdAt: zod.string(),
     updatedAt: zod.string(),
   }),
   message: zod.string(),
+});
+
+/**
+ * Whether the login page may show the demo accounts (true when SEED_DEMO_ACCOUNTS=true, or outside production unless SEED_DEMO_ACCOUNTS=false).
+ * @summary Public auth settings (no authentication)
+ */
+export const GetAuthConfigResponse = zod.object({
+  demoAccounts: zod
+    .boolean()
+    .describe(
+      "Whether the demo accounts are seeded (the login page may show them).",
+    ),
 });
 
 /**
@@ -49,7 +76,15 @@ export const GetMeResponse = zod.object({
   id: zod.number(),
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (null for staff)."),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -61,7 +96,15 @@ export const ListUsersResponseItem = zod.object({
   id: zod.number(),
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (null for staff)."),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -73,8 +116,16 @@ export const ListUsersResponse = zod.array(ListUsersResponseItem);
 export const CreateUserBody = zod.object({
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
   password: zod.string(),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts."),
 });
 
 /**
@@ -88,7 +139,15 @@ export const GetUserResponse = zod.object({
   id: zod.number(),
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (null for staff)."),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -102,15 +161,43 @@ export const UpdateUserParams = zod.object({
 
 export const UpdateUserBody = zod.object({
   name: zod.string().nullish(),
-  role: zod.enum(["accountant", "manager", "viewer", "null"]).nullish(),
+  role: zod
+    .union([
+      zod.literal("super_admin"),
+      zod.literal("manager"),
+      zod.literal("maker"),
+      zod.literal("accountant"),
+      zod.literal("client"),
+      zod.literal("viewer"),
+      zod.literal(null),
+    ])
+    .nullish(),
   password: zod.string().nullish(),
+  currentPassword: zod
+    .string()
+    .nullish()
+    .describe(
+      "Required (and checked) when users change their own password; a super_admin resetting another account's password does not send it.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (super_admin only)."),
 });
 
 export const UpdateUserResponse = zod.object({
   id: zod.number(),
   email: zod.string(),
   name: zod.string(),
-  role: zod.enum(["accountant", "manager", "viewer"]),
+  role: zod
+    .enum(["super_admin", "manager", "maker", "accountant", "client", "viewer"])
+    .describe(
+      "maker and accountant are equivalent; viewer is a legacy alias of client.",
+    ),
+  clientId: zod
+    .number()
+    .nullish()
+    .describe("Linked client for client\/viewer accounts (null for staff)."),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -128,7 +215,11 @@ export const DeleteUserParams = zod.object({
 export const ListClientsResponseItem = zod.object({
   id: zod.number(),
   name: zod.string(),
-  tin: zod.string(),
+  tin: zod
+    .string()
+    .describe(
+      "###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400",
+    ),
   businessType: zod.string(),
   contactEmail: zod.string().nullish(),
   contactPhone: zod.string().nullish(),
@@ -189,17 +280,21 @@ export const ListClientsResponseItem = zod.object({
     .object({
       inProgress: zod
         .number()
-        .describe("Number of engagements currently in progress"),
+        .describe(
+          "This tax year's filings whose linked engagement is in progress",
+        ),
       forReview: zod
         .number()
-        .describe("Number of engagements awaiting manager review"),
+        .describe(
+          "This tax year's filings with at least one stage awaiting manager review",
+        ),
       overdue: zod
         .number()
-        .describe("Number of overdue deadline entries not yet filed"),
+        .describe("Open deadlines past due (any tax year), one per filing"),
     })
     .optional()
     .describe(
-      "Aggregate filing workflow counts across all engagements for this client (present on list responses).",
+      "Filing workflow badge counts (GET \/clients only): the same items the client page lists for the current tax year, plus every overdue open deadline.",
     ),
 });
 export const ListClientsResponse = zod.array(ListClientsResponseItem);
@@ -209,7 +304,11 @@ export const ListClientsResponse = zod.array(ListClientsResponseItem);
  */
 export const CreateClientBody = zod.object({
   name: zod.string(),
-  tin: zod.string(),
+  tin: zod
+    .string()
+    .describe(
+      "###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400",
+    ),
   businessType: zod.string(),
   contactEmail: zod.string().nullish(),
   contactPhone: zod.string().nullish(),
@@ -243,7 +342,11 @@ export const GetClientParams = zod.object({
 export const GetClientResponse = zod.object({
   id: zod.number(),
   name: zod.string(),
-  tin: zod.string(),
+  tin: zod
+    .string()
+    .describe(
+      "###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400",
+    ),
   businessType: zod.string(),
   contactEmail: zod.string().nullish(),
   contactPhone: zod.string().nullish(),
@@ -304,17 +407,21 @@ export const GetClientResponse = zod.object({
     .object({
       inProgress: zod
         .number()
-        .describe("Number of engagements currently in progress"),
+        .describe(
+          "This tax year's filings whose linked engagement is in progress",
+        ),
       forReview: zod
         .number()
-        .describe("Number of engagements awaiting manager review"),
+        .describe(
+          "This tax year's filings with at least one stage awaiting manager review",
+        ),
       overdue: zod
         .number()
-        .describe("Number of overdue deadline entries not yet filed"),
+        .describe("Open deadlines past due (any tax year), one per filing"),
     })
     .optional()
     .describe(
-      "Aggregate filing workflow counts across all engagements for this client (present on list responses).",
+      "Filing workflow badge counts (GET \/clients only): the same items the client page lists for the current tax year, plus every overdue open deadline.",
     ),
 });
 
@@ -327,7 +434,12 @@ export const UpdateClientParams = zod.object({
 
 export const UpdateClientBody = zod.object({
   name: zod.string().nullish(),
-  tin: zod.string().nullish(),
+  tin: zod
+    .string()
+    .nullish()
+    .describe(
+      "###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400",
+    ),
   businessType: zod.string().nullish(),
   contactEmail: zod.string().nullish(),
   contactPhone: zod.string().nullish(),
@@ -354,7 +466,11 @@ export const UpdateClientBody = zod.object({
 export const UpdateClientResponse = zod.object({
   id: zod.number(),
   name: zod.string(),
-  tin: zod.string(),
+  tin: zod
+    .string()
+    .describe(
+      "###-###-###-### or ###-###-###-##### (9-digit TIN + branch code); other values are rejected with 400",
+    ),
   businessType: zod.string(),
   contactEmail: zod.string().nullish(),
   contactPhone: zod.string().nullish(),
@@ -415,17 +531,21 @@ export const UpdateClientResponse = zod.object({
     .object({
       inProgress: zod
         .number()
-        .describe("Number of engagements currently in progress"),
+        .describe(
+          "This tax year's filings whose linked engagement is in progress",
+        ),
       forReview: zod
         .number()
-        .describe("Number of engagements awaiting manager review"),
+        .describe(
+          "This tax year's filings with at least one stage awaiting manager review",
+        ),
       overdue: zod
         .number()
-        .describe("Number of overdue deadline entries not yet filed"),
+        .describe("Open deadlines past due (any tax year), one per filing"),
     })
     .optional()
     .describe(
-      "Aggregate filing workflow counts across all engagements for this client (present on list responses).",
+      "Filing workflow badge counts (GET \/clients only): the same items the client page lists for the current tax year, plus every overdue open deadline.",
     ),
 });
 
@@ -479,7 +599,7 @@ export const GetClientComplianceResponse = zod.object({
   year: zod.number(),
   items: zod.array(
     zod.object({
-      formNumber: zod.string().describe("BIR form number (e.g. 2550M, 1702)"),
+      formNumber: zod.string().describe("BIR form number (e.g. 2550Q, 1702)"),
       description: zod.string(),
       period: zod
         .string()
@@ -489,25 +609,63 @@ export const GetClientComplianceResponse = zod.object({
       status: zod.enum(["pending", "filed", "overdue"]),
       deadlineId: zod
         .number()
-        .nullish()
+        .nullable()
         .describe("ID of the linked deadline record, if it exists"),
-      engagementId: zod.number().nullish(),
-      workflowStage: zod.string().nullish(),
-      workflowStatus: zod.string().nullish(),
-      stageStatuses: zod
-        .object({
-          source_collection: zod.string().optional(),
-          draft_return: zod.string().optional(),
-          confirmation: zod.string().optional(),
-          payment: zod.string().optional(),
-        })
-        .optional()
+      engagementId: zod
+        .number()
+        .nullable()
+        .describe("Filing (engagement) linked to the deadline, if any"),
+      workflowStage: zod.string().nullable(),
+      workflowStatus: zod
+        .string()
+        .nullable()
         .describe(
-          "Per-stage statuses: not_started | in_progress | for_review | approved | not_applicable",
+          "Status of the linked engagement (pending | in_progress | completed)",
+        ),
+      stageStatuses: zod
+        .union([
+          zod
+            .object({
+              source_collection: zod.enum([
+                "not_started",
+                "in_progress",
+                "for_review",
+                "approved",
+                "not_applicable",
+              ]),
+              draft_return: zod.enum([
+                "not_started",
+                "in_progress",
+                "for_review",
+                "approved",
+                "not_applicable",
+              ]),
+              confirmation: zod.enum([
+                "not_started",
+                "in_progress",
+                "for_review",
+                "approved",
+                "not_applicable",
+              ]),
+              payment: zod.enum([
+                "not_started",
+                "in_progress",
+                "for_review",
+                "approved",
+                "not_applicable",
+              ]),
+            })
+            .describe(
+              "Status of each of the four parallel filing stages (payment is not_applicable when taxPayable is 0)",
+            ),
+          zod.null(),
+        ])
+        .describe(
+          "Per-stage statuses of the linked engagement (null without one); payment is not_applicable when taxPayable is 0",
         ),
       taxPayable: zod
         .number()
-        .nullish()
+        .nullable()
         .describe(
           "Tax amount payable (null = not entered, 0 = none due, >0 = payment required)",
         ),
@@ -529,39 +687,94 @@ export const ListEngagementsQueryParams = zod.object({
   status: zod.coerce.string().nullish(),
 });
 
-export const ListEngagementsResponseItem = zod.object({
-  id: zod.number(),
-  clientId: zod.number(),
-  clientName: zod.string().nullish(),
-  title: zod.string(),
-  taxType: zod.string(),
-  period: zod.string(),
-  fiscalYear: zod.string().nullish(),
-  status: zod.enum([
-    "pending",
-    "in_progress",
-    "for_review",
-    "approved",
-    "filed",
-    "completed",
-  ]),
-  assignedTo: zod.number().nullish(),
-  assignedToName: zod.string().nullish(),
-  approvedBy: zod.number().nullish(),
-  approvedByName: zod.string().nullish(),
-  approvedAt: zod.string().nullish(),
-  approvalNotes: zod.string().nullish(),
-  dueDate: zod.string().nullish(),
-  notes: zod.string().nullish(),
-  taxPayable: zod
-    .number()
-    .nullish()
-    .describe(
-      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
-    ),
-  createdAt: zod.string(),
-  updatedAt: zod.string(),
-});
+export const ListEngagementsResponseItem = zod
+  .object({
+    id: zod.number(),
+    clientId: zod.number(),
+    clientName: zod.string().nullish(),
+    title: zod.string(),
+    taxType: zod.string(),
+    formNumber: zod
+      .string()
+      .optional()
+      .describe(
+        'Short form code for headings (\"1601C\", \"1702\", \"AnnexF\"), derived on the server like the compliance checklist\'s. Sent by the \/engagements endpoints.',
+      ),
+    period: zod.string(),
+    fiscalYear: zod.string().nullish(),
+    status: zod
+      .enum(["pending", "in_progress", "completed"])
+      .describe(
+        "pending (no stage started), in_progress, completed (every required stage approved). Rows from before the stage workflow may still hold the retired for_review \/ approved \/ filed; show those as-is.",
+      ),
+    assignedTo: zod.number().nullish(),
+    assignedToName: zod.string().nullish(),
+    approvedBy: zod.number().nullish(),
+    approvedByName: zod.string().nullish(),
+    approvedAt: zod.string().nullish(),
+    approvalNotes: zod.string().nullish(),
+    dueDate: zod.string().nullish(),
+    notes: zod.string().nullish(),
+    taxPayable: zod
+      .number()
+      .nullish()
+      .describe(
+        "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+      ),
+    workflowStage: zod
+      .string()
+      .nullish()
+      .describe("Legacy single-stage pointer (the stages are now independent)"),
+    stageStatuses: zod
+      .object({
+        source_collection: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        draft_return: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        confirmation: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        payment: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+      })
+      .optional()
+      .describe(
+        "Status of each of the four parallel filing stages (payment is not_applicable when taxPayable is 0)",
+      ),
+    stagesForReview: zod
+      .number()
+      .optional()
+      .describe("Number of stages awaiting manager review"),
+    isAmendment: zod.boolean().optional(),
+    amendedEngagementId: zod
+      .number()
+      .nullish()
+      .describe("For an amendment: the filing it amends"),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  })
+  .describe(
+    "stageStatuses, stagesForReview, workflowStage, isAmendment and amendedEngagementId are sent by the \/engagements endpoints (not by GET \/dashboard\/overdue).",
+  );
 export const ListEngagementsResponse = zod.array(ListEngagementsResponseItem);
 
 /**
@@ -585,39 +798,94 @@ export const GetEngagementParams = zod.object({
   id: zod.coerce.number(),
 });
 
-export const GetEngagementResponse = zod.object({
-  id: zod.number(),
-  clientId: zod.number(),
-  clientName: zod.string().nullish(),
-  title: zod.string(),
-  taxType: zod.string(),
-  period: zod.string(),
-  fiscalYear: zod.string().nullish(),
-  status: zod.enum([
-    "pending",
-    "in_progress",
-    "for_review",
-    "approved",
-    "filed",
-    "completed",
-  ]),
-  assignedTo: zod.number().nullish(),
-  assignedToName: zod.string().nullish(),
-  approvedBy: zod.number().nullish(),
-  approvedByName: zod.string().nullish(),
-  approvedAt: zod.string().nullish(),
-  approvalNotes: zod.string().nullish(),
-  dueDate: zod.string().nullish(),
-  notes: zod.string().nullish(),
-  taxPayable: zod
-    .number()
-    .nullish()
-    .describe(
-      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
-    ),
-  createdAt: zod.string(),
-  updatedAt: zod.string(),
-});
+export const GetEngagementResponse = zod
+  .object({
+    id: zod.number(),
+    clientId: zod.number(),
+    clientName: zod.string().nullish(),
+    title: zod.string(),
+    taxType: zod.string(),
+    formNumber: zod
+      .string()
+      .optional()
+      .describe(
+        'Short form code for headings (\"1601C\", \"1702\", \"AnnexF\"), derived on the server like the compliance checklist\'s. Sent by the \/engagements endpoints.',
+      ),
+    period: zod.string(),
+    fiscalYear: zod.string().nullish(),
+    status: zod
+      .enum(["pending", "in_progress", "completed"])
+      .describe(
+        "pending (no stage started), in_progress, completed (every required stage approved). Rows from before the stage workflow may still hold the retired for_review \/ approved \/ filed; show those as-is.",
+      ),
+    assignedTo: zod.number().nullish(),
+    assignedToName: zod.string().nullish(),
+    approvedBy: zod.number().nullish(),
+    approvedByName: zod.string().nullish(),
+    approvedAt: zod.string().nullish(),
+    approvalNotes: zod.string().nullish(),
+    dueDate: zod.string().nullish(),
+    notes: zod.string().nullish(),
+    taxPayable: zod
+      .number()
+      .nullish()
+      .describe(
+        "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+      ),
+    workflowStage: zod
+      .string()
+      .nullish()
+      .describe("Legacy single-stage pointer (the stages are now independent)"),
+    stageStatuses: zod
+      .object({
+        source_collection: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        draft_return: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        confirmation: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        payment: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+      })
+      .optional()
+      .describe(
+        "Status of each of the four parallel filing stages (payment is not_applicable when taxPayable is 0)",
+      ),
+    stagesForReview: zod
+      .number()
+      .optional()
+      .describe("Number of stages awaiting manager review"),
+    isAmendment: zod.boolean().optional(),
+    amendedEngagementId: zod
+      .number()
+      .nullish()
+      .describe("For an amendment: the filing it amends"),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  })
+  .describe(
+    "stageStatuses, stagesForReview, workflowStage, isAmendment and amendedEngagementId are sent by the \/engagements endpoints (not by GET \/dashboard\/overdue).",
+  );
 
 /**
  * @summary Update engagement
@@ -650,45 +918,103 @@ export const UpdateEngagementBody = zod.object({
       "completed",
       "null",
     ])
-    .nullish(),
+    .nullish()
+    .describe(
+      "Manager-only override to pending or in_progress. completed is reached by approving the stages (400); the retired for_review \/ approved \/ filed are rejected (400).",
+    ),
   assignedTo: zod.number().nullish(),
   dueDate: zod.string().nullish(),
   notes: zod.string().nullish(),
 });
 
-export const UpdateEngagementResponse = zod.object({
-  id: zod.number(),
-  clientId: zod.number(),
-  clientName: zod.string().nullish(),
-  title: zod.string(),
-  taxType: zod.string(),
-  period: zod.string(),
-  fiscalYear: zod.string().nullish(),
-  status: zod.enum([
-    "pending",
-    "in_progress",
-    "for_review",
-    "approved",
-    "filed",
-    "completed",
-  ]),
-  assignedTo: zod.number().nullish(),
-  assignedToName: zod.string().nullish(),
-  approvedBy: zod.number().nullish(),
-  approvedByName: zod.string().nullish(),
-  approvedAt: zod.string().nullish(),
-  approvalNotes: zod.string().nullish(),
-  dueDate: zod.string().nullish(),
-  notes: zod.string().nullish(),
-  taxPayable: zod
-    .number()
-    .nullish()
-    .describe(
-      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
-    ),
-  createdAt: zod.string(),
-  updatedAt: zod.string(),
-});
+export const UpdateEngagementResponse = zod
+  .object({
+    id: zod.number(),
+    clientId: zod.number(),
+    clientName: zod.string().nullish(),
+    title: zod.string(),
+    taxType: zod.string(),
+    formNumber: zod
+      .string()
+      .optional()
+      .describe(
+        'Short form code for headings (\"1601C\", \"1702\", \"AnnexF\"), derived on the server like the compliance checklist\'s. Sent by the \/engagements endpoints.',
+      ),
+    period: zod.string(),
+    fiscalYear: zod.string().nullish(),
+    status: zod
+      .enum(["pending", "in_progress", "completed"])
+      .describe(
+        "pending (no stage started), in_progress, completed (every required stage approved). Rows from before the stage workflow may still hold the retired for_review \/ approved \/ filed; show those as-is.",
+      ),
+    assignedTo: zod.number().nullish(),
+    assignedToName: zod.string().nullish(),
+    approvedBy: zod.number().nullish(),
+    approvedByName: zod.string().nullish(),
+    approvedAt: zod.string().nullish(),
+    approvalNotes: zod.string().nullish(),
+    dueDate: zod.string().nullish(),
+    notes: zod.string().nullish(),
+    taxPayable: zod
+      .number()
+      .nullish()
+      .describe(
+        "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+      ),
+    workflowStage: zod
+      .string()
+      .nullish()
+      .describe("Legacy single-stage pointer (the stages are now independent)"),
+    stageStatuses: zod
+      .object({
+        source_collection: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        draft_return: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        confirmation: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        payment: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+      })
+      .optional()
+      .describe(
+        "Status of each of the four parallel filing stages (payment is not_applicable when taxPayable is 0)",
+      ),
+    stagesForReview: zod
+      .number()
+      .optional()
+      .describe("Number of stages awaiting manager review"),
+    isAmendment: zod.boolean().optional(),
+    amendedEngagementId: zod
+      .number()
+      .nullish()
+      .describe("For an amendment: the filing it amends"),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  })
+  .describe(
+    "stageStatuses, stagesForReview, workflowStage, isAmendment and amendedEngagementId are sent by the \/engagements endpoints (not by GET \/dashboard\/overdue).",
+  );
 
 /**
  * @summary Delete engagement
@@ -709,39 +1035,94 @@ export const ApproveEngagementBody = zod.object({
   notes: zod.string().nullish(),
 });
 
-export const ApproveEngagementResponse = zod.object({
-  id: zod.number(),
-  clientId: zod.number(),
-  clientName: zod.string().nullish(),
-  title: zod.string(),
-  taxType: zod.string(),
-  period: zod.string(),
-  fiscalYear: zod.string().nullish(),
-  status: zod.enum([
-    "pending",
-    "in_progress",
-    "for_review",
-    "approved",
-    "filed",
-    "completed",
-  ]),
-  assignedTo: zod.number().nullish(),
-  assignedToName: zod.string().nullish(),
-  approvedBy: zod.number().nullish(),
-  approvedByName: zod.string().nullish(),
-  approvedAt: zod.string().nullish(),
-  approvalNotes: zod.string().nullish(),
-  dueDate: zod.string().nullish(),
-  notes: zod.string().nullish(),
-  taxPayable: zod
-    .number()
-    .nullish()
-    .describe(
-      "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
-    ),
-  createdAt: zod.string(),
-  updatedAt: zod.string(),
-});
+export const ApproveEngagementResponse = zod
+  .object({
+    id: zod.number(),
+    clientId: zod.number(),
+    clientName: zod.string().nullish(),
+    title: zod.string(),
+    taxType: zod.string(),
+    formNumber: zod
+      .string()
+      .optional()
+      .describe(
+        'Short form code for headings (\"1601C\", \"1702\", \"AnnexF\"), derived on the server like the compliance checklist\'s. Sent by the \/engagements endpoints.',
+      ),
+    period: zod.string(),
+    fiscalYear: zod.string().nullish(),
+    status: zod
+      .enum(["pending", "in_progress", "completed"])
+      .describe(
+        "pending (no stage started), in_progress, completed (every required stage approved). Rows from before the stage workflow may still hold the retired for_review \/ approved \/ filed; show those as-is.",
+      ),
+    assignedTo: zod.number().nullish(),
+    assignedToName: zod.string().nullish(),
+    approvedBy: zod.number().nullish(),
+    approvedByName: zod.string().nullish(),
+    approvedAt: zod.string().nullish(),
+    approvalNotes: zod.string().nullish(),
+    dueDate: zod.string().nullish(),
+    notes: zod.string().nullish(),
+    taxPayable: zod
+      .number()
+      .nullish()
+      .describe(
+        "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+      ),
+    workflowStage: zod
+      .string()
+      .nullish()
+      .describe("Legacy single-stage pointer (the stages are now independent)"),
+    stageStatuses: zod
+      .object({
+        source_collection: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        draft_return: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        confirmation: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+        payment: zod.enum([
+          "not_started",
+          "in_progress",
+          "for_review",
+          "approved",
+          "not_applicable",
+        ]),
+      })
+      .optional()
+      .describe(
+        "Status of each of the four parallel filing stages (payment is not_applicable when taxPayable is 0)",
+      ),
+    stagesForReview: zod
+      .number()
+      .optional()
+      .describe("Number of stages awaiting manager review"),
+    isAmendment: zod.boolean().optional(),
+    amendedEngagementId: zod
+      .number()
+      .nullish()
+      .describe("For an amendment: the filing it amends"),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  })
+  .describe(
+    "stageStatuses, stagesForReview, workflowStage, isAmendment and amendedEngagementId are sent by the \/engagements endpoints (not by GET \/dashboard\/overdue).",
+  );
 
 /**
  * @summary List deadlines
@@ -753,13 +1134,29 @@ export const ListDeadlinesQueryParams = zod.object({
 
 export const ListDeadlinesResponseItem = zod.object({
   id: zod.number(),
-  engagementId: zod.number().nullish(),
-  clientId: zod.number().nullish(),
-  clientName: zod.string().nullish(),
+  engagementId: zod.number().nullable(),
+  clientId: zod.number().nullable(),
+  clientName: zod.string().nullable(),
   title: zod.string(),
-  description: zod.string().nullish(),
-  dueDate: zod.string(),
-  status: zod.enum(["pending", "completed", "overdue"]),
+  formNumber: zod
+    .string()
+    .optional()
+    .describe(
+      'Form code from the title, the same as the compliance checklist\'s (\"1601EQ\", \"AnnexF\"); \"OTHER\" for a title that names no form. Sent by the \/deadlines endpoints.',
+    ),
+  period: zod
+    .string()
+    .optional()
+    .describe(
+      'Period label from the title, the same as the compliance checklist\'s (\"Q1 2026\", \"Annual 2026\"); the whole title when it has none. Sent by the \/deadlines endpoints.',
+    ),
+  description: zod.string().nullable(),
+  dueDate: zod.string().describe("YYYY-MM-DD"),
+  status: zod
+    .enum(["pending", "completed", "overdue"])
+    .describe(
+      "Stored as pending \/ completed (completed when the linked filing is completed); overdue is only sent by GET \/dashboard\/overdue. Derive overdue from dueDate (Asia\/Manila) elsewhere.",
+    ),
   priority: zod.enum(["low", "medium", "high"]),
   createdAt: zod.string(),
   updatedAt: zod.string(),
@@ -787,13 +1184,29 @@ export const GetDeadlineParams = zod.object({
 
 export const GetDeadlineResponse = zod.object({
   id: zod.number(),
-  engagementId: zod.number().nullish(),
-  clientId: zod.number().nullish(),
-  clientName: zod.string().nullish(),
+  engagementId: zod.number().nullable(),
+  clientId: zod.number().nullable(),
+  clientName: zod.string().nullable(),
   title: zod.string(),
-  description: zod.string().nullish(),
-  dueDate: zod.string(),
-  status: zod.enum(["pending", "completed", "overdue"]),
+  formNumber: zod
+    .string()
+    .optional()
+    .describe(
+      'Form code from the title, the same as the compliance checklist\'s (\"1601EQ\", \"AnnexF\"); \"OTHER\" for a title that names no form. Sent by the \/deadlines endpoints.',
+    ),
+  period: zod
+    .string()
+    .optional()
+    .describe(
+      'Period label from the title, the same as the compliance checklist\'s (\"Q1 2026\", \"Annual 2026\"); the whole title when it has none. Sent by the \/deadlines endpoints.',
+    ),
+  description: zod.string().nullable(),
+  dueDate: zod.string().describe("YYYY-MM-DD"),
+  status: zod
+    .enum(["pending", "completed", "overdue"])
+    .describe(
+      "Stored as pending \/ completed (completed when the linked filing is completed); overdue is only sent by GET \/dashboard\/overdue. Derive overdue from dueDate (Asia\/Manila) elsewhere.",
+    ),
   priority: zod.enum(["low", "medium", "high"]),
   createdAt: zod.string(),
   updatedAt: zod.string(),
@@ -816,13 +1229,29 @@ export const UpdateDeadlineBody = zod.object({
 
 export const UpdateDeadlineResponse = zod.object({
   id: zod.number(),
-  engagementId: zod.number().nullish(),
-  clientId: zod.number().nullish(),
-  clientName: zod.string().nullish(),
+  engagementId: zod.number().nullable(),
+  clientId: zod.number().nullable(),
+  clientName: zod.string().nullable(),
   title: zod.string(),
-  description: zod.string().nullish(),
-  dueDate: zod.string(),
-  status: zod.enum(["pending", "completed", "overdue"]),
+  formNumber: zod
+    .string()
+    .optional()
+    .describe(
+      'Form code from the title, the same as the compliance checklist\'s (\"1601EQ\", \"AnnexF\"); \"OTHER\" for a title that names no form. Sent by the \/deadlines endpoints.',
+    ),
+  period: zod
+    .string()
+    .optional()
+    .describe(
+      'Period label from the title, the same as the compliance checklist\'s (\"Q1 2026\", \"Annual 2026\"); the whole title when it has none. Sent by the \/deadlines endpoints.',
+    ),
+  description: zod.string().nullable(),
+  dueDate: zod.string().describe("YYYY-MM-DD"),
+  status: zod
+    .enum(["pending", "completed", "overdue"])
+    .describe(
+      "Stored as pending \/ completed (completed when the linked filing is completed); overdue is only sent by GET \/dashboard\/overdue. Derive overdue from dueDate (Asia\/Manila) elsewhere.",
+    ),
   priority: zod.enum(["low", "medium", "high"]),
   createdAt: zod.string(),
   updatedAt: zod.string(),
@@ -907,11 +1336,59 @@ export const DeleteChecklistItemParams = zod.object({
 });
 
 /**
+ * Client accounts are always restricted to their own client, whatever filters they pass.
+Without limit/offset every match is returned. The body stays a plain array; the
+X-Total-Count header carries the number of matches before paging.
+
  * @summary List documents
  */
+export const listDocumentsQueryQMax = 200;
+
+export const listDocumentsQueryLimitMax = 200;
+
+export const listDocumentsQueryOffsetMin = 0;
+
 export const ListDocumentsQueryParams = zod.object({
   engagementId: zod.coerce.number().nullish(),
   clientId: zod.coerce.number().nullish(),
+  q: zod.coerce
+    .string()
+    .max(listDocumentsQueryQMax)
+    .optional()
+    .describe(
+      "Original file name contains (case-insensitive, literal; at most 200 characters).",
+    ),
+  stage: zod
+    .enum([
+      "source_collection",
+      "draft_return",
+      "confirmation",
+      "payment",
+      "none",
+    ])
+    .optional()
+    .describe(
+      'Filing workflow stage of the document, or \"none\" for documents not linked to a stage.',
+    ),
+  mimeType: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      'MIME type prefix (\"image\/\", \"application\/pdf\"); comma-separated = any of (at most 10).',
+    ),
+  order: zod
+    .enum(["asc", "desc"])
+    .optional()
+    .describe(
+      'By upload time; \"asc\" (default, oldest first) or \"desc\" (newest first).',
+    ),
+  limit: zod.coerce
+    .number()
+    .min(1)
+    .max(listDocumentsQueryLimitMax)
+    .optional()
+    .describe("Page size (1-200). Omit for every match."),
+  offset: zod.coerce.number().min(listDocumentsQueryOffsetMin).optional(),
 });
 
 export const ListDocumentsResponseItem = zod.object({
@@ -928,6 +1405,18 @@ export const ListDocumentsResponseItem = zod.object({
   description: zod.string().nullish(),
   uploadedBy: zod.number(),
   uploadedByName: zod.string().nullish(),
+  stage: zod
+    .union([
+      zod.enum([
+        "source_collection",
+        "draft_return",
+        "confirmation",
+        "payment",
+      ]),
+      zod.null(),
+    ])
+    .optional()
+    .describe("Filing workflow stage the document belongs to (null = general)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -968,6 +1457,18 @@ export const GetDocumentResponse = zod.object({
   description: zod.string().nullish(),
   uploadedBy: zod.number(),
   uploadedByName: zod.string().nullish(),
+  stage: zod
+    .union([
+      zod.enum([
+        "source_collection",
+        "draft_return",
+        "confirmation",
+        "payment",
+      ]),
+      zod.null(),
+    ])
+    .optional()
+    .describe("Filing workflow stage the document belongs to (null = general)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -997,6 +1498,18 @@ export const UpdateDocumentResponse = zod.object({
   description: zod.string().nullish(),
   uploadedBy: zod.number(),
   uploadedByName: zod.string().nullish(),
+  stage: zod
+    .union([
+      zod.enum([
+        "source_collection",
+        "draft_return",
+        "confirmation",
+        "payment",
+      ]),
+      zod.null(),
+    ])
+    .optional()
+    .describe("Filing workflow stage the document belongs to (null = general)"),
   createdAt: zod.string(),
   updatedAt: zod.string(),
 });
@@ -1093,6 +1606,13 @@ export const ListNotificationsResponse = zod.array(
 );
 
 /**
+ * @summary Unread notification count of the current user
+ */
+export const GetUnreadNotificationCountResponse = zod.object({
+  count: zod.number(),
+});
+
+/**
  * @summary Mark notification as read
  */
 export const MarkNotificationReadParams = zod.object({
@@ -1126,12 +1646,65 @@ export const MarkAllNotificationsReadResponse = zod.object({
 });
 
 /**
+ * Managers and super admins only. Newest first. The body stays a plain array; the X-Total-Count header carries the number of matching entries.
  * @summary List audit logs
  */
+
+export const listAuditLogsQueryActionMax = 64;
+
+export const listAuditLogsQueryEntityTypeMax = 64;
+
+export const listAuditLogsQueryQMax = 200;
+
 export const ListAuditLogsQueryParams = zod.object({
-  engagementId: zod.coerce.number().nullish(),
-  clientId: zod.coerce.number().nullish(),
-  limit: zod.coerce.number().nullish(),
+  engagementId: zod.coerce
+    .number()
+    .nullish()
+    .describe("Entries about this engagement (entityType engagement)."),
+  clientId: zod.coerce
+    .number()
+    .nullish()
+    .describe("Entries about this client (entityType client)."),
+  userId: zod.coerce
+    .number()
+    .min(1)
+    .optional()
+    .describe("Entries made by this user."),
+  action: zod.coerce
+    .string()
+    .max(listAuditLogsQueryActionMax)
+    .optional()
+    .describe("Exact action (see GET \/audit-logs\/filters)."),
+  entityType: zod.coerce
+    .string()
+    .max(listAuditLogsQueryEntityTypeMax)
+    .optional()
+    .describe("Exact entity type (see GET \/audit-logs\/filters)."),
+  from: zod
+    .date()
+    .optional()
+    .describe("First day, inclusive (YYYY-MM-DD, Asia\/Manila)."),
+  to: zod
+    .date()
+    .optional()
+    .describe("Last day, inclusive (YYYY-MM-DD, Asia\/Manila)."),
+  q: zod.coerce
+    .string()
+    .max(listAuditLogsQueryQMax)
+    .optional()
+    .describe(
+      "Description contains (case-insensitive, literal; at most 200 characters).",
+    ),
+  limit: zod.coerce
+    .number()
+    .nullish()
+    .describe(
+      "Page size (default 50, at most 500; malformed values fall back to the default).",
+    ),
+  offset: zod.coerce
+    .number()
+    .nullish()
+    .describe("Entries to skip (default 0; malformed values fall back to 0)."),
 });
 
 export const ListAuditLogsResponseItem = zod.object({
@@ -1148,6 +1721,75 @@ export const ListAuditLogsResponseItem = zod.object({
 export const ListAuditLogsResponse = zod.array(ListAuditLogsResponseItem);
 
 /**
+ * Managers and super admins only. The users, actions and entity types that occur in the log.
+ * @summary Filter options of the audit log
+ */
+export const GetAuditLogFiltersResponse = zod.object({
+  users: zod.array(
+    zod.object({
+      id: zod.number(),
+      name: zod.string(),
+    }),
+  ),
+  actions: zod.array(zod.string()),
+  entityTypes: zod.array(zod.string()),
+});
+
+/**
+ * Managers and super admins only. Same filters as GET /audit-logs, newest first, at most
+10,000 rows (RFC 4180, UTF-8 with BOM, CRLF). The export itself is audited.
+
+ * @summary Export audit logs as CSV
+ */
+
+export const exportAuditLogsCsvQueryActionMax = 64;
+
+export const exportAuditLogsCsvQueryEntityTypeMax = 64;
+
+export const exportAuditLogsCsvQueryQMax = 200;
+
+export const ExportAuditLogsCsvQueryParams = zod.object({
+  engagementId: zod.coerce
+    .number()
+    .nullish()
+    .describe("Entries about this engagement (entityType engagement)."),
+  clientId: zod.coerce
+    .number()
+    .nullish()
+    .describe("Entries about this client (entityType client)."),
+  userId: zod.coerce
+    .number()
+    .min(1)
+    .optional()
+    .describe("Entries made by this user."),
+  action: zod.coerce
+    .string()
+    .max(exportAuditLogsCsvQueryActionMax)
+    .optional()
+    .describe("Exact action (see GET \/audit-logs\/filters)."),
+  entityType: zod.coerce
+    .string()
+    .max(exportAuditLogsCsvQueryEntityTypeMax)
+    .optional()
+    .describe("Exact entity type (see GET \/audit-logs\/filters)."),
+  from: zod
+    .date()
+    .optional()
+    .describe("First day, inclusive (YYYY-MM-DD, Asia\/Manila)."),
+  to: zod
+    .date()
+    .optional()
+    .describe("Last day, inclusive (YYYY-MM-DD, Asia\/Manila)."),
+  q: zod.coerce
+    .string()
+    .max(exportAuditLogsCsvQueryQMax)
+    .optional()
+    .describe(
+      "Description contains (case-insensitive, literal; at most 200 characters).",
+    ),
+});
+
+/**
  * @summary Get dashboard summary stats
  */
 export const GetDashboardSummaryResponse = zod.object({
@@ -1157,6 +1799,69 @@ export const GetDashboardSummaryResponse = zod.object({
   overdueItems: zod.number(),
   pendingApprovals: zod.number(),
   completedThisMonth: zod.number(),
+});
+
+/**
+ * Role-aware. review (managers / super admins): filings with stages awaiting review,
+oldest first. maker: open filings assigned to me by due date, plus their open
+deadlines due in the next windowDays days. client: the linked client's open deadlines
+and filings in progress. Each list holds at most 25 rows; totals has the full counts.
+
+ * @summary The current user's "needs my action" list
+ */
+export const GetMyWorkResponse = zod.object({
+  kind: zod.enum(["review", "maker", "client"]),
+  today: zod.string().describe("Today in Asia\/Manila (YYYY-MM-DD)"),
+  windowDays: zod
+    .number()
+    .nullable()
+    .describe("Deadline window of the maker list (null for the other kinds)"),
+  totals: zod.object({
+    filings: zod.number(),
+    deadlines: zod.number(),
+  }),
+  filings: zod.array(
+    zod.object({
+      id: zod.number(),
+      title: zod.string(),
+      clientId: zod.number(),
+      clientName: zod.string().nullable(),
+      taxType: zod.string(),
+      period: zod.string(),
+      status: zod.string(),
+      dueDate: zod.string().nullable(),
+      overdue: zod.boolean(),
+      daysUntilDue: zod.number().nullable(),
+      stagesForReview: zod
+        .array(
+          zod.enum([
+            "source_collection",
+            "draft_return",
+            "confirmation",
+            "payment",
+          ]),
+        )
+        .describe(
+          "Stage keys awaiting review (payment is left out when no tax is payable)",
+        ),
+      waitingSince: zod
+        .string()
+        .describe("When the filing last changed (ISO timestamp)"),
+    }),
+  ),
+  deadlines: zod.array(
+    zod.object({
+      id: zod.number(),
+      title: zod.string(),
+      clientId: zod.number().nullable(),
+      clientName: zod.string().nullable(),
+      engagementId: zod.number().nullable(),
+      dueDate: zod.string(),
+      priority: zod.string(),
+      overdue: zod.boolean(),
+      daysUntilDue: zod.number(),
+    }),
+  ),
 });
 
 /**
@@ -1183,52 +1888,125 @@ export const GetOverdueItemsResponse = zod.object({
   overdueDeadlines: zod.array(
     zod.object({
       id: zod.number(),
-      engagementId: zod.number().nullish(),
-      clientId: zod.number().nullish(),
-      clientName: zod.string().nullish(),
+      engagementId: zod.number().nullable(),
+      clientId: zod.number().nullable(),
+      clientName: zod.string().nullable(),
       title: zod.string(),
-      description: zod.string().nullish(),
-      dueDate: zod.string(),
-      status: zod.enum(["pending", "completed", "overdue"]),
+      formNumber: zod
+        .string()
+        .optional()
+        .describe(
+          'Form code from the title, the same as the compliance checklist\'s (\"1601EQ\", \"AnnexF\"); \"OTHER\" for a title that names no form. Sent by the \/deadlines endpoints.',
+        ),
+      period: zod
+        .string()
+        .optional()
+        .describe(
+          'Period label from the title, the same as the compliance checklist\'s (\"Q1 2026\", \"Annual 2026\"); the whole title when it has none. Sent by the \/deadlines endpoints.',
+        ),
+      description: zod.string().nullable(),
+      dueDate: zod.string().describe("YYYY-MM-DD"),
+      status: zod
+        .enum(["pending", "completed", "overdue"])
+        .describe(
+          "Stored as pending \/ completed (completed when the linked filing is completed); overdue is only sent by GET \/dashboard\/overdue. Derive overdue from dueDate (Asia\/Manila) elsewhere.",
+        ),
       priority: zod.enum(["low", "medium", "high"]),
       createdAt: zod.string(),
       updatedAt: zod.string(),
     }),
   ),
   overdueEngagements: zod.array(
-    zod.object({
-      id: zod.number(),
-      clientId: zod.number(),
-      clientName: zod.string().nullish(),
-      title: zod.string(),
-      taxType: zod.string(),
-      period: zod.string(),
-      fiscalYear: zod.string().nullish(),
-      status: zod.enum([
-        "pending",
-        "in_progress",
-        "for_review",
-        "approved",
-        "filed",
-        "completed",
-      ]),
-      assignedTo: zod.number().nullish(),
-      assignedToName: zod.string().nullish(),
-      approvedBy: zod.number().nullish(),
-      approvedByName: zod.string().nullish(),
-      approvedAt: zod.string().nullish(),
-      approvalNotes: zod.string().nullish(),
-      dueDate: zod.string().nullish(),
-      notes: zod.string().nullish(),
-      taxPayable: zod
-        .number()
-        .nullish()
-        .describe(
-          "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
-        ),
-      createdAt: zod.string(),
-      updatedAt: zod.string(),
-    }),
+    zod
+      .object({
+        id: zod.number(),
+        clientId: zod.number(),
+        clientName: zod.string().nullish(),
+        title: zod.string(),
+        taxType: zod.string(),
+        formNumber: zod
+          .string()
+          .optional()
+          .describe(
+            'Short form code for headings (\"1601C\", \"1702\", \"AnnexF\"), derived on the server like the compliance checklist\'s. Sent by the \/engagements endpoints.',
+          ),
+        period: zod.string(),
+        fiscalYear: zod.string().nullish(),
+        status: zod
+          .enum(["pending", "in_progress", "completed"])
+          .describe(
+            "pending (no stage started), in_progress, completed (every required stage approved). Rows from before the stage workflow may still hold the retired for_review \/ approved \/ filed; show those as-is.",
+          ),
+        assignedTo: zod.number().nullish(),
+        assignedToName: zod.string().nullish(),
+        approvedBy: zod.number().nullish(),
+        approvedByName: zod.string().nullish(),
+        approvedAt: zod.string().nullish(),
+        approvalNotes: zod.string().nullish(),
+        dueDate: zod.string().nullish(),
+        notes: zod.string().nullish(),
+        taxPayable: zod
+          .number()
+          .nullish()
+          .describe(
+            "Tax payable amount (null = not entered; 0 = none; >0 = payment required)",
+          ),
+        workflowStage: zod
+          .string()
+          .nullish()
+          .describe(
+            "Legacy single-stage pointer (the stages are now independent)",
+          ),
+        stageStatuses: zod
+          .object({
+            source_collection: zod.enum([
+              "not_started",
+              "in_progress",
+              "for_review",
+              "approved",
+              "not_applicable",
+            ]),
+            draft_return: zod.enum([
+              "not_started",
+              "in_progress",
+              "for_review",
+              "approved",
+              "not_applicable",
+            ]),
+            confirmation: zod.enum([
+              "not_started",
+              "in_progress",
+              "for_review",
+              "approved",
+              "not_applicable",
+            ]),
+            payment: zod.enum([
+              "not_started",
+              "in_progress",
+              "for_review",
+              "approved",
+              "not_applicable",
+            ]),
+          })
+          .optional()
+          .describe(
+            "Status of each of the four parallel filing stages (payment is not_applicable when taxPayable is 0)",
+          ),
+        stagesForReview: zod
+          .number()
+          .optional()
+          .describe("Number of stages awaiting manager review"),
+        isAmendment: zod.boolean().optional(),
+        amendedEngagementId: zod
+          .number()
+          .nullish()
+          .describe("For an amendment: the filing it amends"),
+        createdAt: zod.string(),
+        updatedAt: zod.string(),
+      })
+      .describe(
+        "stageStatuses, stagesForReview, workflowStage, isAmendment and amendedEngagementId are sent by the \/engagements endpoints (not by GET \/dashboard\/overdue).",
+      ),
   ),
 });
 
@@ -1260,3 +2038,155 @@ export const GetEngagementStatusBreakdownResponseItem = zod.object({
 export const GetEngagementStatusBreakdownResponse = zod.array(
   GetEngagementStatusBreakdownResponseItem,
 );
+
+/**
+ * Whether the connector is enabled, the URL to paste into claude.ai (Customize > Connectors > Add custom connector) and the scopes with whether this user's role can use them. mcpUrl is null when disabled or when the server cannot build a public HTTPS URL (problem says why).
+ * @summary MCP connector settings for the signed-in user
+ */
+export const GetConnectorInfoResponse = zod.object({
+  enabled: zod.boolean(),
+  mcpUrl: zod
+    .string()
+    .nullable()
+    .describe(
+      "The connector URL to paste into claude.ai, e.g. https:\/\/taxaide.example.com\/api\/mcp.",
+    ),
+  issuer: zod.string().nullable().describe("The public origin (OAuth issuer)."),
+  problem: zod
+    .string()
+    .nullable()
+    .describe(
+      "Why mcpUrl is null although enabled (e.g. not served over HTTPS in production).",
+    ),
+  scopes: zod.array(
+    zod.object({
+      name: zod.enum(["taxaide.read", "taxaide.write"]),
+      title: zod
+        .string()
+        .describe(
+          'Short label for the consent screen, e.g. \"View your TaxAide data\".',
+        ),
+      description: zod.string(),
+      available: zod
+        .boolean()
+        .describe(
+          "Whether the signed-in user's role can use this scope (client accounts cannot use taxaide.write).",
+        ),
+    }),
+  ),
+});
+
+/**
+ * The request id comes from the consent page URL (/connect/authorize?request=<id>). 404 when unknown, expired (10 minutes) or already decided. 401 when not signed in: sign in, then come back to the same URL.
+ * @summary A pending connector sign-in request (for the consent page)
+ */
+export const GetOAuthRequestParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const GetOAuthRequestResponse = zod.object({
+  id: zod.string(),
+  expiresAt: zod.string(),
+  client: zod.object({
+    id: zod.string(),
+    name: zod
+      .string()
+      .nullable()
+      .describe(
+        "Chosen by whoever registered the client; untrusted. Show redirectHost prominently.",
+      ),
+    uri: zod.string().nullable(),
+    logoUri: zod.string().nullable(),
+  }),
+  redirectUri: zod.string(),
+  redirectHost: zod
+    .string()
+    .describe(
+      "Host the browser returns to after the decision (e.g. claude.ai).",
+    ),
+  scopes: zod
+    .array(
+      zod.object({
+        name: zod.enum(["taxaide.read", "taxaide.write"]),
+        title: zod
+          .string()
+          .describe(
+            'Short label for the consent screen, e.g. \"View your TaxAide data\".',
+          ),
+        description: zod.string(),
+        available: zod
+          .boolean()
+          .describe(
+            "Whether the signed-in user's role can use this scope (client accounts cannot use taxaide.write).",
+          ),
+      }),
+    )
+    .describe("The requested scopes (taxaide.read is always included)."),
+  user: zod.object({
+    id: zod.number(),
+    name: zod.string(),
+    email: zod.string(),
+    role: zod.string(),
+  }),
+});
+
+/**
+ * Single use. Must be sent from the web app (Origin checked) as application/json. On success navigate the browser to redirectTo (window.location.assign): the client's redirect URI with ?code=… or ?error=access_denied. Scopes the user's role cannot use are dropped; scopes lists what was granted (empty when denied).
+ * @summary Approve or deny a pending connector sign-in request
+ */
+export const DecideOAuthRequestParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const DecideOAuthRequestBody = zod.object({
+  approve: zod.boolean(),
+  scopes: zod
+    .array(zod.string())
+    .optional()
+    .describe(
+      "Scopes to grant when approving (a subset of the requested ones, must include taxaide.read). Default all requested.",
+    ),
+});
+
+export const DecideOAuthRequestResponse = zod.object({
+  redirectTo: zod.string(),
+  scopes: zod.array(zod.string()),
+});
+
+/**
+ * The caller's own active connections, newest first. all=1 (super_admin only, else 403) lists everyone's.
+ * @summary Active connector connections
+ */
+export const ListOAuthGrantsQueryParams = zod.object({
+  all: zod.enum(["1", "true"]).optional(),
+});
+
+export const ListOAuthGrantsResponseItem = zod.object({
+  id: zod.number(),
+  clientId: zod.string(),
+  clientName: zod.string().nullable(),
+  redirectHost: zod.string(),
+  scopes: zod.array(zod.string()),
+  createdAt: zod.string(),
+  lastUsedAt: zod.string().nullable(),
+  expiresAt: zod
+    .string()
+    .describe(
+      "When the connection lapses unless the client refreshes it (30 days after the last refresh).",
+    ),
+  user: zod.object({
+    id: zod.number(),
+    name: zod.string(),
+    email: zod.string(),
+    role: zod.string(),
+  }),
+});
+export const ListOAuthGrantsResponse = zod.array(ListOAuthGrantsResponseItem);
+
+/**
+ * Revokes every token of the connection at once. Own grants, or anyone's for super_admin; any other id answers 404. Must be sent from the web app (Origin checked).
+ * @summary Disconnect a connector
+ */
+export const RevokeOAuthGrantParams = zod.object({
+  id: zod.coerce.number(),
+});

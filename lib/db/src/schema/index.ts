@@ -7,3 +7,5 @@ export * from "./documents";
 export * from "./comments";
 export * from "./notifications";
 export * from "./audit_logs";
+export * from "./assistant_conversations";
+export * from "./oauth";

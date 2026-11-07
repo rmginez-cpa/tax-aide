@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, count, desc } from "drizzle-orm";
 import { db, notificationsTable } from "@workspace/db";
 import { MarkNotificationReadParams } from "@workspace/api-zod";
 import { requireAuth } from "../middlewares/auth";
@@ -20,14 +20,24 @@ function serializeNotification(n: typeof notificationsTable.$inferSelect) {
   };
 }
 
+// Newest first (ties broken by id, so same-instant rows keep a stable order).
 router.get("/notifications", requireAuth, async (req, res): Promise<void> => {
   const notifications = await db
     .select()
     .from(notificationsTable)
     .where(eq(notificationsTable.userId, req.session.userId!))
-    .orderBy(notificationsTable.createdAt);
+    .orderBy(desc(notificationsTable.createdAt), desc(notificationsTable.id));
 
   res.json(notifications.map(serializeNotification));
+});
+
+// Unread badge in the navigation (polled every minute): the signed-in user's own count only.
+router.get("/notifications/unread-count", requireAuth, async (req, res): Promise<void> => {
+  const [row] = await db
+    .select({ count: count() })
+    .from(notificationsTable)
+    .where(and(eq(notificationsTable.userId, req.session.userId!), eq(notificationsTable.isRead, false)));
+  res.json({ count: Number(row?.count ?? 0) });
 });
 
 router.post("/notifications/:id/read", requireAuth, async (req, res): Promise<void> => {

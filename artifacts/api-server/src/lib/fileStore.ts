@@ -20,6 +20,21 @@ function objectFileFor(filename: string): File {
   return objectStorageClient.bucket(bucketName).file(objectName);
 }
 
+/**
+ * Resolves a stored filename inside uploadsDir, or null when the name could
+ * escape it (path separators, "..", absolute paths). Stored names are always
+ * server-generated flat names, so anything else is refused.
+ */
+function diskPathFor(filename: string, uploadsDir: string): string | null {
+  if (!filename || filename.includes("/") || filename.includes("\\") || filename.includes("\0") || filename === "." || filename === "..") {
+    return null;
+  }
+  const root = path.resolve(uploadsDir);
+  const full = path.resolve(root, filename);
+  if (path.dirname(full) !== root) return null;
+  return full;
+}
+
 /** Persist an uploaded file buffer to object storage under uploads/<filename>. */
 export async function saveFileToStorage(filename: string, buffer: Buffer, contentType: string): Promise<void> {
   const file = objectFileFor(filename);
@@ -38,6 +53,8 @@ export async function getStoredFile(
   | { kind: "disk"; path: string; size: number }
   | null
 > {
+  const diskPath = diskPathFor(filename, uploadsDir);
+  if (diskPath === null) return null;
   if (storageAvailable()) {
     try {
       const file = objectFileFor(filename);
@@ -50,7 +67,6 @@ export async function getStoredFile(
       // fall through to disk
     }
   }
-  const diskPath = path.join(uploadsDir, filename);
   if (fs.existsSync(diskPath)) {
     return { kind: "disk", path: diskPath, size: fs.statSync(diskPath).size };
   }
@@ -59,6 +75,8 @@ export async function getStoredFile(
 
 /** Delete a stored file from object storage and/or local disk. Best effort. */
 export async function deleteStoredFile(filename: string, uploadsDir: string): Promise<void> {
+  const diskPath = diskPathFor(filename, uploadsDir);
+  if (diskPath === null) return;
   if (storageAvailable()) {
     try {
       await objectFileFor(filename).delete({ ignoreNotFound: true });
@@ -66,7 +84,6 @@ export async function deleteStoredFile(filename: string, uploadsDir: string): Pr
       // ignore
     }
   }
-  const diskPath = path.join(uploadsDir, filename);
   if (fs.existsSync(diskPath)) {
     try { fs.unlinkSync(diskPath); } catch { /* ignore */ }
   }

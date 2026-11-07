@@ -1,5 +1,6 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { PDFDocument } from "pdf-lib";
+import type { Document as ApiDocument } from "@workspace/api-client-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,23 +11,26 @@ import {
   Loader2, Merge, GripVertical, CheckCircle2
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiFetch, errorMessage } from "@/lib/api";
+import { formatBytes as formatFileSize } from "@/lib/format";
+import {
+  DocumentLinkFields, NO_DOCUMENT_LINK, appendDocumentLink, normalizeDocumentLink, type DocumentLink,
+} from "@/components/DocumentLinkFields";
 
-const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
-function apiUrl(path: string) { return `${BASE}/api${path}`; }
-
-function formatFileSize(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
+/**
+ * Either a fixed destination (engagementId / clientId / stageId, e.g. from a filing's stage) or,
+ * without one, the same client / filing / stage pickers as the documents page upload dialog
+ * (`clients` to choose from, preset to `defaultLink`).
+ */
 interface MergePDFDialogProps {
   open: boolean;
   onClose: () => void;
-  onUploaded?: (doc: any) => void;
+  onUploaded?: (doc: ApiDocument) => void;
   engagementId?: number | null;
   clientId?: number | null;
   stageId?: string | null;
+  clients?: Array<{ id: number; name: string }>;
+  defaultLink?: DocumentLink;
 }
 
 interface PDFEntry {
@@ -45,8 +49,17 @@ export function MergePDFDialog({
   engagementId,
   clientId,
   stageId,
+  clients = [],
+  defaultLink = NO_DOCUMENT_LINK,
 }: MergePDFDialogProps) {
   const { toast } = useToast();
+  const fixedLink = !!engagementId || !!clientId;
+  const [link, setLink] = useState<DocumentLink>(NO_DOCUMENT_LINK);
+  // Preset the pickers each time the dialog opens (the page filters may have changed).
+  const { clientId: defClient, filingId: defFiling, stage: defStage } = defaultLink;
+  useEffect(() => {
+    if (open) setLink(normalizeDocumentLink({ clientId: defClient, filingId: defFiling, stage: defStage }));
+  }, [open, defClient, defFiling, defStage]);
   const [step, setStep] = useState<Step>("select");
   const [entries, setEntries] = useState<PDFEntry[]>([]);
   const [description, setDescription] = useState("");
@@ -176,26 +189,19 @@ export function MergePDFDialog({
       const fd = new FormData();
       fd.append("file", file);
       if (description.trim()) fd.append("description", description.trim());
-      if (engagementId) fd.append("engagementId", String(engagementId));
-      if (clientId) fd.append("clientId", String(clientId));
-      if (stageId) fd.append("stage", stageId);
-
-      const res = await fetch(apiUrl("/documents/upload"), {
-        method: "POST",
-        credentials: "include",
-        body: fd,
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Upload failed" }));
-        throw new Error(err.error || "Upload failed");
+      if (fixedLink) {
+        if (engagementId) fd.append("engagementId", String(engagementId));
+        if (clientId) fd.append("clientId", String(clientId));
+        if (stageId) fd.append("stage", stageId);
+      } else {
+        appendDocumentLink(fd, link);
       }
 
-      const doc = await res.json();
+      const doc = await apiFetch<ApiDocument>("/documents/upload", { method: "POST", body: fd });
       setStep("done");
       onUploaded?.(doc);
-    } catch (e: any) {
-      toast({ title: e.message || "Merge and upload failed", variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Merge and upload failed", description: errorMessage(e), variant: "destructive" });
       setStep("reorder");
     } finally {
       setMerging(false);
@@ -206,7 +212,7 @@ export function MergePDFDialog({
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) handleClose(); }}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Merge className="h-5 w-5 text-primary" />
@@ -353,6 +359,9 @@ export function MergePDFDialog({
                     placeholder="merged.pdf"
                   />
                 </div>
+                {!fixedLink && (
+                  <DocumentLinkFields value={link} onChange={setLink} clients={clients} enabled={open} disabled={merging} />
+                )}
                 <div className="space-y-1.5">
                   <Label>Description <span className="text-muted-foreground">(optional)</span></Label>
                   <Input
