@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { desc, eq, inArray, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or, type SQL } from "drizzle-orm";
 import { db, clientsTable, engagementsTable, deadlinesTable, auditLogsTable, usersTable } from "@workspace/db";
 import { requireAuth, clientScope, isManagerRole } from "../middlewares/auth";
 import { openDeadlines } from "../lib/openDeadlines";
@@ -10,6 +10,10 @@ const router = Router();
 type EngagementRow = typeof engagementsTable.$inferSelect;
 
 const UPCOMING_WINDOW_DAYS = 30;
+/** "My deadlines" window of the maker's Needs-my-action card. */
+const MY_WORK_WINDOW_DAYS = 14;
+/** Cap per list of GET /dashboard/my-work (the card links to the full lists). */
+const MY_WORK_LIMIT = 25;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 // Every date here is a Philippine calendar date (Asia/Manila), via lib/dates.
@@ -111,6 +115,127 @@ router.get("/dashboard/summary", requireAuth, async (req, res): Promise<void> =>
     overdueItems,
     pendingApprovals,
     completedThisMonth,
+  });
+});
+
+// ── GET /dashboard/my-work ────────────────────────────────────────────────────
+// The dashboard's "Needs my action" card, role-aware:
+// - managers / super admins ("review"): filings with stages awaiting review,
+//   oldest first (by when the filing last changed, i.e. roughly when it was submitted).
+// - makers ("maker"): open filings assigned to me by due date (no due date last),
+//   plus open deadlines of those filings due in the next 14 days.
+// - clients ("client"): their open deadlines and their filings in progress,
+//   always scoped with clientScope (an unlinked account sees nothing).
+// Each list holds at most MY_WORK_LIMIT rows; `totals` has the full counts.
+
+const STAGE_COLUMNS = [
+  ["source_collection", "sourceCollectionStatus"],
+  ["draft_return", "draftReturnStatus"],
+  ["confirmation", "confirmationStatus"],
+  ["payment", "paymentStatus"],
+] as const;
+
+/** Stage keys of `e` that are awaiting review (payment is ignored when no tax is payable). */
+function reviewStages(e: EngagementRow): string[] {
+  const noPayment = e.taxPayable !== null && Number(e.taxPayable) === 0;
+  return STAGE_COLUMNS
+    .filter(([key, col]) => e[col] === "for_review" && !(key === "payment" && noPayment))
+    .map(([key]) => key);
+}
+
+function byDueDate(a: { dueDate: string | null; id: number }, b: { dueDate: string | null; id: number }): number {
+  if (a.dueDate === b.dueDate) return a.id - b.id;
+  if (a.dueDate == null) return 1;
+  if (b.dueDate == null) return -1;
+  return a.dueDate < b.dueDate ? -1 : 1;
+}
+
+router.get("/dashboard/my-work", requireAuth, async (req, res): Promise<void> => {
+  const scope = clientScope(req);
+  const role = req.session.userRole ?? "";
+  const userId = req.session.userId!;
+  const today = manilaToday();
+  const kind = scope !== null ? "client" : isManagerRole(role) ? "review" : "maker";
+
+  let engagementRows: EngagementRow[] = [];
+  let deadlineRows: Awaited<ReturnType<typeof openDeadlines>> = [];
+
+  if (kind === "review") {
+    engagementRows = await db
+      .select()
+      .from(engagementsTable)
+      .where(
+        or(
+          eq(engagementsTable.sourceCollectionStatus, "for_review"),
+          eq(engagementsTable.draftReturnStatus, "for_review"),
+          eq(engagementsTable.confirmationStatus, "for_review"),
+          eq(engagementsTable.paymentStatus, "for_review"),
+        ),
+      )
+      .orderBy(asc(engagementsTable.updatedAt), asc(engagementsTable.id));
+    engagementRows = engagementRows.filter((e) => reviewStages(e).length > 0);
+  } else if (kind === "maker") {
+    engagementRows = (
+      await db
+        .select()
+        .from(engagementsTable)
+        .where(and(eq(engagementsTable.assignedTo, userId), ne(engagementsTable.status, "completed")))
+    ).sort(byDueDate);
+    const ids = engagementRows.map((e) => e.id);
+    const windowEnd = addDays(today, MY_WORK_WINDOW_DAYS);
+    deadlineRows = ids.length
+      ? (await openDeadlines(inArray(deadlinesTable.engagementId, ids)))
+          .filter((d) => d.dueDate >= today && d.dueDate <= windowEnd)
+      : [];
+  } else {
+    const [engagements, deadlines] = await Promise.all([
+      db
+        .select()
+        .from(engagementsTable)
+        .where(and(engagementScope(scope), inArray(engagementsTable.status, ["in_progress", "for_review", "approved", "filed"]))),
+      openDeadlines(deadlineScope(scope)),
+    ]);
+    engagementRows = engagements.sort(byDueDate);
+    deadlineRows = deadlines;
+  }
+
+  const filings = engagementRows.slice(0, MY_WORK_LIMIT);
+  const deadlines = deadlineRows.slice(0, MY_WORK_LIMIT);
+  const clientNames = await loadClientNames([
+    ...filings.map((e) => e.clientId),
+    ...deadlines.map((d) => d.clientId),
+  ]);
+
+  res.json({
+    kind,
+    today,
+    windowDays: kind === "maker" ? MY_WORK_WINDOW_DAYS : null,
+    totals: { filings: engagementRows.length, deadlines: deadlineRows.length },
+    filings: filings.map((e) => ({
+      id: e.id,
+      title: e.title,
+      clientId: e.clientId,
+      clientName: clientNames.get(e.clientId) ?? null,
+      taxType: e.taxType,
+      period: e.period,
+      status: e.status,
+      dueDate: e.dueDate ?? null,
+      overdue: e.dueDate != null && e.dueDate < today,
+      daysUntilDue: e.dueDate != null ? daysBetween(today, e.dueDate) : null,
+      stagesForReview: reviewStages(e),
+      waitingSince: e.updatedAt.toISOString(),
+    })),
+    deadlines: deadlines.map((d) => ({
+      id: d.id,
+      title: d.title,
+      clientId: d.clientId ?? null,
+      clientName: d.clientId != null ? clientNames.get(d.clientId) ?? null : null,
+      engagementId: d.engagementId ?? null,
+      dueDate: d.dueDate,
+      priority: d.priority,
+      overdue: d.dueDate < today,
+      daysUntilDue: daysBetween(today, d.dueDate),
+    })),
   });
 });
 
