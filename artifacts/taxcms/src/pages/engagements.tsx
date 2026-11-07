@@ -1,14 +1,20 @@
-import { useState } from "react";
-import { Link } from "wouter";
+import { useEffect, useState } from "react";
+import { Link, useLocation, useSearch } from "wouter";
 import {
   useListEngagements, useCreateEngagement, useListClients, useListUsers, useListDocuments,
   useListDeadlines, getListEngagementsQueryKey, getListDocumentsQueryKey,
-  getListClientsQueryKey, getListUsersQueryKey, getListDeadlinesQueryKey
+  getListClientsQueryKey, getListUsersQueryKey, getListDeadlinesQueryKey,
+  type Engagement, type ListEngagementsParams,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { can, isStaff } from "@/lib/permissions";
+import { errorMessage } from "@/lib/api";
+import { formatBytes, formatDate } from "@/lib/format";
+import { ENGAGEMENT_STATUS, FILING_STAGES, getEngagementStatus, type FilingStageKey } from "@/lib/status";
+import { invalidateFilingData } from "@/lib/queries";
+import { ErrorState } from "@/components/ErrorState";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,8 +23,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Briefcase, ExternalLink, User2, Calendar, Paperclip, FileText, Image, Sheet, FileCode } from "lucide-react";
-import { format, parseISO } from "date-fns";
+import {
+  Plus, Search, Briefcase, ExternalLink, User2, Calendar, Paperclip, FileText, Image, Sheet, FileCode,
+  X, ClipboardCheck, UserCheck, Building2,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 import { FileViewer } from "@/components/FileViewer";
 import { FilingWorkflowDialog } from "@/components/FilingWorkflowDialog";
 
@@ -33,52 +42,42 @@ function FileTypeIcon({ mimeType, name }: { mimeType: string; name?: string }) {
   return <FileText className="h-4 w-4 text-muted-foreground shrink-0" />;
 }
 
-function fmtBytes(b: number) {
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-// Extract a short form number from a taxType string, e.g. "VAT (2550M)" → "2550M"
+// Extract a short form number from a taxType string, e.g. "VAT (2550Q)" → "2550Q"
 function extractFormNumber(taxType: string): string {
   const m = taxType.match(/\(([^)]+)\)/);
   return m ? m[1] : taxType;
+}
+
+/** Stage group heading in the documents dialog (documents without a stage go under "Other Documents"). */
+function stageGroupLabel(stage: string): string {
+  return FILING_STAGES[stage as FilingStageKey]?.label ?? "Other Documents";
 }
 
 // ── Per-engagement document panel ────────────────────────────────────────────
 function EngagementDocsDialog({
   engagementId, title, open, onClose,
 }: { engagementId: number; title: string; open: boolean; onClose: () => void }) {
-  const { data: docs, isLoading } = useListDocuments(
+  const { data: docs, isLoading, isError, error, refetch } = useListDocuments(
     { engagementId },
     { query: { enabled: open, queryKey: getListDocumentsQueryKey({ engagementId }) } }
   );
   type DocItem = NonNullable<typeof docs>[number];
   const [viewerDoc, setViewerDoc] = useState<DocItem | null>(null);
 
-  const byStage: Record<string, typeof docs> = {};
+  const byStage: Record<string, DocItem[]> = {};
   docs?.forEach(d => {
-    const s = (d as any).stage ?? "general";
-    if (!byStage[s]) byStage[s] = [];
-    byStage[s]!.push(d);
+    const s = (d as { stage?: string | null }).stage ?? "general";
+    (byStage[s] ??= []).push(d);
   });
-
-  const STAGE_LABELS: Record<string, string> = {
-    source_collection: "Source Collection",
-    draft_return: "Draft Tax Return",
-    confirmation: "Confirmation Receipt",
-    payment: "Payment Confirmation",
-    general: "Other Documents",
-  };
 
   return (
     <>
       <Dialog open={open} onOpenChange={v => !v && onClose()}>
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-base">
-              <Paperclip className="h-4 w-4 text-primary" />
-              Documents — {title}
+            <DialogTitle className="flex items-center gap-2 text-base pr-6">
+              <Paperclip className="h-4 w-4 text-primary shrink-0" />
+              <span className="min-w-0 break-words">Documents — {title}</span>
             </DialogTitle>
           </DialogHeader>
 
@@ -86,6 +85,8 @@ function EngagementDocsDialog({
             <div className="space-y-2 py-2">
               {[1, 2, 3].map(i => <Skeleton key={i} className="h-12" />)}
             </div>
+          ) : isError ? (
+            <ErrorState title="Could not load documents" error={error} onRetry={refetch} compact />
           ) : !docs || docs.length === 0 ? (
             <div className="py-12 text-center text-muted-foreground">
               <Paperclip className="h-8 w-8 mx-auto mb-2 opacity-30" />
@@ -97,23 +98,24 @@ function EngagementDocsDialog({
                 <div key={stage}>
                   {Object.keys(byStage).length > 1 && (
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 px-1">
-                      {STAGE_LABELS[stage] ?? stage}
+                      {stageGroupLabel(stage)}
                     </p>
                   )}
                   <div className="space-y-1">
-                    {stageDocs?.map(doc => (
+                    {stageDocs.map(doc => (
                       <button
                         key={doc.id}
+                        type="button"
                         className="w-full flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/60 transition-colors text-left group"
-                        onClick={() => setViewerDoc(doc as any)}
+                        onClick={() => setViewerDoc(doc)}
                       >
                         <FileTypeIcon mimeType={doc.mimeType} name={doc.originalName} />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">{doc.originalName}</p>
                           <p className="text-xs text-muted-foreground mt-0.5">
-                            {fmtBytes(doc.fileSize)}
+                            {formatBytes(doc.fileSize)}
                             {doc.uploadedByName && <> · {doc.uploadedByName}</>}
-                            {' · '}{format(parseISO(doc.createdAt), 'MMM d, yyyy')}
+                            {' · '}{formatDate(doc.createdAt)}
                             {doc.description && <> · {doc.description}</>}
                           </p>
                         </div>
@@ -128,20 +130,11 @@ function EngagementDocsDialog({
       </Dialog>
 
       {viewerDoc && (
-        <FileViewer doc={viewerDoc as any} onClose={() => setViewerDoc(null)} />
+        <FileViewer doc={viewerDoc} onClose={() => setViewerDoc(null)} />
       )}
     </>
   );
 }
-
-const STATUS_STYLES: Record<string, { label: string; className: string }> = {
-  pending: { label: "Pending", className: "bg-gray-100 text-gray-700 border-gray-200" },
-  in_progress: { label: "In Progress", className: "bg-blue-100 text-blue-700 border-blue-200" },
-  for_review: { label: "For Review", className: "bg-amber-100 text-amber-700 border-amber-200" },
-  approved: { label: "Approved", className: "bg-green-100 text-green-700 border-green-200" },
-  filed: { label: "Filed", className: "bg-teal-100 text-teal-700 border-teal-200" },
-  completed: { label: "Completed", className: "bg-emerald-100 text-emerald-700 border-emerald-200" },
-};
 
 const TAX_TYPES = [
   "Income Tax (1701)", "Income Tax (1702)", "VAT (2550M)", "VAT (2550Q)",
@@ -159,10 +152,62 @@ interface WorkflowTarget {
   dueDate: string;
 }
 
+/** The serialized engagement also carries per-stage data the generated type does not declare. */
+type EngagementRow = Engagement & { stagesForReview?: number; stageStatuses?: Record<string, string> };
+
+/** Engagement-level statuses (lib/status ENGAGEMENT_STATUS still lists retired values; filter on these only). */
+const STATUS_FILTERS = ["pending", "in_progress", "completed"] as const;
+
+/** Filters kept in the URL query string: ?status=&review=1&mine=1&clientId=&q= */
+interface Filters {
+  status: string;
+  review: boolean;
+  mine: boolean;
+  clientId: number | null;
+  q: string;
+}
+
+function parseFilters(search: string): Filters {
+  const p = new URLSearchParams(search);
+  const status = p.get("status") ?? "";
+  const clientId = Number(p.get("clientId"));
+  return {
+    status: (STATUS_FILTERS as readonly string[]).includes(status) ? status : "all",
+    review: p.get("review") === "1",
+    mine: p.get("mine") === "1",
+    clientId: Number.isInteger(clientId) && clientId > 0 ? clientId : null,
+    q: p.get("q") ?? "",
+  };
+}
+
+function filtersToSearch(f: Filters): string {
+  const p = new URLSearchParams();
+  if (f.clientId) p.set("clientId", String(f.clientId));
+  if (f.status !== "all") p.set("status", f.status);
+  if (f.review) p.set("review", "1");
+  if (f.mine) p.set("mine", "1");
+  if (f.q) p.set("q", f.q);
+  const qs = p.toString();
+  return qs ? `?${qs}` : "";
+}
+
+const EMPTY_FORM = { clientId: "", title: "", taxType: "", period: "", fiscalYear: "", assignedTo: "", dueDate: "", notes: "" };
+
 export default function Engagements() {
   const { user } = useAuth();
   const staff = isStaff(user?.role);
-  const { data: engagements, isLoading } = useListEngagements();
+  const search = useSearch();
+  const [, setLocation] = useLocation();
+  const filters = parseFilters(search);
+
+  const listParams: ListEngagementsParams = {};
+  if (filters.clientId) listParams.clientId = filters.clientId;
+  if (filters.status !== "all") listParams.status = filters.status;
+  const hasListParams = Object.keys(listParams).length > 0;
+  const { data: engagements, isLoading, isError, error, refetch } = useListEngagements(
+    hasListParams ? listParams : undefined,
+    { query: { queryKey: getListEngagementsQueryKey(hasListParams ? listParams : undefined) } },
+  );
   // Clients/users/deadlines are only needed for staff actions (create dialog, starting workflows).
   const { data: clients } = useListClients({ query: { enabled: staff, queryKey: getListClientsQueryKey() } });
   const { data: users } = useListUsers({ query: { enabled: staff, queryKey: getListUsersQueryKey() } });
@@ -170,29 +215,46 @@ export default function Engagements() {
   const createEngagement = useCreateEngagement();
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
   const [open, setOpen] = useState(false);
   const [docsEngagement, setDocsEngagement] = useState<{ id: number; title: string } | null>(null);
   const [workflowTarget, setWorkflowTarget] = useState<WorkflowTarget | null>(null);
-  const [form, setForm] = useState({
-    clientId: "", title: "", taxType: "", period: "", fiscalYear: "", assignedTo: "", dueDate: "", notes: "",
+  const [form, setForm] = useState(EMPTY_FORM);
+
+  // The search box keeps its own state (so typing never fights the URL) and writes through to ?q=.
+  const [searchText, setSearchText] = useState(filters.q);
+  useEffect(() => { setSearchText(filters.q); }, [filters.q]);
+
+  const updateFilters = (patch: Partial<Filters>) => {
+    setLocation(`/engagements${filtersToSearch({ ...filters, ...patch })}`, { replace: true });
+  };
+
+  const rows = (engagements ?? []) as EngagementRow[];
+  const needle = searchText.trim().toLowerCase();
+  const filtered = rows.filter(e => {
+    if (needle) {
+      const haystack = [e.title, e.taxType, e.clientName ?? "", e.period].join(" ").toLowerCase();
+      if (!haystack.includes(needle)) return false;
+    }
+    if (filters.status !== "all" && e.status !== filters.status) return false;
+    if (filters.review && !((e.stagesForReview ?? 0) > 0)) return false;
+    if (filters.mine && e.assignedTo !== user?.id) return false;
+    return true;
   });
 
-  const filtered = engagements?.filter(e => {
-    const matchSearch = e.title.toLowerCase().includes(search.toLowerCase()) ||
-      e.taxType.toLowerCase().includes(search.toLowerCase()) ||
-      (e.clientName ?? "").toLowerCase().includes(search.toLowerCase());
-    const matchStatus = statusFilter === "all" || e.status === statusFilter;
-    return matchSearch && matchStatus;
-  }) ?? [];
+  const filterClientName = filters.clientId
+    ? clients?.find(c => c.id === filters.clientId)?.name
+      ?? rows.find(e => e.clientId === filters.clientId)?.clientName
+      ?? `Client #${filters.clientId}`
+    : null;
+
+  const anyFilter = filters.status !== "all" || filters.review || filters.mine || !!filters.clientId || !!needle;
 
   // Find the deadline linked to an engagement (by engagementId foreign key)
   const findDeadlineId = (engagementId: number): number | null => {
-    return deadlines?.find(d => (d as any).engagementId === engagementId)?.id ?? null;
+    return deadlines?.find(d => d.engagementId === engagementId)?.id ?? null;
   };
 
-  const handleOpenWorkflow = (e: NonNullable<typeof engagements>[number]) => {
+  const handleOpenWorkflow = (e: EngagementRow) => {
     setWorkflowTarget({
       engagementId: e.id,
       deadlineId: findDeadlineId(e.id),
@@ -222,19 +284,19 @@ export default function Engagements() {
       }
     }, {
       onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListEngagementsQueryKey() });
+        void invalidateFilingData(queryClient);
         setOpen(false);
-        setForm({ clientId: "", title: "", taxType: "", period: "", fiscalYear: "", assignedTo: "", dueDate: "", notes: "" });
+        setForm(EMPTY_FORM);
         toast({ title: "Engagement created" });
       },
-      onError: () => toast({ title: "Failed to create engagement", variant: "destructive" }),
+      onError: (err) => toast({ title: "Failed to create engagement", description: errorMessage(err), variant: "destructive" }),
     });
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-2xl font-bold tracking-tight">Engagements</h2>
           <p className="text-muted-foreground">Track all tax filing engagements across clients.</p>
         </div>
@@ -247,55 +309,55 @@ export default function Engagements() {
               <DialogHeader><DialogTitle>Create Engagement</DialogTitle></DialogHeader>
               <div className="grid gap-4 py-2">
                 <div className="space-y-1.5">
-                  <Label>Client *</Label>
+                  <Label htmlFor="eng-client">Client *</Label>
                   <Select value={form.clientId} onValueChange={v => setForm(f => ({ ...f, clientId: v }))}>
-                    <SelectTrigger><SelectValue placeholder="Select client" /></SelectTrigger>
+                    <SelectTrigger id="eng-client"><SelectValue placeholder="Select client" /></SelectTrigger>
                     <SelectContent>
                       {clients?.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Engagement Title *</Label>
-                  <Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Q1 2025 VAT Return" />
+                  <Label htmlFor="eng-title">Engagement Title *</Label>
+                  <Input id="eng-title" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Q1 2025 VAT Return" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label>Tax Type *</Label>
+                  <div className="space-y-1.5 min-w-0">
+                    <Label htmlFor="eng-taxtype">Tax Type *</Label>
                     <Select value={form.taxType} onValueChange={v => setForm(f => ({ ...f, taxType: v }))}>
-                      <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
+                      <SelectTrigger id="eng-taxtype"><SelectValue placeholder="Select type" /></SelectTrigger>
                       <SelectContent>
                         {TAX_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Period *</Label>
-                    <Input value={form.period} onChange={e => setForm(f => ({ ...f, period: e.target.value }))} placeholder="Q1 2025" />
+                  <div className="space-y-1.5 min-w-0">
+                    <Label htmlFor="eng-period">Period *</Label>
+                    <Input id="eng-period" value={form.period} onChange={e => setForm(f => ({ ...f, period: e.target.value }))} placeholder="Q1 2025" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label>Fiscal Year</Label>
-                    <Input value={form.fiscalYear} onChange={e => setForm(f => ({ ...f, fiscalYear: e.target.value }))} placeholder="2025" />
+                  <div className="space-y-1.5 min-w-0">
+                    <Label htmlFor="eng-fy">Fiscal Year</Label>
+                    <Input id="eng-fy" value={form.fiscalYear} onChange={e => setForm(f => ({ ...f, fiscalYear: e.target.value }))} placeholder="2025" />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Due Date</Label>
-                    <Input type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />
+                  <div className="space-y-1.5 min-w-0">
+                    <Label htmlFor="eng-due">Due Date</Label>
+                    <Input id="eng-due" type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Assign to</Label>
+                  <Label htmlFor="eng-assignee">Assign to</Label>
                   <Select value={form.assignedTo} onValueChange={v => setForm(f => ({ ...f, assignedTo: v }))}>
-                    <SelectTrigger><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                    <SelectTrigger id="eng-assignee"><SelectValue placeholder="Unassigned" /></SelectTrigger>
                     <SelectContent>
                       {users?.filter(u => (u.role as string) === "accountant" || (u.role as string) === "maker").map(u => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Notes</Label>
-                  <Textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Additional notes..." rows={2} />
+                  <Label htmlFor="eng-notes">Notes</Label>
+                  <Textarea id="eng-notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Additional notes..." rows={2} />
                 </div>
               </div>
               <div className="flex justify-end gap-2">
@@ -309,49 +371,120 @@ export default function Engagements() {
         )}
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input className="pl-9" placeholder="Search engagements..." value={search} onChange={e => setSearch(e.target.value)} />
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              placeholder="Search by title, client or form..."
+              aria-label="Search engagements by title, client or form"
+              value={searchText}
+              onChange={e => { setSearchText(e.target.value); updateFilters({ q: e.target.value }); }}
+            />
+          </div>
+          <Select value={filters.status} onValueChange={v => updateFilters({ status: v })}>
+            <SelectTrigger className="w-full sm:w-44" aria-label="Filter by status"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              {STATUS_FILTERS.map(k => (
+                <SelectItem key={k} value={k}>{ENGAGEMENT_STATUS[k]?.label ?? k}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Statuses</SelectItem>
-            {Object.entries(STATUS_STYLES).map(([k, v]) => (
-              <SelectItem key={k} value={k}>{v.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="flex flex-wrap items-center gap-2">
+          {staff && (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant={filters.review ? "default" : "outline"}
+                aria-pressed={filters.review}
+                className="h-8 gap-1.5"
+                onClick={() => updateFilters({ review: !filters.review })}
+              >
+                <ClipboardCheck className="h-3.5 w-3.5" />
+                Has stages for review
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={filters.mine ? "default" : "outline"}
+                aria-pressed={filters.mine}
+                className="h-8 gap-1.5"
+                onClick={() => updateFilters({ mine: !filters.mine })}
+              >
+                <UserCheck className="h-3.5 w-3.5" />
+                Assigned to me
+              </Button>
+            </>
+          )}
+          {filters.clientId && (
+            <span className="inline-flex max-w-full items-center gap-1 rounded-full border bg-primary/5 border-primary/20 text-primary pl-2.5 pr-1 py-0.5 text-xs font-medium">
+              <Building2 className="h-3 w-3 shrink-0" />
+              <span className="truncate">Client: {filterClientName}</span>
+              <button
+                type="button"
+                className="rounded-full p-0.5 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Remove client filter ${filterClientName}`}
+                onClick={() => updateFilters({ clientId: null })}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          )}
+          {anyFilter && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8 text-muted-foreground"
+              onClick={() => { setSearchText(""); setLocation("/engagements", { replace: true }); }}
+            >
+              Clear filters
+            </Button>
+          )}
+        </div>
       </div>
 
       {isLoading ? (
         <div className="space-y-3">{[1,2,3,4].map(i => <Skeleton key={i} className="h-20" />)}</div>
+      ) : isError ? (
+        <ErrorState title="Could not load engagements" error={error} onRetry={refetch} />
       ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="py-16 text-center text-muted-foreground">
             <Briefcase className="h-10 w-10 mx-auto mb-3 opacity-30" />
             <p className="font-medium">No engagements found</p>
+            {anyFilter && <p className="text-sm mt-1">Try changing or clearing the filters.</p>}
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-2">
           {filtered.map(e => {
-            const st = STATUS_STYLES[e.status] || STATUS_STYLES.pending;
+            const st = getEngagementStatus(e.status);
+            const forReview = e.stagesForReview ?? 0;
             return (
-              <Card
-                key={e.id}
-                className="hover:shadow-sm transition-shadow cursor-pointer"
-                onClick={() => handleOpenWorkflow(e)}
-              >
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="flex-1 min-w-0">
+              <Card key={e.id} className="hover:shadow-sm transition-shadow">
+                <CardContent className="p-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      className="flex-1 min-w-0 text-left p-4 pr-0 rounded-l-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                      onClick={() => handleOpenWorkflow(e)}
+                      aria-label={`Open filing workflow: ${e.title}`}
+                    >
                       <div className="flex items-center gap-2 flex-wrap">
-                        <p className="font-semibold text-sm">{e.title}</p>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${st.className}`}>{st.label}</span>
+                        <p className="font-semibold text-sm break-words">{e.title}</p>
+                        <span className={cn("text-xs px-2 py-0.5 rounded-full font-medium border", st.className)}>{st.label}</span>
+                        {forReview > 0 && (
+                          <span className="text-xs px-2 py-0.5 rounded-full font-medium border bg-amber-50 text-amber-700 border-amber-200">
+                            {forReview} for review
+                          </span>
+                        )}
                       </div>
-                      <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground flex-wrap">
+                      <div className="flex items-center gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground flex-wrap">
                         <span className="font-medium text-foreground/70">{e.clientName}</span>
                         <span>{e.taxType}</span>
                         <span>{e.period}</span>
@@ -359,35 +492,32 @@ export default function Engagements() {
                           <span className="flex items-center gap-1"><User2 className="h-3 w-3" />{e.assignedToName}</span>
                         )}
                         {e.dueDate && (
-                          <span className="flex items-center gap-1"><Calendar className="h-3 w-3" />Due {format(parseISO(e.dueDate), 'MMM d, yyyy')}</span>
+                          <span className="flex items-center gap-1"><Calendar className="h-3 w-3" />Due {formatDate(e.dueDate)}</span>
                         )}
                       </div>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
+                    </button>
+                    <div className="flex items-center gap-1 shrink-0 pr-3">
                       <Button
                         variant="ghost"
                         size="sm"
                         className="h-8 px-2 text-muted-foreground hover:text-primary hover:bg-primary/5 gap-1.5"
                         title="View attached documents"
-                        onClick={ev => { ev.preventDefault(); ev.stopPropagation(); setDocsEngagement({ id: e.id, title: e.title }); }}
+                        aria-label={`Docs for ${e.title}`}
+                        onClick={() => setDocsEngagement({ id: e.id, title: e.title })}
                       >
                         <Paperclip className="h-3.5 w-3.5" />
-                        <span className="text-xs">Docs</span>
+                        <span className="text-xs hidden sm:inline">Docs</span>
                       </Button>
-                      <Link
-                        href={`/engagements/${e.id}`}
-                        onClick={ev => ev.stopPropagation()}
+                      <Button
+                        asChild
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2 text-muted-foreground hover:text-primary hover:bg-primary/5"
                       >
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 px-2 text-muted-foreground hover:text-primary hover:bg-primary/5"
-                          title="Open detail page"
-                          tabIndex={-1}
-                        >
+                        <Link href={`/engagements/${e.id}`} title="Open detail page" aria-label={`Open detail page for ${e.title}`}>
                           <ExternalLink className="h-3.5 w-3.5" />
-                        </Button>
-                      </Link>
+                        </Link>
+                      </Button>
                     </div>
                   </div>
                 </CardContent>
@@ -407,7 +537,7 @@ export default function Engagements() {
         />
       )}
 
-      {/* Filing workflow dialog */}
+      {/* Filing workflow dialog (it refreshes all filing data itself after every change) */}
       {workflowTarget && (
         <FilingWorkflowDialog
           open={!!workflowTarget}
@@ -419,7 +549,6 @@ export default function Engagements() {
           description={workflowTarget.description}
           period={workflowTarget.period}
           dueDate={workflowTarget.dueDate}
-          onUpdate={() => queryClient.invalidateQueries({ queryKey: getListEngagementsQueryKey() })}
         />
       )}
     </div>
